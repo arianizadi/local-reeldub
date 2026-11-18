@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+app_dir=$(cd "$(dirname "$0")" && pwd)
+if [[ ! -x "$app_dir/.venv/bin/python" ]]; then
+  echo "Run $app_dir/setup.sh first." >&2
+  exit 1
+fi
+export PATH="$app_dir/.venv/bin:$PATH"
+# The studio environment supplies CUDA user-space libraries alongside PyTorch.
+if [[ "$(uname -s)" == Linux && -d "$app_dir/.qwen-venv" ]]; then
+  for lib in "$app_dir"/.qwen-venv/lib/python*/site-packages/nvidia/{cublas,cudnn,cuda_runtime}/lib; do
+    if [[ -d "$lib" ]]; then export LD_LIBRARY_PATH="$lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"; fi
+  done
+fi
+exec "$app_dir/.venv/bin/python" "$app_dir/reeldub.py" "$@"

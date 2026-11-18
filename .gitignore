@@ -1,0 +1,12 @@
+.venv/
+.qwen-venv/
+.tools/
+output/
+__pycache__/
+.DS_Store
+
+*.mp4
+*.mkv
+*.mov
+*.webm
+*.wav
