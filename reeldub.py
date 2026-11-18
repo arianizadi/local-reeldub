@@ -27,8 +27,9 @@ def input_video(value, folder):
         if parsed.path.rstrip("/") in ("", "/playlist", "/feed", "/reels") or parsed.path.startswith(("/@", "/channel/")):
             raise ValueError("Paste a link to a single video.")
         print("Downloading video…", flush=True)
+        limits = ["--max-filesize", "250M", "--socket-timeout", "15", "--retries", "2"] if os.getenv("REELDUB_SERVICE_LIMITS") else []
         result = subprocess.run([
-            "yt-dlp", "--ignore-config", "--no-playlist", "--playlist-end", "1", "--no-progress",
+            "yt-dlp", *limits, "--ignore-config", "--no-playlist", "--playlist-end", "1", "--no-progress",
             "--match-filter", "!is_live", "--restrict-filenames",
             "--print", "after_move:filepath", "-o", str(folder / "%(id)s.%(ext)s"), "--", value,
         ], check=True, text=True, stdout=subprocess.PIPE)
@@ -77,6 +78,11 @@ def run(args):
             raise ValueError("Choose an output filename ending in .mp4.")
         if dest.exists():
             raise FileExistsError(f"Output already exists: {dest}. Choose another path with -o.")
+        if os.getenv("REELDUB_SERVICE_LIMITS"):
+            seconds = float(subprocess.check_output(["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                                                    "-of", "csv=p=0", media], text=True).strip())
+            if not 0 < seconds <= 600 or media.stat().st_size > 250 * 1024 * 1024:
+                raise ValueError("The service accepts Reels up to 10 minutes and 250 MB.")
         source = folder / "source.wav"
         ff("-i", media, "-map", "0:a:0", "-vn", "-ac", "2", "-ar", str(RATE),
            "-c:a", "pcm_s16le", "-rf64", "auto", source)
@@ -125,8 +131,11 @@ def run(args):
             lines = json.loads(script.read_text())
         if match:
             write_references(lines, turns, analysis_audio, folder)
+        print("Synthesizing English voices…", flush=True)
         synthesize(lines, folder, match)
+        print("Mixing soundtrack…", flush=True)
         mix(lines, source, folder)
+        print("Encoding video…", flush=True)
         render(media, lines, folder)
         os.link(folder / "finished.mp4", dest)  # Publish atomically without overwriting another job.
         print(dest)

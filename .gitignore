@@ -10,3 +10,14 @@ __pycache__/
 *.mov
 *.webm
 *.wav
+
+.env
+.env.*
+DerivedData/
+*.xcarchive/
+xcuserdata/
+*.ipa
+*.xcresult/
+*.p8
+*.p12
+*.mobileprovision

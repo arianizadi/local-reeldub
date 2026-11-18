@@ -1,0 +1,11 @@
+.git
+.venv
+.qwen-venv
+.tools
+.env*
+output
+ios
+__pycache__
+*.mp4
+*.wav
+

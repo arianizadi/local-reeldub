@@ -1,10 +1,27 @@
-# Local ReelDub
+# ReelDub
 
 Paste a YouTube video or Instagram Reel link and get an English-dubbed MP4. ReelDub downloads the video, identifies speakers, translates what they say, voices each line, and places it on the original timeline. The MP4 includes switchable English captions.
 
 **All AI runs on your computer.** Setup downloads model weights. Link inputs contact the video platform. Once setup finishes, local video files can be dubbed offline.
 
-## Start here
+## Use ReelDub on iPhone
+
+Share an Instagram Reel to **ReelDub** or paste its link in **Studio**. Follow its place in the queue, the current render stage and elapsed time. Play the finished English video, share the MP4, or report a translation, voice, timing or background issue with the original Reel and a note.
+
+Start your own server with Docker Compose v2:
+
+```bash
+git clone https://github.com/arianizadi/local-reeldub.git
+cd local-reeldub
+./start-local.sh
+curl http://127.0.0.1:8300/health
+```
+
+Setup generates a private `.env`, starts MongoDB and the API, and downloads the Light worker models on first use. Follow the first download with `docker compose logs -f worker`. Open `ios/ReelDub.xcodeproj` in Xcode and run **ReelDub** on an iPhone simulator. In **Server and account**, use `http://127.0.0.1:8300` and your private `SELF_HOST_KEY` from `.env`. That key has unlimited access. Give each additional user their own Sign in with Apple session.
+
+A physical phone needs a reachable HTTPS address for the API. TestFlight delivers the app over the internet. A private network such as NetBird can carry API traffic to your home server. For the Studio GPU worker, remote nodes, Apple account setup and private TestFlight distribution, see the [operator and product guide](PRODUCT.md).
+
+## Use the standalone command line
 
 On macOS, Linux, or Windows with WSL2, run:
 
@@ -57,7 +74,7 @@ The default translation model is `large-v3`. Select `small`, `medium`, or `large
 
 1. **Fetch and decode.** yt-dlp fetches the video. The Light environment includes Deno and yt-dlp's JavaScript components for YouTube. FFmpeg reads the first audio track and creates a stereo timeline.
 2. **Find the speech.** Whisper listens to the full mix, including vocalizations outside ordinary speech. Studio uses the isolated dialogue stem for speaker analysis. Whisper detects the source language. A segmentation model and speaker embeddings group recurring voices within the video.
-3. **Translate in context.** Studio sends the the original speaker turns to the local translation model. It processes long scripts in batches in scene order.
+3. **Translate in context.** Studio sends the original speaker turns to the local translation model. It processes long scripts in batches in scene order.
 4. **Build the voices.** Studio samples the original utterance for each line, avoids detected overlap where possible, and extends very short references within the same speaker turn. This helps when the same character changes delivery between scenes. Voice samples stay inside the temporary job directory. The Light profile works with assigned preset voices.
 5. **Mix and export.** Each English line starts on the source timeline. Longer lines are sped up with pitch-preserving time compression. Studio builds one full-length soundtrack from the separated music and effects plus synthesized English. The same mix runs through pauses and the last frame. A missed vocalization may be absent, and speech can leak into the estimated effects stem. FFmpeg writes H.264 video, AAC audio, and English subtitles to an MP4.
 

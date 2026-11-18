@@ -1,0 +1,9 @@
+services:
+  worker:
+    gpus: all
+    command: ["/bin/bash","-ec","./setup.sh --studio && exec python -m server.worker"]
+    volumes:
+      - studio-env:/app/.qwen-venv
+volumes:
+  studio-env: {}
+

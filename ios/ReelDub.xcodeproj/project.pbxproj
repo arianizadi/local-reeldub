@@ -1,0 +1,555 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		2B0CA8FB30D77B3E183948A2 /* Client.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43208AEF5AECA108781F363F /* Client.swift */; };
+		5F451703B7CE01CA61521BF7 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E478752859957286A715793F /* SettingsView.swift */; };
+		706640E8CE8DF92D55FF6C45 /* ReelDubShare.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 5B1D4417B7F3B25C34A902A4 /* ReelDubShare.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		941CC53E938330E42D40BB66 /* Home.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A360E5C178187669B008D52 /* Home.swift */; };
+		9B37D0D2E68D9B43B91A003D /* JobView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0E26304C54AD5A06F2044E4 /* JobView.swift */; };
+		A818723737ED39690D591829 /* ShareController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1BF612E32DE612654653080D /* ShareController.swift */; };
+		B3374DB73DD7625BE918FED6 /* Client.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43208AEF5AECA108781F363F /* Client.swift */; };
+		B61A901591152FC2F4D65272 /* StudioSmoke.swift in Sources */ = {isa = PBXBuildFile; fileRef = D844C8909280CCFB7E3D07EF /* StudioSmoke.swift */; };
+		C2738F45B7E4966A9BDBB60D /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = FB74316CA58B05D52430B6D2 /* Assets.xcassets */; };
+		C61CDDE95B6BC5E80D12403C /* ReelDubApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B3FB6960C8146A94CA0E243 /* ReelDubApp.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		C786A351477F12A8A5C35F6D /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 55727E17F563A6C6655DE8A5 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = FD514EAAE1E283E1AD26FA8E;
+			remoteInfo = ReelDubShare;
+		};
+		DC1ED12ECCB23F2A8051544D /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 55727E17F563A6C6655DE8A5 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = AC2B55FA54457B81F028310A;
+			remoteInfo = ReelDub;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		180D1C58A1C9E4061D041A55 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				706640E8CE8DF92D55FF6C45 /* ReelDubShare.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		18B84EF9C9C03E47301D7648 /* ReelDub.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = ReelDub.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		1BF612E32DE612654653080D /* ShareController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareController.swift; sourceTree = "<group>"; };
+		43208AEF5AECA108781F363F /* Client.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Client.swift; sourceTree = "<group>"; };
+		48A210E001537456A5175978 /* ReelDubUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = ReelDubUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		5B1D4417B7F3B25C34A902A4 /* ReelDubShare.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = ReelDubShare.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		6B3FB6960C8146A94CA0E243 /* ReelDubApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReelDubApp.swift; sourceTree = "<group>"; };
+		9A360E5C178187669B008D52 /* Home.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Home.swift; sourceTree = "<group>"; };
+		D0E26304C54AD5A06F2044E4 /* JobView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JobView.swift; sourceTree = "<group>"; };
+		D844C8909280CCFB7E3D07EF /* StudioSmoke.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudioSmoke.swift; sourceTree = "<group>"; };
+		E478752859957286A715793F /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		FB74316CA58B05D52430B6D2 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		39FB6A35D742793DDB515D04 /* ReelDubShare */ = {
+			isa = PBXGroup;
+			children = (
+				1BF612E32DE612654653080D /* ShareController.swift */,
+			);
+			path = ReelDubShare;
+			sourceTree = "<group>";
+		};
+		4DD92093A30BDCDC91C65129 /* Shared */ = {
+			isa = PBXGroup;
+			children = (
+				43208AEF5AECA108781F363F /* Client.swift */,
+			);
+			path = Shared;
+			sourceTree = "<group>";
+		};
+		6CE7F34E908319F27DE92056 /* ReelDubUITests */ = {
+			isa = PBXGroup;
+			children = (
+				D844C8909280CCFB7E3D07EF /* StudioSmoke.swift */,
+			);
+			path = ReelDubUITests;
+			sourceTree = "<group>";
+		};
+		7A73E55622D207E24F165049 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				18B84EF9C9C03E47301D7648 /* ReelDub.app */,
+				5B1D4417B7F3B25C34A902A4 /* ReelDubShare.appex */,
+				48A210E001537456A5175978 /* ReelDubUITests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		A8784AE9727C0CA2C7298A65 = {
+			isa = PBXGroup;
+			children = (
+				AC6D25E938ED0AD08F1670B6 /* ReelDub */,
+				39FB6A35D742793DDB515D04 /* ReelDubShare */,
+				6CE7F34E908319F27DE92056 /* ReelDubUITests */,
+				4DD92093A30BDCDC91C65129 /* Shared */,
+				7A73E55622D207E24F165049 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		AC6D25E938ED0AD08F1670B6 /* ReelDub */ = {
+			isa = PBXGroup;
+			children = (
+				FB74316CA58B05D52430B6D2 /* Assets.xcassets */,
+				9A360E5C178187669B008D52 /* Home.swift */,
+				D0E26304C54AD5A06F2044E4 /* JobView.swift */,
+				6B3FB6960C8146A94CA0E243 /* ReelDubApp.swift */,
+				E478752859957286A715793F /* SettingsView.swift */,
+			);
+			path = ReelDub;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		5481F381B4CE78AE4A558672 /* ReelDubUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 626DB8BFA6294A6C5D886D4F /* Build configuration list for PBXNativeTarget "ReelDubUITests" */;
+			buildPhases = (
+				A8CD2C1260554C4414365DDF /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				7644C5A083F35AC4ACB6751A /* PBXTargetDependency */,
+			);
+			name = ReelDubUITests;
+			packageProductDependencies = (
+			);
+			productName = ReelDubUITests;
+			productReference = 48A210E001537456A5175978 /* ReelDubUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+		AC2B55FA54457B81F028310A /* ReelDub */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 17DF806A66EAAC599396B30F /* Build configuration list for PBXNativeTarget "ReelDub" */;
+			buildPhases = (
+				1B5C144A56D6AEB2CBBDB1FD /* Sources */,
+				D8DA8B748CDDB83F0CFFAF98 /* Resources */,
+				180D1C58A1C9E4061D041A55 /* Embed Foundation Extensions */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				0C7390AE2F578F3C37CB69B7 /* PBXTargetDependency */,
+			);
+			name = ReelDub;
+			packageProductDependencies = (
+			);
+			productName = ReelDub;
+			productReference = 18B84EF9C9C03E47301D7648 /* ReelDub.app */;
+			productType = "com.apple.product-type.application";
+		};
+		FD514EAAE1E283E1AD26FA8E /* ReelDubShare */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 9E9FFF225DDA9EA094CC4042 /* Build configuration list for PBXNativeTarget "ReelDubShare" */;
+			buildPhases = (
+				8C3E807EE6C2A3E03F832FFE /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = ReelDubShare;
+			packageProductDependencies = (
+			);
+			productName = ReelDubShare;
+			productReference = 5B1D4417B7F3B25C34A902A4 /* ReelDubShare.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		55727E17F563A6C6655DE8A5 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					5481F381B4CE78AE4A558672 = {
+						ProvisioningStyle = Automatic;
+						TestTargetID = AC2B55FA54457B81F028310A;
+					};
+					AC2B55FA54457B81F028310A = {
+						ProvisioningStyle = Automatic;
+					};
+					FD514EAAE1E283E1AD26FA8E = {
+						ProvisioningStyle = Automatic;
+					};
+				};
+			};
+			buildConfigurationList = C9ACAF063ABD475DAE40F06B /* Build configuration list for PBXProject "ReelDub" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = A8784AE9727C0CA2C7298A65;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 7A73E55622D207E24F165049 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				AC2B55FA54457B81F028310A /* ReelDub */,
+				FD514EAAE1E283E1AD26FA8E /* ReelDubShare */,
+				5481F381B4CE78AE4A558672 /* ReelDubUITests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		D8DA8B748CDDB83F0CFFAF98 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				C2738F45B7E4966A9BDBB60D /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		1B5C144A56D6AEB2CBBDB1FD /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				2B0CA8FB30D77B3E183948A2 /* Client.swift in Sources */,
+				941CC53E938330E42D40BB66 /* Home.swift in Sources */,
+				9B37D0D2E68D9B43B91A003D /* JobView.swift in Sources */,
+				C61CDDE95B6BC5E80D12403C /* ReelDubApp.swift in Sources */,
+				5F451703B7CE01CA61521BF7 /* SettingsView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		8C3E807EE6C2A3E03F832FFE /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B3374DB73DD7625BE918FED6 /* Client.swift in Sources */,
+				A818723737ED39690D591829 /* ShareController.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A8CD2C1260554C4414365DDF /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B61A901591152FC2F4D65272 /* StudioSmoke.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		0C7390AE2F578F3C37CB69B7 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = FD514EAAE1E283E1AD26FA8E /* ReelDubShare */;
+			targetProxy = C786A351477F12A8A5C35F6D /* PBXContainerItemProxy */;
+		};
+		7644C5A083F35AC4ACB6751A /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = AC2B55FA54457B81F028310A /* ReelDub */;
+			targetProxy = DC1ED12ECCB23F2A8051544D /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		022BB767730CAAE9634734F5 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.arianizadi.reeldub.uitests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = ReelDub;
+			};
+			name = Release;
+		};
+		1A91B077AB2AE6E1C695097B /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = Config/Share.entitlements;
+				INFOPLIST_FILE = Config/Share.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.arianizadi.reeldub.share;
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		411BAC5A1CFC074B1214AEF9 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = Config/Share.entitlements;
+				INFOPLIST_FILE = Config/Share.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.arianizadi.reeldub.share;
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		4D88A61663EFE008CA876081 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.arianizadi.reeldub.uitests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = ReelDub;
+			};
+			name = Debug;
+		};
+		D583D5C4447724AF55267244 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 0.1.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		DDAD4102E27A673260403C89 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = Config/App.entitlements;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				INFOPLIST_FILE = Config/App.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.arianizadi.reeldub;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		E35606CA51A8693C7532EC7A /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 0.1.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		F0542EA4546394CF013E3350 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = Config/App.entitlements;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				INFOPLIST_FILE = Config/App.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.arianizadi.reeldub;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		17DF806A66EAAC599396B30F /* Build configuration list for PBXNativeTarget "ReelDub" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				DDAD4102E27A673260403C89 /* Debug */,
+				F0542EA4546394CF013E3350 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		626DB8BFA6294A6C5D886D4F /* Build configuration list for PBXNativeTarget "ReelDubUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				4D88A61663EFE008CA876081 /* Debug */,
+				022BB767730CAAE9634734F5 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		9E9FFF225DDA9EA094CC4042 /* Build configuration list for PBXNativeTarget "ReelDubShare" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				1A91B077AB2AE6E1C695097B /* Debug */,
+				411BAC5A1CFC074B1214AEF9 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		C9ACAF063ABD475DAE40F06B /* Build configuration list for PBXProject "ReelDub" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				D583D5C4447724AF55267244 /* Debug */,
+				E35606CA51A8693C7532EC7A /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 55727E17F563A6C6655DE8A5 /* Project object */;
+}
