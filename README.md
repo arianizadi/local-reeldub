@@ -57,8 +57,8 @@ The default translation model is `large-v3`. Select `small`, `medium`, or `large
 
 1. **Fetch and decode.** yt-dlp fetches the video. The Light environment includes Deno and yt-dlp's JavaScript components for YouTube. FFmpeg reads the first audio track and creates a stereo timeline.
 2. **Find the speech.** Studio uses the estimated dialogue stem for recognition and speaker analysis. Whisper detects the source language. A segmentation model and speaker embeddings group recurring voices within the video.
-3. **Translate in context.** Studio sends the source-language cues, speaker IDs, and available speaking times to the local translation model. It processes long scripts in batches with neighboring dialogue as context.
-4. **Build the voices.** Studio selects relatively long, solo passages per speaker and builds a reusable voice prompt. Voice samples stay inside the temporary job directory. The Light profile works with assigned preset voices.
+3. **Translate in context.** Studio sends the source-language cues, a rough Whisper translation, speaker IDs, and available speaking times to the local translation model. It processes long scripts in batches with neighboring dialogue as context.
+4. **Build the voices.** Studio samples the original utterance for each line, avoids detected overlap where possible, and extends very short references within the same speaker turn. This helps when the same character changes delivery between scenes. Voice samples stay inside the temporary job directory. The Light profile works with assigned preset voices.
 5. **Mix and export.** Each English line starts on the source timeline. Longer lines are sped up with pitch-preserving time compression. During the dubbed lines, Studio uses the estimated music and effects bed. Between lines, ReelDub returns to the original mix. FFmpeg writes H.264 video, AAC audio, and English subtitles to an MP4.
 
 ## What to listen for

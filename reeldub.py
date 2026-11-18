@@ -53,7 +53,13 @@ def recognize(audio, model_size, device, language, native):
                                       vad_parameters=dict(min_silence_duration_ms=550))
     result = list(segments)
     print(f"Source language: {info.language}. Found {len(result)} segments.", flush=True)
-    return result, info.language
+    drafts = []
+    if native and info.language != "en":
+        translated, _ = model.transcribe(audio, language=info.language, task="translate",
+                                         word_timestamps=True, condition_on_previous_text=False,
+                                         vad_filter=True, vad_parameters=dict(min_silence_duration_ms=550))
+        drafts = list(translated)
+    return result, info.language, drafts
 
 
 def run(args):
@@ -84,7 +90,7 @@ def run(args):
         ff("-i", analysis_audio, "-ac", "1", "-ar", "16000", "-f", "f32le", folder / "mono.f32")
         audio = np.memmap(folder / "mono.f32", dtype="<f4", mode="r")
         contextual = args.translation == "context"
-        segments, language = recognize(audio, args.model, args.device, args.language, contextual)
+        segments, language, drafts = recognize(audio, args.model, args.device, args.language, contextual)
         if not segments:
             raise ValueError("No translatable speech detected.")
         gc.collect()
@@ -102,6 +108,9 @@ def run(args):
         if contextual and language != "en":
             print("Translating the source transcript in context…", flush=True)
             script = folder / "lines.json"
+            for line in lines:
+                line["draft"] = " ".join(w.word.strip() for seg in drafts for w in (seg.words or [])
+                                         if line["start"] <= (w.start + w.end) / 2 < line["end"])
             script.write_text(json.dumps(lines, ensure_ascii=False))
             subprocess.run([worker, APP / "translate_lines.py", folder], check=True)
             lines = json.loads(script.read_text())

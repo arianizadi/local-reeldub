@@ -52,42 +52,38 @@ def assign_lines(segments, turns):
 
 
 def write_references(lines, turns, source, folder):
-    # Split at overlaps so another speaker does not enter the conditioning clip.
-    for speaker in {line["speaker"] for line in lines}:
-        choices = []
-        for turn in turns:
-            if turn.speaker != speaker:
-                continue
-            cursor = turn.start
-            for other in turns:
-                if other.speaker == speaker or other.end <= cursor or other.start >= turn.end:
-                    continue
-                if other.start > cursor:
-                    choices.append((cursor, other.start))
-                cursor = max(cursor, other.end)
-            if cursor < turn.end:
-                choices.append((cursor, turn.end))
-        if not choices:
-            choices = [(line["start"], line["end"]) for line in lines if line["speaker"] == speaker]
-        # Favor a single clean phrase. Collect a few shorter phrases if necessary.
-        pieces = []
-        total = 0
-        with sf.SoundFile(source) as stream:
-            rate = stream.samplerate
-            for start, end in sorted(choices, key=lambda t: t[1] - t[0], reverse=True):
-                count = min(int((end - start) * rate), 8 * rate - total)
-                if count < 0.12 * rate:
-                    continue
-                stream.seek(min(len(stream), max(0, round(start * rate))))
-                part = stream.read(count, always_2d=True, dtype="float32").mean(axis=1)
-                if len(part):
-                    pieces.append(part)
-                    total += len(part)
-                if total >= 3 * rate:
-                    break
-        if not pieces:
-            raise RuntimeError(f"Too little audible speech to sample speaker {speaker}. Try --voice-mode preset.")
-        sf.write(folder / f"reference-{speaker}.wav", np.concatenate(pieces), rate)
+    # Anchor the reference to the actual utterance. A single speaker label may span
+    # distinct voices after an off-screen cut or a diarization mistake.
+    with sf.SoundFile(source) as stream:
+        rate = stream.samplerate
+        for i, line in enumerate(lines):
+            left, right = line["start"], line["end"]
+            own = [t for t in turns if t.speaker == line["speaker"] and t.start < right and t.end > left]
+            if own:
+                best = max(own, key=lambda t: min(t.end, right) - max(t.start, left))
+                # Very short words benefit from adjacent speech within the same turn.
+                if right - left < 1.5:
+                    left = max(best.start, min(left, best.end - 3))
+                    right = min(best.end, max(right, left + 3))
+                else:
+                    left, right = max(best.start, left), min(best.end, right)
+            spans = [(left, right)]
+            for t in turns:
+                if t.speaker != line["speaker"] and t.start < right and t.end > left:
+                    remaining = []
+                    for a, b in spans:
+                        if a < t.start:
+                            remaining.append((a, min(b, t.start)))
+                        if b > t.end:
+                            remaining.append((max(a, t.end), b))
+                    spans = remaining
+            left, right = max(spans or [(left, right)], key=lambda span: span[1] - span[0])
+            stream.seek(min(len(stream), max(0, round(left * rate))))
+            ref = stream.read(max(1, round(min(8, right - left) * rate)), always_2d=True, dtype="float32")
+            if len(ref) < rate // 4:
+                # The speaker encoder needs a valid window even for an isolated interjection.
+                ref = np.pad(ref, ((0, rate // 4 - len(ref)), (0, 0)))
+            sf.write(folder / f"reference-{i}.wav", ref.mean(axis=1), rate)
 
 
 def synthesize(lines, folder, match):

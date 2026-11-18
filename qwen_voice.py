@@ -24,14 +24,11 @@ def main():
     folder = Path(sys.argv[1])
     model = Qwen3TTSModel.from_pretrained(weights, device_map="cuda:0",
                                          dtype=torch.bfloat16, attn_implementation="sdpa")
-    prompts = {}
     for i, line in enumerate(json.loads((folder / "lines.json").read_text())):
-        speaker = line["speaker"]
-        if speaker not in prompts:
-            ref, rate = sf.read(folder / f"reference-{speaker}.wav", dtype="float32")
-            prompts[speaker] = model.create_voice_clone_prompt(ref_audio=(ref, rate), x_vector_only_mode=True)
+        ref, rate = sf.read(folder / f"reference-{i}.wav", dtype="float32")
+        prompt = model.create_voice_clone_prompt(ref_audio=(ref, rate), x_vector_only_mode=True)
         waveforms, rate = model.generate_voice_clone(text=line["text"], language="English",
-                                                    voice_clone_prompt=prompts[speaker])
+                                                    voice_clone_prompt=prompt)
         sf.write(folder / f"{i}.wav", waveforms[0], rate)
 
 
