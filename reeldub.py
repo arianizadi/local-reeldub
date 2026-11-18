@@ -49,15 +49,14 @@ def recognize(audio, model_size, device, language, native):
     model = WhisperModel(model_size, device=device, compute_type="float16" if device == "cuda" else "int8",
                          local_files_only=True)
     segments, info = model.transcribe(audio, language=language, task="transcribe" if native else "translate", word_timestamps=True,
-                                      condition_on_previous_text=False, vad_filter=True,
-                                      vad_parameters=dict(min_silence_duration_ms=550))
+                                      condition_on_previous_text=False, vad_filter=False)
     result = list(segments)
     print(f"Source language: {info.language}. Found {len(result)} segments.", flush=True)
     drafts = []
     if native and info.language != "en":
         translated, _ = model.transcribe(audio, language=info.language, task="translate",
                                          word_timestamps=True, condition_on_previous_text=False,
-                                         vad_filter=True, vad_parameters=dict(min_silence_duration_ms=550))
+                                         vad_filter=False)
         drafts = list(translated)
     return result, info.language, drafts
 
@@ -87,17 +86,29 @@ def run(args):
             print("Separating original dialogue, music and effects…", flush=True)
             subprocess.run([worker, APP / "separate.py", folder], check=True)
             analysis_audio = folder / "speech.wav"
-        ff("-i", analysis_audio, "-ac", "1", "-ar", "16000", "-f", "f32le", folder / "mono.f32")
-        audio = np.memmap(folder / "mono.f32", dtype="<f4", mode="r")
+        def mono(path, name):
+            pcm = folder / name
+            ff("-i", path, "-ac", "1", "-ar", "16000", "-f", "f32le", pcm)
+            return np.memmap(pcm, dtype="<f4", mode="r")
+
+        audio = mono(source, "mix.f32")
         contextual = args.translation == "context"
         segments, language, drafts = recognize(audio, args.model, args.device, args.language, contextual)
-        if not segments:
+        if not (segments or drafts):
             raise ValueError("No translatable speech detected.")
         gc.collect()
         print("Identifying speakers and timing lines…", flush=True)
-        turns = identify_turns(audio)
+        speech = mono(analysis_audio, "speech.f32") if analysis_audio != source else audio
+        turns = identify_turns(speech)
         lines = []
-        for line in assign_lines(segments, turns):
+        candidates = assign_lines(segments, turns)
+        # Direct translation can hear a vocalization the native pass omitted, anywhere on the timeline.
+        for extra in assign_lines(drafts, turns):
+            overlap = sum(max(0, min(extra["end"], cue["end"]) - max(extra["start"], cue["start"]))
+                          for cue in candidates)
+            if overlap < 0.15 * (extra["end"] - extra["start"]):
+                candidates.append(extra)
+        for line in sorted(candidates, key=lambda item: item["start"]):
             line["start"] = max(0, line["start"], lines[-1]["end"] if lines else 0)
             line["end"] = min(len(audio) / 16000, line["end"])
             if line["end"] > line["start"] and any(c.isalnum() for c in line["text"]):

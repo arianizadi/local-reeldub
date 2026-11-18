@@ -30,9 +30,9 @@ Setup uses an isolated Python 3.12 environment and installs a project-local copy
 | | Studio | Light |
 |---|---|---|
 | Good fit | Linux with a recent NVIDIA GPU. Tested on a 16 GB RTX 4070 Ti SUPER. | Macs, CPU-only computers, and smaller configurations |
-| Translation | Whisper transcribes in the original language. Qwen3-4B translates groups of lines together to retain context. | Whisper translates directly into English. |
+| Translation | Whisper transcribes in the original language. A 4-bit Qwen3-14B translates groups of lines together to retain context. | Whisper translates directly into English. |
 | Voices | Qwen3-TTS samples the original speakers and synthesizes English in their approximate voices. | Kokoro assigns a stock English voice to each detected speaker group. |
-| Background | BandIt v2 separates speech, music, and sound effects. Music and effects are mixed under the dub in stereo. | Stereo center cancellation during speech. Mono recordings lose most ambience during these sections. |
+| Background | BandIt v2 separates speech, music, and sound effects. Music and effects are used continuously under the dub in stereo. | Continuous stereo center cancellation. Mono recordings yield a voice-only dub. |
 | Setup | `./setup.sh --studio` | `./setup.sh --light` |
 
 Automatic setup selects Studio on Linux when the first NVIDIA GPU reports at least 15,000 MiB of total VRAM. Other configurations use Light. Allow about **25 GB of free disk space for a Studio install**, plus room for package caches and each video's temporary PCM audio. Downloads and package caches can increase peak usage. The model stages run sequentially so the GPU can be reused. The GPU profile uses PyTorch CUDA 12.4 wheels and needs a compatible NVIDIA driver. WSL2 needs GPU passthrough for Studio.
@@ -56,10 +56,10 @@ The default translation model is `large-v3`. Select `small`, `medium`, or `large
 ## How the cut is made
 
 1. **Fetch and decode.** yt-dlp fetches the video. The Light environment includes Deno and yt-dlp's JavaScript components for YouTube. FFmpeg reads the first audio track and creates a stereo timeline.
-2. **Find the speech.** Studio uses the estimated dialogue stem for recognition and speaker analysis. Whisper detects the source language. A segmentation model and speaker embeddings group recurring voices within the video.
+2. **Find the speech.** Whisper listens to the full mix, including vocalizations outside ordinary speech. Studio uses the isolated dialogue stem for speaker analysis. Whisper detects the source language. A segmentation model and speaker embeddings group recurring voices within the video.
 3. **Translate in context.** Studio sends the source-language cues, a rough Whisper translation, speaker IDs, and available speaking times to the local translation model. It processes long scripts in batches with neighboring dialogue as context.
 4. **Build the voices.** Studio samples the original utterance for each line, avoids detected overlap where possible, and extends very short references within the same speaker turn. This helps when the same character changes delivery between scenes. Voice samples stay inside the temporary job directory. The Light profile works with assigned preset voices.
-5. **Mix and export.** Each English line starts on the source timeline. Longer lines are sped up with pitch-preserving time compression. During the dubbed lines, Studio uses the estimated music and effects bed. Between lines, ReelDub returns to the original mix. FFmpeg writes H.264 video, AAC audio, and English subtitles to an MP4.
+5. **Mix and export.** Each English line starts on the source timeline. Longer lines are sped up with pitch-preserving time compression. Studio builds one full-length soundtrack from the separated music and effects plus synthesized English. The same mix runs through pauses and the last frame. A missed vocalization may be absent, and speech can leak into the estimated effects stem. FFmpeg writes H.264 video, AAC audio, and English subtitles to an MP4.
 
 ## What to listen for
 
@@ -76,7 +76,7 @@ The easiest material is clear, non-overlapping dialogue. Listen for speaker swap
 
 - Source recognition and direct translation use [faster-whisper](https://github.com/SYSTRAN/faster-whisper) and [Whisper](https://github.com/openai/whisper).
 - Speaker grouping uses [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx), a pyannote segmentation model, and WeSpeaker embeddings.
-- The local contextual translator is [Qwen3-4B-Instruct-2507](https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507). Voice matching uses the Base model's speaker-embedding mode. [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS)
+- The local contextual translator is [Qwen3-14B](https://huggingface.co/Qwen/Qwen3-14B), loaded from the [4-bit checkpoint](https://huggingface.co/unsloth/Qwen3-14B-bnb-4bit). Voice matching uses the Base model's speaker-embedding mode. [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS)
 - Preset voices come from [Kokoro](https://huggingface.co/hexgrad/Kokoro-82M) through [kokoro-onnx](https://github.com/thewh1teagle/kokoro-onnx).
 - Dialogue, music, and effects separation uses the multilingual [BandIt v2 checkpoint](https://zenodo.org/records/12701995) by Karn Watcharasupat and collaborators, through [bandit-infer](https://github.com/openmirlab/bandit-infer). Its published weights carry CC BY-SA 4.0.
 - Downloads and rendering use [yt-dlp](https://github.com/yt-dlp/yt-dlp) and [FFmpeg](https://ffmpeg.org/).

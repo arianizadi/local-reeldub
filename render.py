@@ -1,4 +1,3 @@
-from contextlib import nullcontext
 import subprocess
 
 import numpy as np
@@ -43,10 +42,11 @@ def fit_voice(path, slot):
 
 def mix(lines, source, folder):
     # Source, mix and timeline are disk-backed. Only a line or a short audio block is mixed in RAM.
-    with sf.SoundFile(source) as track:
+    stems = folder / "background.wav"
+    separated = stems.exists()
+    with sf.SoundFile(stems if separated else source) as track:
         n = len(track)
         voice = np.memmap(folder / "voices.f32", dtype="float32", mode="w+", shape=n)
-        mask = np.memmap(folder / "mask.f32", dtype="float32", mode="w+", shape=n)
         for i, line in enumerate(lines):
             next_start = lines[i + 1]["start"] if i + 1 < len(lines) else n / RATE
             slot = min(line["end"] + 0.20, next_start, n / RATE) - line["start"]
@@ -54,28 +54,16 @@ def mix(lines, source, folder):
             start = round(line["start"] * RATE)
             end = min(start + len(wave), n)
             voice[start:end] = wave[:end-start]
-            left = max(0, start - round(0.12 * RATE))
-            right = min(n, round((line["end"] + 0.12) * RATE))
-            envelope = np.ones(right - left, dtype="float32")
-            fade = min(round(RATE * 0.035), len(envelope) // 2)
-            if fade:
-                envelope[:fade] = np.linspace(0, 1, fade)
-                envelope[-fade:] = envelope[:fade][::-1]
-            np.maximum(mask[left:right], envelope, out=mask[left:right])
             line["spoken_end"] = end / RATE
-        stems = folder / "background.wav"
-        background = sf.SoundFile(stems) if stems.exists() else nullcontext(None)
-        with background as ambience, sf.SoundFile(folder / "mix.wav", "w", samplerate=RATE, channels=2, subtype="PCM_16", format="RF64") as out:
+        with sf.SoundFile(folder / "mix.wav", "w", samplerate=RATE, channels=2,
+                          subtype="PCM_16", format="RF64") as out:
             for block in track.blocks(blocksize=RATE, dtype="float32", always_2d=True):
                 stop = track.tell()
                 span = slice(stop - len(block), stop)
-                amount = mask[span, None]
-                if ambience is None:
-                    replacement = (block[:, :1] - block[:, 1:2]) * 0.30
-                else:
-                    replacement = ambience.read(len(block), dtype="float32", always_2d=True)
-                bed = block * (1 - amount) + replacement * amount
-                out.write(np.clip(bed + voice[span, None], -0.98, 0.98))
+                # The bed spans the full video. Gaps and endings never switch back to the original mix.
+                bed = block if separated else (block[:, :1] - block[:, 1:2]) * 0.30
+                stereo = np.broadcast_to(bed + voice[span, None], block.shape)
+                out.write(np.clip(stereo, -0.98, 0.98))
 
 
 def clock(seconds):

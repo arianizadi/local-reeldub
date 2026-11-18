@@ -46,7 +46,14 @@ def assign_lines(segments, turns):
             continue
         for speaker, run in groupby(words, key=lambda w: speaker_at(w.start, w.end, turns)):
             group = list(run)
-            lines.append(dict(start=group[0].start, end=group[-1].end,
+            start = group[0].start
+            first_end = group[0].end
+            if first_end - start > 1:
+                # Whisper may assign preceding silence to the first word after a long pause.
+                nearby = [t.start for t in turns if start < t.start <= first_end + 0.15]
+                if nearby:
+                    start = min(max(nearby), first_end)
+            lines.append(dict(start=start, end=group[-1].end,
                               text="".join(w.word for w in group).strip(), speaker=speaker))
     return lines
 

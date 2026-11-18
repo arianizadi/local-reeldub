@@ -24,6 +24,7 @@ if ! command -v ffmpeg >/dev/null || ! command -v ffprobe >/dev/null; then
   fi
 fi
 export PATH="$PWD/.tools:$PATH"
+export UV_LINK_MODE="${UV_LINK_MODE:-copy}"
 if ! command -v uv >/dev/null; then
   mkdir -p .tools
   curl -fsSL --retry 3 https://astral.sh/uv/install.sh -o .tools/install-uv.sh
@@ -45,7 +46,7 @@ if [[ "$qwen" == 1 ]]; then
   fi
   uv venv --allow-existing --python 3.12 .qwen-venv
   uv pip install --python .qwen-venv/bin/python --index-url https://download.pytorch.org/whl/cu124 'torch==2.6.0' 'torchaudio==2.6.0'
-  uv pip install --python .qwen-venv/bin/python 'qwen-tts==0.1.1' 'bandit-infer @ git+https://github.com/openmirlab/bandit-infer.git@96ea0ec12aeb444f379c2f5145fb8ee58b58cf19'
+  uv pip install --python .qwen-venv/bin/python 'qwen-tts==0.1.1' 'bitsandbytes==0.46.1' 'bandit-infer @ git+https://github.com/openmirlab/bandit-infer.git@96ea0ec12aeb444f379c2f5145fb8ee58b58cf19'
   .qwen-venv/bin/python qwen_voice.py --prepare
   .qwen-venv/bin/python translate_lines.py --prepare
   .qwen-venv/bin/python separate.py --prepare
