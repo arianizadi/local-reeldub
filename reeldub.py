@@ -107,6 +107,7 @@ def run(args):
             overlap = sum(max(0, min(extra["end"], cue["end"]) - max(extra["start"], cue["start"]))
                           for cue in candidates)
             if overlap < 0.15 * (extra["end"] - extra["start"]):
+                extra["english"] = True
                 candidates.append(extra)
         for line in sorted(candidates, key=lambda item: item["start"]):
             line["start"] = max(0, line["start"], lines[-1]["end"] if lines else 0)
@@ -119,11 +120,8 @@ def run(args):
         if contextual and language != "en":
             print("Translating the source transcript in context…", flush=True)
             script = folder / "lines.json"
-            for line in lines:
-                line["draft"] = " ".join(w.word.strip() for seg in drafts for w in (seg.words or [])
-                                         if line["start"] <= (w.start + w.end) / 2 < line["end"])
             script.write_text(json.dumps(lines, ensure_ascii=False))
-            subprocess.run([worker, APP / "translate_lines.py", folder], check=True)
+            subprocess.run([worker, APP / "translate_lines.py", folder, language], check=True)
             lines = json.loads(script.read_text())
         if match:
             write_references(lines, turns, analysis_audio, folder)
