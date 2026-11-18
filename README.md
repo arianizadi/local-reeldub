@@ -1,3 +1,5 @@
+<img src="ios/Art/reeldub-mark.svg" width="72" height="72" alt="ReelDub app icon">
+
 # ReelDub
 
 Paste a YouTube video or Instagram Reel link and get an English-dubbed MP4. ReelDub downloads the video, identifies speakers, translates what they say, voices each line, and places it on the original timeline. The MP4 includes switchable English captions.
