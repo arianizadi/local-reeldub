@@ -17,4 +17,3 @@ else
   exit 2
 fi
 echo "ReelDub runs on localhost port ${REELDUB_PORT:-8300}. Your connection key is in .env."
-

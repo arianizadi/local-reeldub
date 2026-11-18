@@ -213,4 +213,3 @@ def report(job_id: str, issue: Issue, user=Depends(owner)):
     db().jobs.update_one({"_id": job_id, "owner": user}, {"$set": {
         "report": {"category": issue.category, "note": note, "submitted": now(), "status": "open"}}})
     return {"reported": True}
-

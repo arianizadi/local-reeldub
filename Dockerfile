@@ -17,4 +17,3 @@ USER reel
 ENV HOME=/home/reel UV_LINK_MODE=copy
 RUN mkdir -p /app/.qwen-venv && uv sync --frozen --python /usr/local/bin/python
 CMD ["/bin/sh","-ec","model=${REELDUB_MODEL:-small}; .venv/bin/python assets.py \"$model\"; echo \"$model\" > .venv/reeldub-model; exec python -m server.worker"]
-

@@ -134,4 +134,3 @@ if __name__ == "__main__":
     finally:
         for child in children:
             child.terminate()
-

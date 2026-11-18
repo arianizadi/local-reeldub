@@ -58,4 +58,3 @@ struct SharePanel: View {
         }.padding(24)
     }
 }
-

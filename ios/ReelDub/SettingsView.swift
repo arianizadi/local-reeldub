@@ -76,4 +76,3 @@ struct SettingsView: View {
         do { try await action(); dismiss() } catch { message = error.localizedDescription }
     }
 }
-

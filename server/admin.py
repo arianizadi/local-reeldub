@@ -21,4 +21,3 @@ elif args.command == "accounts":
 else:
     db().accounts.update_one({"_id": "apple:" + args.apple_subject}, {"$set": {"tier": args.tier}}, upsert=True)
     print("Account tier updated.")
-

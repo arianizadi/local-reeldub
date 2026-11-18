@@ -65,7 +65,7 @@ For private testing, archive the Release scheme for a generic iOS device. In Xco
 
 ## Verification
 
-Run server integration tests in a new disposable Compose project. They require an empty test database and a running API. The test exercises concurrent quotas, priority, owner isolation, idempotency, reports, and recovery of an expired lease.
+Run server integration tests in a new disposable Compose project. They require an empty test database and a running API. The test exercises concurrent quotas, priority, owner isolation, idempotency, reports, recovery of an expired lease, and Apple audience, issuer, expiration and nonce checks against a local test signing key.
 
 ```bash
 REELDUB_PORT=18300 docker compose -p reeldub-qa up -d --build api

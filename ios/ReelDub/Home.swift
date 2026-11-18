@@ -114,4 +114,3 @@ struct JobRow: View {
         }.padding(12).background(Ink.card, in: RoundedRectangle(cornerRadius: 16))
     }
 }
-

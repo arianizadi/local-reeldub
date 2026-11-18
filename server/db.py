@@ -23,4 +23,3 @@ def setup_indexes():
     store.jobs.create_index([("state", 1), ("priority", -1), ("created", 1)])
     for name in ("sessions", "challenges"):
         store[name].create_index("expires", expireAfterSeconds=0)
-

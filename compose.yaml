@@ -50,4 +50,3 @@ networks:
 volumes:
   mongo-data: {}
   model-cache: {}
-

@@ -3,4 +3,3 @@ db.getSiblingDB("reeldub").createUser({
   pwd: process.env.REELDUB_DB_PASSWORD,
   roles: [{ role: "readWrite", db: "reeldub" }]
 });
-

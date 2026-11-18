@@ -6,4 +6,3 @@ services:
       - studio-env:/app/.qwen-venv
 volumes:
   studio-env: {}
-

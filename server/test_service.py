@@ -60,3 +60,36 @@ class QueueIntegration(unittest.TestCase):
         self.assertIsNone(call(admin, "/v1/me")[1]["limit"])
         self.assertEqual(call(admin, "/v1/jobs", {**body,"url":"file:///private/file"})[0], 422)
 
+    def test_verified_apple_session_is_single_use(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        import jwt
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        from fastapi import HTTPException
+        from .api import AppleLogin, apple, apple_keys
+
+        private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        challenge = secrets.token_urlsafe(32)
+        nonce = hash_value(challenge)
+        stamp = now()
+        db().challenges.insert_one({"_id": nonce, "expires": stamp + timedelta(minutes=2)})
+        subject = str(uuid4())
+        claims = dict(iss="https://appleid.apple.com", sub=subject, aud="reeldub.tests",
+                      exp=stamp + timedelta(minutes=2), iat=stamp, nonce=nonce)
+
+        def exchange(values):
+            identity = jwt.encode(values, private_key, algorithm="RS256")
+            return apple(AppleLogin(identity_token=identity, challenge=challenge))
+
+        with patch.dict(os.environ, {"APPLE_CLIENT_ID": "reeldub.tests"}), patch.object(
+                apple_keys, "get_signing_key_from_jwt", return_value=SimpleNamespace(key=private_key.public_key())):
+            for invalid in ({"aud": "another-app"}, {"nonce": "unmatched"}, {"iss": "another-issuer"},
+                            {"exp": stamp - timedelta(minutes=1)}):
+                with self.assertRaises(HTTPException) as rejected:
+                    exchange({**claims, **invalid})
+                self.assertEqual(rejected.exception.status_code, 401)
+            token = exchange(claims)["token"]
+            self.assertEqual(db().sessions.find_one({"_id": hash_value(token)})["owner"], "apple:" + subject)
+            with self.assertRaises(HTTPException) as replay:
+                exchange(claims)
+            self.assertEqual(replay.exception.status_code, 401)
