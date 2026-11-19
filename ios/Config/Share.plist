@@ -46,5 +46,7 @@
 	<string>Connect to your own ReelDub server on your network.</string>
 	<key>ReelDubKeychainGroup</key>
 	<string>$(AppIdentifierPrefix)com.arianizadi.reeldub.shared</string>
+	<key>ReelDubHostedURL</key>
+	<string>https://$(REELDUB_HOSTED_HOST)</string>
 </dict>
 </plist>

@@ -1,3 +1,4 @@
+import json
 import multiprocessing
 import os
 from pathlib import Path
@@ -63,6 +64,8 @@ def process(job):
             log = Path(temp) / "render.log"
             env = {k: v for k, v in os.environ.items() if k not in
                    ("MONGO_URI", "SELF_HOST_KEY", "MONGO_PASSWORD", "ADMIN_APPLE_SUB")}
+            metadata = Path(temp) / "metadata.json"
+            env["REELDUB_METADATA_FILE"] = str(metadata)
             env.update(PYTHONUNBUFFERED="1", REELDUB_SERVICE_LIMITS="1", HF_HUB_OFFLINE="1")
             engine = os.getenv("REELDUB_ENGINE", str(Path(__file__).resolve().parents[1] / "dub"))
             with log.open("w") as writer, log.open() as reader:
@@ -89,11 +92,17 @@ def process(job):
                 raise RuntimeError("Rendered video exceeds the 500 MB service limit.")
             seconds = float(subprocess.check_output(["ffprobe", "-v", "error", "-show_entries", "format=duration",
                             "-of", "csv=p=0", dest], text=True).strip())
+            details = json.loads(metadata.read_text()) if metadata.is_file() else {}
+            preview = subprocess.run(["ffmpeg", "-nostdin", "-loglevel", "error", "-ss", str(min(0.65, seconds / 3)),
+                                      "-i", dest, "-frames:v", "1", "-vf", "scale=320:-2",
+                                      "-f", "image2pipe", "-c:v", "mjpeg", "pipe:1"], capture_output=True, timeout=30)
+            if preview.returncode == 0 and 0 < len(preview.stdout) < 512_000:
+                details.update(poster=preview.stdout, has_poster=True)
             bucket = gridfs.GridFS(db())
             with dest.open("rb") as video:
                 artifact = bucket.put(video, filename=job["_id"] + ".mp4", lease=job["lease"], job=job["_id"])
             saved = jobs.update_one(fence, {"$set": {"state": "done", "stage": "Ready", "finished": now(),
-                                    "artifact": artifact, "media_seconds": seconds}, "$unset": {"lease": "", "lease_end": ""}})
+                                    "artifact": artifact, "media_seconds": seconds, **details}, "$unset": {"lease": "", "lease_end": ""}})
             if not saved.modified_count:
                 bucket.delete(artifact)
     except Exception as exc:

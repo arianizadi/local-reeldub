@@ -81,15 +81,45 @@ class QueueIntegration(unittest.TestCase):
             identity = jwt.encode(values, private_key, algorithm="RS256")
             return apple(AppleLogin(identity_token=identity, challenge=challenge))
 
-        with patch.dict(os.environ, {"APPLE_CLIENT_ID": "reeldub.tests"}), patch.object(
+        with patch.dict(os.environ, {"APPLE_CLIENT_ID": "reeldub.tests", "ADMIN_APPLE_EMAIL": "owner@example.org"}), patch.object(
                 apple_keys, "get_signing_key_from_jwt", return_value=SimpleNamespace(key=private_key.public_key())):
             for invalid in ({"aud": "another-app"}, {"nonce": "unmatched"}, {"iss": "another-issuer"},
                             {"exp": stamp - timedelta(minutes=1)}):
                 with self.assertRaises(HTTPException) as rejected:
                     exchange({**claims, **invalid})
                 self.assertEqual(rejected.exception.status_code, 401)
-            token = exchange(claims)["token"]
+            token = exchange({**claims, "email": "owner@example.org", "email_verified": "false"})["token"]
+            self.assertNotEqual(db().accounts.find_one({"_id": "apple:" + subject}).get("tier"), "admin")
             self.assertEqual(db().sessions.find_one({"_id": hash_value(token)})["owner"], "apple:" + subject)
             with self.assertRaises(HTTPException) as replay:
                 exchange(claims)
             self.assertEqual(replay.exception.status_code, 401)
+            db().challenges.insert_one({"_id": nonce, "expires": stamp + timedelta(minutes=2)})
+            exchange({**claims, "email": "OWNER@example.org", "email_verified": True})
+            self.assertEqual(db().accounts.find_one({"_id": "apple:" + subject})["tier"], "admin")
+
+    def test_video_tickets_and_ranges(self):
+        import gridfs
+        token = secrets.token_urlsafe(36)
+        owner = "apple:" + str(uuid4())
+        job = str(uuid4())
+        data = b"fourteen bytes"
+        artifact = gridfs.GridFS(db()).put(data, filename=job)
+        db().jobs.insert_one({"_id": job, "owner": owner, "state": "done", "artifact": artifact})
+        db().sessions.insert_one({"_id": hash_value(token), "owner": owner, "expires": now() + timedelta(minutes=2)})
+        base = "http://127.0.0.1:8300/v1/"
+        req = Request(base + "jobs/" + job + "/playback", data=b"", headers={"Authorization": "Bearer " + token})
+        with urlopen(req) as response:
+            ticket = json.load(response)["ticket"]
+        url = base + "play/" + job + "/" + ticket
+        for r, expected in (("bytes=0-3", data[:4]), ("bytes=-3", data[-3:]), ("bytes=5-", data[5:])):
+            with urlopen(Request(url, headers={"Range": r})) as response:
+                self.assertEqual(response.status, 206)
+                self.assertEqual(response.read(), expected)
+        with urlopen(Request(url, method="HEAD")) as response:
+            self.assertEqual(response.headers["Content-Length"], str(len(data)))
+        for target, headers, code in ((url, {"Range":"bytes=99-"}, 416), (url + "x", {}, 404),
+                                      (base + "play/other/" + ticket, {}, 404)):
+            with self.assertRaises(HTTPError) as err:
+                urlopen(Request(target, headers=headers))
+            self.assertEqual(err.exception.code, code)

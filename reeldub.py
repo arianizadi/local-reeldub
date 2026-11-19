@@ -28,6 +28,9 @@ def input_video(value, folder):
             raise ValueError("Paste a link to a single video.")
         print("Downloading video…", flush=True)
         limits = ["--max-filesize", "250M", "--socket-timeout", "15", "--retries", "2"] if os.getenv("REELDUB_SERVICE_LIMITS") else []
+        metadata = os.getenv("REELDUB_METADATA_FILE")
+        if metadata:
+            limits.append("--write-info-json")
         result = subprocess.run([
             "yt-dlp", *limits, "--ignore-config", "--no-playlist", "--playlist-end", "1", "--no-progress",
             "--match-filter", "!is_live", "--restrict-filenames",
@@ -36,7 +39,16 @@ def input_video(value, folder):
         files = result.stdout.strip().splitlines()
         if not files:
             raise ValueError("The link did not return a downloadable video.")
-        return Path(files[-1])
+        media = Path(files[-1])
+        if metadata:
+            info_path = media.with_suffix(".info.json")
+            if info_path.is_file():
+                info = json.loads(info_path.read_text())
+                title = (info.get("description") or info.get("title") or "").splitlines()
+                details = {"title": title[0][:140] if title else None,
+                           "author": (info.get("uploader") or info.get("channel") or "")[:80]}
+                Path(metadata).write_text(json.dumps(details))
+        return media
     path = Path(value).expanduser().resolve()
     if not path.is_file():
         raise ValueError(f"Video file does not exist: {path}")

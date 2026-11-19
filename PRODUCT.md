@@ -6,7 +6,7 @@ ReelDub turns an Instagram share into a playable English MP4. The iOS app handle
 
 1. Install Docker with the Compose v2 plugin. Run `./start-local.sh` from the repository. On Linux with an NVIDIA GPU, working Docker GPU passthrough and sufficient disk space, run `./start-local.sh --studio` for voice matching and dialogue/music/effects separation. The CPU service defaults to the small Whisper model. Studio installs large-v3 and the contextual translation and synthesis models on first boot.
 2. Wait for `curl -fsS http://127.0.0.1:8300/health` to return ready. This probes the API and database. `docker compose logs -f worker` shows model preparation and any worker errors. New submissions can queue during setup.
-3. Open ReelDub's **Server and account**. The simulator can reach the Mac at `http://127.0.0.1:8300`. For a phone, supply an HTTPS origin with a certificate the phone trusts. With a private VPN, route the phone to the private HTTPS reverse proxy and forward only the API to port 8300. The loopback address on a physical iPhone points to the phone itself.
+3. Choose **Use my own server** on the welcome screen or in Account. The simulator can reach the Mac at `http://127.0.0.1:8300`. For a phone, supply an HTTPS origin with a certificate the phone trusts. With a private VPN, route the phone to the private HTTPS reverse proxy and forward only the API to port 8300. The loopback address on a physical iPhone points to the phone itself.
 4. Use Sign in with Apple or the installation's private connection key. In Instagram choose **Share → ReelDub → Translate to English**. If ReelDub is hidden, look under **More**. Reopen ReelDub to follow the job. The Library holds the latest 100 jobs for the current account.
 
 The setup script creates three random secrets in a mode-600 `.env`. Preserve this file with the database volume. The operator key represents a single unlimited account with a shared history. Keep it with the operator. Other users can connect with Apple. `REELDUB_PORT` changes the local API port. The service downloads public media and initial model weights over the network. All speech recognition, translation, speaker matching and synthesis run on the worker.
@@ -23,14 +23,14 @@ Quotas reset at midnight UTC. Each submission gets a client-generated request ID
 
 The library shows how many jobs are ahead and how long the submitted job has waited. Once a worker claims it, the app shows the stage and elapsed processing time. Completed jobs retain processing time, queue time and media length. They may differ greatly because clip complexity, GPU, and model configuration affect render speed.
 
-A verified Apple account starts on Free. Set `APPLE_CLIENT_ID` to the main app bundle ID and restart the API if you use your own app identity. To grant unlimited beta access, have the tester sign in once, confirm the Apple subject for that person, then run:
+The distributed app opens on Continue with Apple and connects to the hosted origin configured by REELDUB_HOSTED_HOST in ios/project.yml. A verified Apple account starts on Free. Set `APPLE_CLIENT_ID` to the main app bundle ID and restart the API if you use your own app identity. To grant unlimited beta access, have the tester sign in once, confirm the Apple subject for that person, then run:
 
 ```bash
 docker compose exec api python -m server.admin accounts
 docker compose exec api python -m server.admin account VERIFIED_APPLE_SUBJECT admin
 ```
 
-Use `paid` to assign priority access manually. Billing is deferred. For an installation managed through environment configuration, `ADMIN_APPLE_SUB` can identify the verified owner. The installation key is also available for single-user testing immediately.
+Use `paid` to assign priority access manually. Billing is deferred. For an installation managed through environment configuration, `ADMIN_APPLE_SUB` can identify the verified owner. The hosted service accepts Apple sessions. An operator may set ADMIN_APPLE_EMAIL privately to recognize a verified email claim and persist its Apple subject as admin. Hide My Email or a prior grant without an email claim requires assigning the verified subject manually. The installation key is available on the self-host API.
 
 ## Reports and retained data
 
@@ -56,6 +56,12 @@ WORKER_PROCESSES=2 docker compose up -d worker
 Every worker and API instance must connect to the same `reeldub` database. To use an existing MongoDB installation, provision a dedicated database user with readWrite on that database. Set `REELDUB_MONGO_URI` in the local environments to its private connection string, using TLS between hosts. Avoid sharing root credentials. After generating the local secrets, run `docker compose up -d --no-deps --build api worker` to use the external database alone. On additional GPU hosts with the same URI use `docker compose -f compose.yaml -f compose.gpu.yaml up -d --no-deps --build worker`. Each node needs its own model cache. Shared GridFS lets any API replica serve any completed job.
 
 The private Compose configuration publishes the API on loopback. MongoDB has a private container network and an app-specific credential. Bearer sessions expire after 30 days. The server verifies Apple tokens and a fresh, single-use nonce, stores session-token hashes, and checks job ownership for progress, download and reporting. The iOS app and share extension keep the connection in a shared device-only Keychain group. The service accepts individual Instagram Reel URLs, constrains source length to ten minutes and source size to 250 MiB, and applies a 30-minute render timeout and 500 MiB output limit. For public hosting, add ingress rate/size limits, worker egress and resource controls, storage retention, observability, backups and tested restore procedures. A managed cluster, shopper billing, automatic capacity scaling, and lip movement synthesis are future work.
+
+## Hosted endpoint
+
+For the hosted deployment, add `compose.hosted.yaml` to the base Compose file and start `hosted-api ingress`. The ingress listens on loopback port 8301 by default. Point your HTTPS tunnel at this listener on the origin host. The hosted API shares the job database, disables the installation master key, rate-limits sign-in and enforces a request body limit. Keep the origin private and only trust the Cloudflare-supplied client IP through that tunnel. Source repositories for forks can override the hosted hostname in the Xcode project settings before building.
+
+The player requests an owner-authorized, expiring playback URL and streams HTTP byte ranges. The share action downloads the MP4 separately. New jobs keep a small still image from the rendered video and available source title/author; older jobs can display submission dates. Reports and poster frames require the owning account.
 
 ## iOS builds and private TestFlight
 

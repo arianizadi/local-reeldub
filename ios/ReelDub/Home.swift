@@ -1,116 +1,173 @@
 import SwiftUI
 
-enum Ink {
-    static let plum = Color(red: 0.23, green: 0.14, blue: 0.25)
-    static let berry = Color(red: 0.53, green: 0.18, blue: 0.35)
-    static let linen = Color(uiColor: UIColor { $0.userInterfaceStyle == .dark ? .systemBackground : UIColor(red: 0.98, green: 0.97, blue: 0.95, alpha: 1) })
-    static let card = Color(uiColor: .secondarySystemGroupedBackground)
-}
 struct Home: View {
-    @Bindable var studio: Studio
+    let studio: Studio
     @State private var settings = false
     @State private var url = ""
-    @State private var message: String?
-    @State private var selection = 0
+    @State private var issue: String?
     @State private var detail: Job?
     @Environment(\.scenePhase) private var phase
-    @Environment(\.accessibilityReduceMotion) private var reduced
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dynamicTypeSize) private var type
+    @FocusState private var editing: Bool
+    private var working: [Job] { studio.jobs.filter { ["running", "queued"].contains($0.state) } }
+    private var library: [Job] { studio.jobs.filter { !["running", "queued"].contains($0.state) } }
 
     var body: some View {
-        TabView(selection: $selection) {
-            screen(library: false).tabItem { Label("Studio", image: "intake") }.tag(0)
-            screen(library: true).tabItem { Label("Library", image: "library") }.tag(1)
-        }.tint(Ink.berry)
-        .sheet(isPresented: $settings) { SettingsView(studio: studio) }
-        .sheet(item: $detail) { job in JobView(studio: studio, initial: job) }
-        .alert("ReelDub", isPresented: Binding(get: { message != nil }, set: { if !$0 { message = nil } })) {
-            Button("OK") { message = nil }
-        } message: { Text(message ?? "") }
-        .task(id: "\(phase == .active)-\(studio.connection?.base.absoluteString ?? "")") {
-            guard phase == .active, studio.api != nil else { return }
-            while !Task.isCancelled {
-                await studio.refresh()
-                try? await Task.sleep(for: .seconds(studio.jobs.contains { ["queued", "running"].contains($0.state) } ? 2 : 8))
-            }
-        }
-    }
-    private func screen(library: Bool) -> some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: 22) {
+                VStack(alignment: .leading, spacing: 28) {
                     HStack {
-                        Image("brand-mark").resizable().frame(width: 35, height: 35).clipShape(RoundedRectangle(cornerRadius: 10))
-                        Text("ReelDub").font(.system(.title2, design: .serif, weight: .bold))
+                        HStack(spacing: 7) {
+                            Image("brand-mark").resizable().frame(width: 29, height: 29).clipShape(RoundedRectangle(cornerRadius: 8))
+                            Text("ReelDub").font(.headline)
+                        }.accessibilityElement(children: .combine)
                         Spacer()
-                        Button { settings = true } label: { Image(systemName: "slider.horizontal.3").frame(width: 44, height: 44).background(Ink.card, in: Circle()) }
-                            .accessibilityLabel("Server and account")
+                        Button { settings = true } label: {
+                            Image(systemName: "person.crop.circle").font(.title2).frame(width: 44, height: 44)
+                        }.accessibilityLabel("Account")
                     }
-                    if !library { intake }
-                    HStack(alignment: .lastTextBaseline) {
-                        Text(library ? "Your library" : "Recent dubs").font(.system(.title, design: .serif, weight: .semibold))
-                        Spacer()
-                        if let a = studio.account { Text(a.limit.map { "\(a.used)/\($0) today" } ?? "Admin").font(.caption.bold()).foregroundStyle(.secondary) }
+                    VStack(alignment: .leading, spacing: 13) {
+                        Text("Dubs").font(.system(.largeTitle, design: .serif, weight: .semibold))
+                            .accessibilityAddTraits(.isHeader)
+                        HStack(spacing: 8) {
+                            Image(systemName: "link").foregroundStyle(.secondary).accessibilityHidden(true)
+                            TextField("Instagram Reel link", text: $url)
+                                .keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
+                                .focused($editing).onSubmit { Task { await submit() } }
+                            PasteButton(payloadType: String.self) { values in
+                                if let value = values.first { url = value; issue = nil }
+                            }.labelStyle(.iconOnly).tint(.secondary).frame(minWidth: 44, minHeight: 44)
+                        }.padding(.horizontal, 12).frame(minHeight: 53)
+                            .background(Palette.surface, in: RoundedRectangle(cornerRadius: 14))
+                        Button { Task { await submit() } } label: {
+                            HStack {
+                                Text(studio.sending ? "Queuing Reel…" : "Dub in English").font(.headline)
+                                Spacer()
+                                if studio.sending { ProgressView() } else { Image(systemName: "arrow.up.right") }
+                            }.padding(.horizontal, 17).frame(minHeight: 51)
+                                .foregroundStyle(Palette.ink).background(Palette.ember, in: RoundedRectangle(cornerRadius: 14))
+                        }.disabled(studio.sending)
+                        if let issue { Text(issue).font(.footnote).foregroundStyle(.red).accessibilityLabel("Reel link error. " + issue) }
                     }
-                    if let failure = studio.failure { Text(failure).font(.footnote).foregroundStyle(.red) }
-                    if studio.jobs.isEmpty {
-                        HStack(spacing: 14) {
-                            Image("library").foregroundStyle(Ink.berry).frame(width: 40, height: 44)
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text("No dubs yet").font(.headline)
-                                Text("Share a Reel from Instagram or paste its link here.").font(.subheadline).foregroundStyle(.secondary)
+                    if let error = studio.failure { Text(error).font(.footnote).foregroundStyle(.red) }
+                    if !working.isEmpty {
+                        VStack(alignment: .leading, spacing: 12) {
+                            sectionTitle("In progress")
+                            ForEach(working) { job in
+                                Button { detail = job } label: { ProgressRow(job: job) }
+                                    .buttonStyle(.plain).accessibilityIdentifier("job-" + job.state)
                             }
-                        }.padding(18).frame(maxWidth: .infinity, alignment: .leading).background(Ink.card, in: RoundedRectangle(cornerRadius: 18))
-                    } else {
-                        LazyVStack(spacing: 9) {
-                            ForEach(Array(library ? studio.jobs[...] : studio.jobs.prefix(5))) { job in
-                                Button { detail = job } label: { JobRow(job: job) }.buttonStyle(.plain)
-                                    .accessibilityIdentifier("job-" + job.state)
-                            }
-                        }.animation(reduced ? nil : .smooth(duration: 0.28), value: studio.jobs.map(\.id))
+                        }
                     }
-                }.padding(20)
-            }.background(Ink.linen).refreshable { await studio.refresh() }
-        }
+                    VStack(alignment: .leading, spacing: 15) {
+                        sectionTitle("Library")
+                        if library.isEmpty {
+                            VStack(alignment: .leading, spacing: 9) {
+                                Image(systemName: "rectangle.stack").font(.title2)
+                                Text("Your dubs will appear here.").font(.headline)
+                                Text("In Instagram, tap Share → ReelDub, then confirm. You can also paste a Reel link above.")
+                                    .font(.subheadline).foregroundStyle(.secondary)
+                            }.frame(maxWidth: .infinity, alignment: .leading).padding(18)
+                                .background(Palette.surface, in: RoundedRectangle(cornerRadius: 16))
+                        } else {
+                            LazyVGrid(columns: [GridItem(.adaptive(minimum: type.isAccessibilitySize ? 260 : 147), spacing: 15)], alignment: .leading, spacing: 21) {
+                                ForEach(library) { job in
+                                    Button { detail = job } label: { DubTile(job: job, api: studio.api) }
+                                        .buttonStyle(.plain).accessibilityIdentifier("job-" + job.state)
+                                }
+                            }
+                        }
+                    }
+                }.frame(maxWidth: 760).padding(.horizontal, 21).padding(.vertical, 8)
+                    .frame(maxWidth: .infinity)
+            }.background(Palette.canvas).scrollDismissesKeyboard(.interactively)
+                .refreshable { await studio.refresh() }
+                .navigationDestination(item: $detail) { job in JobView(studio: studio, initial: job) }
+        }.sheet(isPresented: $settings) { SettingsView(studio: studio) }
+            .task(id: "\(phase == .active)-\(studio.connection?.base.absoluteString ?? "")-\(studio.connection?.token.hashValue ?? 0)") {
+                guard phase == .active else { return }
+                while !Task.isCancelled, studio.api != nil {
+                    await studio.refresh()
+                    try? await Task.sleep(for: .seconds(working.isEmpty ? 8 : 2))
+                }
+            }.animation(reduceMotion ? nil : .easeOut(duration: 0.23), value: working.map(\.id))
     }
-    private var intake: some View {
-        VStack(alignment: .leading, spacing: 15) {
-            ZStack(alignment: .bottomLeading) {
-                Color.clear.overlay { Image("sound-ribbon").resizable().scaledToFill().accessibilityHidden(true) }.clipped()
-                LinearGradient(colors: [.black.opacity(0.46), .clear], startPoint: .leading, endPoint: .trailing)
-                Text("Dub a Reel").font(.system(.largeTitle, design: .serif, weight: .bold)).foregroundStyle(.white).padding(18)
-            }.frame(height: 148).clipped().accessibilityElement(children: .combine)
-            VStack(spacing: 12) {
-                HStack {
-                    Image(systemName: "link").foregroundStyle(Ink.berry)
-                    TextField("Instagram Reel link", text: $url).textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
-                    PasteButton(payloadType: String.self) { values in if let value = values.first { url = value } }.labelStyle(.iconOnly).scaleEffect(0.82)
-                }.padding(.horizontal, 12).frame(minHeight: 46).background(Ink.linen, in: RoundedRectangle(cornerRadius: 12))
-                Button {
-                    if studio.api == nil { settings = true; return }
-                    Task { do { try await studio.submit(url); url = "" } catch { message = error.localizedDescription } }
-                } label: {
-                    HStack { if studio.sending { ProgressView().tint(.white) }
-                        Text(studio.api == nil ? "Connect a server" : "Translate to English").font(.headline)
-                        Spacer(); Image(systemName: "arrow.right")
-                    }.padding(.horizontal, 16).frame(minHeight: 48).foregroundStyle(.white).background(Ink.plum, in: RoundedRectangle(cornerRadius: 13))
-                }.disabled(studio.sending || (studio.api != nil && url.isEmpty))
-            }.padding([.horizontal, .bottom], 15)
-        }.background(Ink.card, in: RoundedRectangle(cornerRadius: 23)).clipShape(RoundedRectangle(cornerRadius: 23))
+
+    private func sectionTitle(_ title: String) -> some View {
+        Text(title).font(.title2.weight(.semibold)).accessibilityAddTraits(.isHeader)
+    }
+    private func submit() async {
+        guard !studio.sending else { return }
+        let link = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard Job.isReel(link) else {
+            issue = link.isEmpty ? "Paste an Instagram Reel link to get started." : "That link doesn’t point to an Instagram Reel."
+            editing = true
+            return
+        }
+        editing = false
+        issue = nil
+        do { try await studio.submit(link); url = "" }
+        catch { issue = error.localizedDescription }
     }
 }
-struct JobRow: View {
+
+struct ProgressRow: View {
     let job: Job
     var body: some View {
-        HStack(spacing: 13) {
-            Image(systemName: job.state == "done" ? "play.fill" : job.state == "failed" ? "exclamationmark" : "waveform")
-                .font(.headline).foregroundStyle(Ink.berry).frame(width: 44, height: 52).background(Ink.berry.opacity(0.1), in: RoundedRectangle(cornerRadius: 12))
-            VStack(alignment: .leading, spacing: 5) {
-                Text("Reel · " + job.code).font(.subheadline.bold()).lineLimit(1)
-                TimelineView(.periodic(from: .now, by: 1)) { tick in
-                    Text(job.timing(at: tick.date)).font(.caption).monospacedDigit().foregroundStyle(.secondary)
+        HStack(spacing: 14) {
+            Image(systemName: job.state == "queued" ? "clock" : "waveform")
+                .font(.title3.weight(.medium)).frame(width: 44, height: 46)
+                .foregroundStyle(Palette.ember).background(Palette.ink, in: RoundedRectangle(cornerRadius: 12))
+            VStack(alignment: .leading, spacing: 4) {
+                Text(job.displayTitle).font(.subheadline.weight(.semibold)).lineLimit(1)
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    Text(job.timing(at: context.date)).font(.footnote).monospacedDigit().foregroundStyle(.secondary)
                 }
-            }; Spacer()
-            Text(job.state == "done" ? "Ready" : job.state.capitalized).font(.caption2.bold()).foregroundStyle(job.state == "failed" ? .red : .secondary)
-        }.padding(12).background(Ink.card, in: RoundedRectangle(cornerRadius: 16))
+            }
+            Spacer()
+            Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+        }.padding(13).background(Palette.surface, in: RoundedRectangle(cornerRadius: 15))
+            .accessibilityElement(children: .ignore).accessibilityLabel(job.displayTitle + ", " + job.timing(at: Date()))
+    }
+}
+
+struct Poster: View {
+    let job: Job
+    let api: API?
+    @State private var image: UIImage?
+    var body: some View {
+        ZStack {
+            Color(red: 0.16, green: 0.14, blue: 0.13)
+            if let image { Image(uiImage: image).resizable().scaledToFill() }
+            else { Image(systemName: "film.stack").font(.largeTitle.weight(.light)).foregroundStyle(.white.opacity(0.64)) }
+        }.clipped().accessibilityHidden(true)
+            .task(id: "\(job.id)-\(job.has_poster == true)") {
+                image = nil
+                guard job.has_poster == true, let api else { return }
+                if let bytes = try? await api.data("v1/jobs/\(job.id)/poster"), !Task.isCancelled {
+                    image = UIImage(data: bytes)
+                }
+            }
+    }
+}
+
+struct DubTile: View {
+    let job: Job
+    let api: API?
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Color.clear.aspectRatio(0.78, contentMode: .fit)
+                .overlay { Poster(job: job, api: api) }
+                .overlay(alignment: .bottomLeading) {
+                    HStack(spacing: 5) {
+                        Image(systemName: job.state == "failed" ? "exclamationmark.circle" : "play.fill")
+                        if let duration = job.media_seconds { Text(Job.duration(Int(duration.rounded()))) }
+                    }.font(.caption.weight(.bold)).monospacedDigit().foregroundStyle(.white)
+                        .padding(.horizontal, 9).padding(.vertical, 6).background(.black.opacity(0.75), in: Capsule()).padding(9)
+                }.clipShape(RoundedRectangle(cornerRadius: 14))
+            Text(job.displayTitle).font(.subheadline.weight(.semibold)).lineLimit(2)
+            Text(job.state == "failed" ? "Couldn’t dub" : "English dub").font(.footnote).foregroundStyle(.secondary)
+        }.accessibilityElement(children: .ignore).accessibilityLabel(job.displayTitle + (job.state == "failed" ? ", failed" : ", play English dub"))
     }
 }

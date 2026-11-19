@@ -46,5 +46,7 @@
 		<string>UIInterfaceOrientationLandscapeRight</string>
 		<string>UIInterfaceOrientationPortraitUpsideDown</string>
 	</array>
+	<key>ReelDubHostedURL</key>
+	<string>https://$(REELDUB_HOSTED_HOST)</string>
 </dict>
 </plist>

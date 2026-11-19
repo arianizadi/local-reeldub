@@ -21,5 +21,5 @@ def setup_indexes():
     store.jobs.create_index([("owner", 1), ("day", 1), ("slot", 1)], unique=True,
                             partialFilterExpression={"slot": {"$exists": True}})
     store.jobs.create_index([("state", 1), ("priority", -1), ("created", 1)])
-    for name in ("sessions", "challenges"):
+    for name in ("sessions", "challenges", "playback"):
         store[name].create_index("expires", expireAfterSeconds=0)

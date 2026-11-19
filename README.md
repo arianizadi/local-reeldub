@@ -8,6 +8,8 @@ Paste a YouTube video or Instagram Reel link and get an English-dubbed MP4. Reel
 
 ## Use ReelDub on iPhone
 
+On first launch, tap **Continue with Apple** to create an account or sign in to the preconfigured ReelDub Cloud service. The same button handles returning users. For your own installation, choose **Use my own server**.
+
 Share an Instagram Reel to **ReelDub** or paste its link in **Studio**. Follow its place in the queue, the current render stage and elapsed time. Play the finished English video, share the MP4, or report a translation, voice, timing or background issue with the original Reel and a note.
 
 Start your own server with Docker Compose v2:
@@ -19,7 +21,7 @@ cd local-reeldub
 curl http://127.0.0.1:8300/health
 ```
 
-Setup generates a private `.env`, starts MongoDB and the API, and downloads the Light worker models on first use. Follow the first download with `docker compose logs -f worker`. Open `ios/ReelDub.xcodeproj` in Xcode and run **ReelDub** on an iPhone simulator. In **Server and account**, use `http://127.0.0.1:8300` and your private `SELF_HOST_KEY` from `.env`. That key has unlimited access. Give each additional user their own Sign in with Apple session.
+Setup generates a private `.env`, starts MongoDB and the API, and downloads the Light worker models on first use. Follow the first download with `docker compose logs -f worker`. Open `ios/ReelDub.xcodeproj` in Xcode and run **ReelDub** on an iPhone simulator. In **Use my own server**, enter `http://127.0.0.1:8300` and your private `SELF_HOST_KEY` from `.env`. That key has unlimited access. Give each additional user their own Sign in with Apple session.
 
 A physical phone needs a reachable HTTPS address for the API. TestFlight delivers the app over the internet. A private network such as NetBird can carry API traffic to your home server. For the Studio GPU worker, remote nodes, Apple account setup and private TestFlight distribution, see the [operator and product guide](PRODUCT.md).
 

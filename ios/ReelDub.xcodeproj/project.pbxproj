@@ -10,10 +10,13 @@
 		2B0CA8FB30D77B3E183948A2 /* Client.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43208AEF5AECA108781F363F /* Client.swift */; };
 		5F451703B7CE01CA61521BF7 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E478752859957286A715793F /* SettingsView.swift */; };
 		706640E8CE8DF92D55FF6C45 /* ReelDubShare.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 5B1D4417B7F3B25C34A902A4 /* ReelDubShare.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		87FD08F428A85C200A1DA26F /* SharePanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB96B230C4B53009974D6BDD /* SharePanel.swift */; };
 		941CC53E938330E42D40BB66 /* Home.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A360E5C178187669B008D52 /* Home.swift */; };
-		9B37D0D2E68D9B43B91A003D /* JobView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0E26304C54AD5A06F2044E4 /* JobView.swift */; };
+		991E4F3B8F8915B7E9259209 /* Player.swift in Sources */ = {isa = PBXBuildFile; fileRef = C42F82996F8624A12042E38D /* Player.swift */; };
+		A5F4BC12D4C242BCD2CC054F /* Welcome.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAF4E4FCE1B66213458B5B10 /* Welcome.swift */; };
 		A818723737ED39690D591829 /* ShareController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1BF612E32DE612654653080D /* ShareController.swift */; };
 		B3374DB73DD7625BE918FED6 /* Client.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43208AEF5AECA108781F363F /* Client.swift */; };
+		B5D33D1EE6B3D06F835C980C /* ReportView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E562891A2A6B21798745625 /* ReportView.swift */; };
 		B61A901591152FC2F4D65272 /* StudioSmoke.swift in Sources */ = {isa = PBXBuildFile; fileRef = D844C8909280CCFB7E3D07EF /* StudioSmoke.swift */; };
 		C2738F45B7E4966A9BDBB60D /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = FB74316CA58B05D52430B6D2 /* Assets.xcassets */; };
 		C61CDDE95B6BC5E80D12403C /* ReelDubApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B3FB6960C8146A94CA0E243 /* ReelDubApp.swift */; };
@@ -57,9 +60,12 @@
 		48A210E001537456A5175978 /* ReelDubUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = ReelDubUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		5B1D4417B7F3B25C34A902A4 /* ReelDubShare.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = ReelDubShare.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		6B3FB6960C8146A94CA0E243 /* ReelDubApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReelDubApp.swift; sourceTree = "<group>"; };
+		8E562891A2A6B21798745625 /* ReportView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReportView.swift; sourceTree = "<group>"; };
 		9A360E5C178187669B008D52 /* Home.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Home.swift; sourceTree = "<group>"; };
-		D0E26304C54AD5A06F2044E4 /* JobView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JobView.swift; sourceTree = "<group>"; };
+		C42F82996F8624A12042E38D /* Player.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Player.swift; sourceTree = "<group>"; };
+		CB96B230C4B53009974D6BDD /* SharePanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharePanel.swift; sourceTree = "<group>"; };
 		D844C8909280CCFB7E3D07EF /* StudioSmoke.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudioSmoke.swift; sourceTree = "<group>"; };
+		DAF4E4FCE1B66213458B5B10 /* Welcome.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Welcome.swift; sourceTree = "<group>"; };
 		E478752859957286A715793F /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		FB74316CA58B05D52430B6D2 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -69,6 +75,7 @@
 			isa = PBXGroup;
 			children = (
 				1BF612E32DE612654653080D /* ShareController.swift */,
+				CB96B230C4B53009974D6BDD /* SharePanel.swift */,
 			);
 			path = ReelDubShare;
 			sourceTree = "<group>";
@@ -115,9 +122,11 @@
 			children = (
 				FB74316CA58B05D52430B6D2 /* Assets.xcassets */,
 				9A360E5C178187669B008D52 /* Home.swift */,
-				D0E26304C54AD5A06F2044E4 /* JobView.swift */,
+				C42F82996F8624A12042E38D /* Player.swift */,
 				6B3FB6960C8146A94CA0E243 /* ReelDubApp.swift */,
+				8E562891A2A6B21798745625 /* ReportView.swift */,
 				E478752859957286A715793F /* SettingsView.swift */,
+				DAF4E4FCE1B66213458B5B10 /* Welcome.swift */,
 			);
 			path = ReelDub;
 			sourceTree = "<group>";
@@ -240,9 +249,11 @@
 			files = (
 				2B0CA8FB30D77B3E183948A2 /* Client.swift in Sources */,
 				941CC53E938330E42D40BB66 /* Home.swift in Sources */,
-				9B37D0D2E68D9B43B91A003D /* JobView.swift in Sources */,
+				991E4F3B8F8915B7E9259209 /* Player.swift in Sources */,
 				C61CDDE95B6BC5E80D12403C /* ReelDubApp.swift in Sources */,
+				B5D33D1EE6B3D06F835C980C /* ReportView.swift in Sources */,
 				5F451703B7CE01CA61521BF7 /* SettingsView.swift in Sources */,
+				A5F4BC12D4C242BCD2CC054F /* Welcome.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -252,6 +263,7 @@
 			files = (
 				B3374DB73DD7625BE918FED6 /* Client.swift in Sources */,
 				A818723737ED39690D591829 /* ShareController.swift in Sources */,
+				87FD08F428A85C200A1DA26F /* SharePanel.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -384,7 +396,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
@@ -408,6 +420,7 @@
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				REELDUB_HOSTED_HOST = reeldub.arianizadi.com;
 				SDKROOT = iphoneos;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
@@ -468,7 +481,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
@@ -485,6 +498,7 @@
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				REELDUB_HOSTED_HOST = reeldub.arianizadi.com;
 				SDKROOT = iphoneos;
 				SWIFT_COMPILATION_MODE = wholemodule;
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
