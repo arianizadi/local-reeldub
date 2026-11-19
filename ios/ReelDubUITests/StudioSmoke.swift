@@ -1,4 +1,5 @@
 import XCTest
+import Vision
 
 final class StudioSmoke: XCTestCase {
     private func welcome(_ app: XCUIApplication) {
@@ -18,10 +19,18 @@ final class StudioSmoke: XCTestCase {
         let app = XCUIApplication()
         welcome(app)
         app.buttons["continue-apple"].tap()
-        let sheetLabels = NSPredicate(format: "label CONTAINS[c] 'Apple Account' OR label CONTAINS[c] 'Apple ID' OR label CONTAINS[c] 'Sign in with Apple'")
-        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
-        let presented = app.descendants(matching: .any).matching(sheetLabels).firstMatch.waitForExistence(timeout: 8)
-            || springboard.descendants(matching: .any).matching(sheetLabels).firstMatch.waitForExistence(timeout: 5)
+        // Apple can host the sheet in a separate system process outside both XCUI trees.
+        let deadline = Date().addingTimeInterval(15)
+        var presented = false
+        repeat {
+            let scan = VNRecognizeTextRequest()
+            scan.recognitionLevel = .accurate
+            let screenshot = XCUIScreen.main.screenshot()
+            try VNImageRequestHandler(data: screenshot.pngRepresentation).perform([scan])
+            let labels = (scan.results ?? []).compactMap { $0.topCandidates(1).first?.string.lowercased() }
+            presented = labels.contains { $0.contains("sign in to your apple account") || $0.contains("sign in with apple") || $0.contains("use your apple account") }
+            if !presented { RunLoop.current.run(until: Date().addingTimeInterval(0.35)) }
+        } while !presented && Date() < deadline
         let image = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         image.name = "Apple authorization"
         image.lifetime = .keepAlways
@@ -53,6 +62,10 @@ final class StudioSmoke: XCTestCase {
         if prompt.waitForExistence(timeout: 2) { prompt.tap() }
         let job = app.buttons.matching(identifier: "job-done").firstMatch
         XCTAssertTrue(job.waitForExistence(timeout: 15))
+        let libraryImage = XCTAttachment(screenshot: app.screenshot())
+        libraryImage.name = "Dubs library"
+        libraryImage.lifetime = .keepAlways
+        add(libraryImage)
         app.buttons["Dub in English"].tap()
         XCTAssertTrue(app.staticTexts["Reel link error. Paste an Instagram Reel link to get started."].waitForExistence(timeout: 4))
         app.swipeUp()
