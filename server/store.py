@@ -195,5 +195,18 @@ def tickets(user, field):
 
 
 def balances(user):
-    return {name: sum(1 for _ in tickets(user, field)) for name, field in
-            (("extra_translations", "extra_ticket"), ("queue_skips", "skip_ticket"))}
+    grants = list(db().purchases.find({
+        "owner": user, "environment": os.getenv("STORE_ENVIRONMENT") or "Production", "revoked": False,
+        "$or": [{"credits": {"$gt": 0}}, {"skips": {"$gt": 0}}],
+    }, {"credits": 1, "skips": 1}))
+    result = {}
+    for balance, field, grant in (("extra_translations", "extra_ticket", "credits"),
+                                  ("queue_skips", "skip_ticket", "skips")):
+        counts = {p["_id"]: p[grant] for p in grants if p.get(grant, 0) > 0}
+        if counts:
+            for ticket in db().jobs.distinct(field, {"owner": user, field: {"$exists": True}}):
+                purchase_id = ticket.rpartition("/")[0]
+                if purchase_id in counts and counts[purchase_id] > 0:
+                    counts[purchase_id] -= 1
+        result[balance] = sum(counts.values())
+    return result

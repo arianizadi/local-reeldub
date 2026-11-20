@@ -11,11 +11,17 @@ from uuid import uuid4
 from pymongo import ReturnDocument
 
 from . import store
-from .db import db, now
+from .db import db, now, uses_postgres
 
 
 def configured():
     return store.enabled() and all(os.getenv(k) for k in ("STORE_KEY_PATH", "STORE_KEY_ID", "STORE_ISSUER_ID"))
+
+
+def next_check(stamp):
+    if uses_postgres():
+        return stamp.replace(minute=30 * (stamp.minute // 30), second=0, microsecond=0) + timedelta(minutes=30)
+    return stamp + timedelta(minutes=30)
 
 
 def client():
@@ -58,7 +64,7 @@ def recover():
                     db().store_quarantine.update_one({"_id":digest},{"$set":{"status":error.status_code,"seen":now()}},upsert=True)
                     logging.warning("Skipped invalid Apple history item %s (%d)",digest[:12],error.status_code)
         if not page.hasMore:
-            states.update_one(fence, {"$set": {"through": end, "due": now() + timedelta(minutes=30)},
+            states.update_one(fence, {"$set": {"through": end, "due": next_check(now())},
                                        "$unset": {"lease": "", "page": "", "start": "", "end": ""}})
             return
         page_token = page.paginationToken
@@ -76,4 +82,5 @@ async def run():
             await asyncio.to_thread(recover)
         except Exception as error:
             logging.warning("Apple notification history will retry (%s)", type(error).__name__)
-        await asyncio.sleep(1800 if os.getenv("REELDUB_POSTGRES_DSN_FILE") or os.getenv("REELDUB_POSTGRES_DSN") else 60)
+        stamp = now()
+        await asyncio.sleep((next_check(stamp) - stamp).total_seconds() if uses_postgres() else 60)

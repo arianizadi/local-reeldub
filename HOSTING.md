@@ -10,6 +10,12 @@ Workers watch a notification in the private media cache before and after queue a
 
 On the devbox the API and workers share a private `REELDUB_WAKE_FILE`. A submission wakes idle workers immediately. Each worker checks the cache once a minute as a fallback, with earlier checks for outstanding admissions or expiring leases. Deployments without this shared Linux file check every five seconds. The foreground iOS library requests only the active dubs every five seconds during rendering or ten seconds while queued. Completion triggers a full library and balance refresh. Idle and background libraries stop polling.
 
+### Measuring performance
+
+Use the Neon dashboard for billed compute and transfer. For changes to API queries, enable `pg_stat_statements` in a disposable Postgres instance and compare statement calls and shared-buffer reads for the same requests and data. `EXPLAIN (ANALYZE, BUFFERS)` shows whether a running dub needs a queue scan. The integration tests in `server/test_idle.py` also check the connection-checkout budget for authenticated progress and account reads.
+
+On the devbox, use `pidstat` on the worker processes for CPU usage and `nvidia-smi` for GPU load and power. Xcode Instruments’ Network template can measure iPhone request counts and transfer sizes during a render or after the library goes idle.
+
 Set `REELDUB_STORE_STORAGE_LIMIT_BYTES` to the database budget. The free deployment uses 1,000,000,000 bytes. New checkout requires an authenticated, committed purchase intent. Checkout pauses when database usage reaches 80% of the lower of the configured budget and the database provider’s advertised cluster limit, when a write fails, or when billing is disabled. Keep this production project on one branch or account for additional branches in the budget. Verified Apple transactions, refunds and renewals can still be delivered after admission closes. The iOS client finishes transactions after server delivery and retries unfinished purchases. Apple controls renewals and final payment timing.
 
 ## Beta tester allowances

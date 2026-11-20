@@ -4,7 +4,7 @@ import logging
 import os
 import re
 import secrets
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from datetime import timedelta
 from typing import Literal
 from uuid import UUID, uuid4
@@ -59,10 +59,17 @@ def owner(authorization: str = Header(default="")):
         raise HTTPException(401, "A private server connection key is required.")
     if mode != "hosted":
         raise HTTPException(503, "Server access is not configured.")
-    record = db().sessions.find_one({"_id": hash_value(key), "expires": {"$gt": now()}})
+    digest, stamp = hash_value(key), now()
+    if uses_postgres():
+        record = db().live_session(digest, stamp)
+    else:
+        record = db().sessions.find_one({"_id": digest, "expires": {"$gt": stamp}}, {"owner": 1, "purpose": 1})
     if record and record["owner"] == BETA_REVIEWER and record.get("purpose") == "beta-review":
         return BETA_REVIEWER
-    if not record or not record["owner"].startswith("apple:") or erasure.closing(record["owner"]):
+    if not record or not (record.get("owner") or "").startswith("apple:"):
+        raise HTTPException(401, "Your connection has expired. Sign in again.")
+    closing = record["closing"] if uses_postgres() else erasure.closing(record["owner"])
+    if closing:
         raise HTTPException(401, "Your connection has expired. Sign in again.")
     return record["owner"]
 
@@ -77,12 +84,13 @@ def limit_writes(user, operation, ceiling):
         raise HTTPException(429, "Please wait a minute before trying again.")
 
 
-def tier(user):
+def tier(user, account=None):
     if user == BETA_REVIEWER:
         return "free"
     if user == "self-host" or user == "apple:" + os.getenv("ADMIN_APPLE_SUB", "disabled"):
         return "admin"
-    account = db().accounts.find_one({"_id": user}, {"tier": 1}) or {}
+    if account is None:
+        account = db().accounts.find_one({"_id": user}, {"tier": 1}) or {}
     manual = account.get("tier", "free")
     return "paid" if manual == "free" and store.premium(user) else manual
 
@@ -248,21 +256,22 @@ A self-hosted server is controlled by its operator. Its storage, network and ret
 
 @app.get("/v1/me")
 def me(user=Depends(owner), checkout_version: str = Header(default="", alias="X-ReelDub-Checkout")):
-    result = quota(user, tier(user), now())
-    account = db().accounts.find_one({"_id": user}, {"email": 1, "library_id": 1}) or {}
-    result["output_languages"] = outputs(os.getenv("REELDUB_OUTPUT_PROFILE", "light"))
-    result["library_id"] = account.get("library_id", hash_value(user))
-    result["email"] = account.get("email")
-    result.update(store.balances(user))
-    result["creator_minutes"] = minutes.enabled()
-    result["batch_progress"] = True
-    if minutes.enabled():
-        monthly, pack = minutes.funding(user,result["tier"],now())
-        result.update(monthly_seconds=len(monthly), pack_seconds=len(pack))
-    store_connected = checkout_version == "1" and uses_postgres() and store.enabled()
-    result["purchase_preflight"] = store_connected and minutes.enabled() and user.startswith("apple:")
+    with db().profile_reads() if uses_postgres() else nullcontext():
+        account = db().accounts.find_one({"_id": user}, {"email": 1, "library_id": 1, "tier": 1, "store_token": 1}) or {}
+        result = quota(user, tier(user, account), now())
+        result["output_languages"] = outputs(os.getenv("REELDUB_OUTPUT_PROFILE", "light"))
+        result["library_id"] = account.get("library_id", hash_value(user))
+        result["email"] = account.get("email")
+        result.update(store.balances(user))
+        result["creator_minutes"] = minutes.enabled()
+        result["batch_progress"] = True
+        if minutes.enabled():
+            monthly, pack = minutes.funding(user,result["tier"],now())
+            result.update(monthly_seconds=len(monthly), pack_seconds=len(pack))
+        store_connected = checkout_version == "1" and uses_postgres() and store.enabled()
+        result["purchase_preflight"] = store_connected and minutes.enabled() and user.startswith("apple:")
     if store_connected and user.startswith("apple:"):
-        result["store_token"] = store.store_token(user)
+        result["store_token"] = account.get("store_token") or store.store_token(user)
     return result
 
 

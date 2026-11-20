@@ -1,7 +1,8 @@
 """Postgres metadata repository. Media bytes have no representation in this store."""
 
 import os
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -227,7 +228,7 @@ class Query:
         ) + ordering(self.order)
         if self.maximum:
             stmt += S(" LIMIT {}").format(sql.Literal(int(self.maximum)))
-        with self.collection.database.connection() as conn:
+        with self.collection.database.read_connection() as conn:
             rows = conn.execute(stmt).fetchall()
         return (decode(row[0]) for row in rows)
 
@@ -257,11 +258,11 @@ class Collection:
         )
         if limit:
             stmt += S(" LIMIT {}").format(sql.Literal(limit))
-        with self.database.connection() as conn:
+        with self.database.read_connection() as conn:
             return conn.execute(stmt + S(") AS matches")).fetchone()[0]
 
     def distinct(self, key, query=None):
-        with self.database.connection() as conn:
+        with self.database.read_connection() as conn:
             rows = conn.execute(
                 S("SELECT DISTINCT {} FROM {} WHERE {} AND {} IS NOT NULL").format(
                     column(key), self.table, predicate(query or {}), column(key)
@@ -370,6 +371,7 @@ class Collection:
 
 class Postgres:
     def __init__(self, dsn):
+        self._profile_reader = ContextVar("reeldub_profile_reader", default=None)
         options = {
             "connect_timeout": 8,
             "application_name": "reeldub",
@@ -413,6 +415,32 @@ class Postgres:
             # Read an app table as well, to catch a misconfigured schema or grants.
             conn.execute("SELECT id FROM reeldub.jobs LIMIT 0")
         return {"ok": 1}
+
+    @contextmanager
+    def profile_reads(self):
+        with self.connection() as conn:
+            token = self._profile_reader.set(conn)
+            try:
+                yield
+            finally:
+                self._profile_reader.reset(token)
+
+    def read_connection(self):
+        conn = self._profile_reader.get()
+        return nullcontext(conn) if conn is not None else self.connection()
+
+    def live_session(self, digest, stamp):
+        with self.connection() as conn:
+            row = conn.execute(
+                """SELECT s.doc->>'owner', s.doc->>'purpose', d.id IS NOT NULL
+                   FROM reeldub.sessions s
+                   LEFT JOIN reeldub.account_deletions d ON d.id = s.doc->'owner'
+                   WHERE s.id = %s AND s.doc->'expires' > %s""",
+                (Jsonb(digest), Jsonb(encode(stamp))),
+            ).fetchone()
+        if row:
+            return {"owner": row[0], "purpose": row[1], "closing": row[2]}
+        return None
 
     def library(self, user, ids=None):
         scope = sql.SQL("")

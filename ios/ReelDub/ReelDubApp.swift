@@ -14,6 +14,32 @@ struct ReelDubApp: App {
     }
 }
 
+enum TransferRetry: Equatable {
+    case waiting(until: Date, seconds: Int)
+    case stopped(lastRequest: String?)
+
+    var deadline: Date? {
+        if case let .waiting(until, _) = self { return until }
+        return nil
+    }
+
+    func permits(_ job: Job, at date: Date) -> Bool {
+        switch self {
+        case let .waiting(until, _): return date >= until
+        case let .stopped(request): return job.last_requested != request
+        }
+    }
+
+    static func next(for job: Job, error: Error, previous: Self?, at date: Date) -> Self {
+        if let error = error as? ServiceError, [404, 409, 410].contains(error.status) {
+            return .stopped(lastRequest: job.last_requested)
+        }
+        var seconds = 60
+        if case let .waiting(_, last) = previous { seconds = min(last * 2, 3600) }
+        return .waiting(until: date.addingTimeInterval(Double(seconds)), seconds: seconds)
+    }
+}
+
 @Observable @MainActor
 final class Studio {
     var connection: Connection?
@@ -21,15 +47,17 @@ final class Studio {
     private(set) var saved: [String: Job] = [:]
     private(set) var transferring: String?
     private(set) var transferErrors: [String: String] = [:]
-    private var retryAfter: [String: Date] = [:]
+    private var transferRetries: [String: TransferRetry] = [:]
     private var transferTask: Task<Void, Never>?
     private var deleting: Set<String> = []
     private var refreshGeneration = 0
     private var fullRefreshes = 0
     @ObservationIgnored var unfinishedPurchases: AsyncStream<Void>.Continuation?
+    private let transport: URLSession
 
-    init(connection: Connection? = Connection.read()) {
+    init(connection: Connection? = Connection.read(), transport: URLSession = API.session) {
         self.connection = connection
+        self.transport = transport
         restoreLibrary()
     }
 
@@ -52,6 +80,7 @@ final class Studio {
         if saved[job.id] != nil { return "Saved on this device" }
         if job.available_on_server == false { return "Server copy expired" }
         if library?.isManualDownload(job.id) == true { return "Removed from this device" }
+        if case .stopped = transferRetries[job.id] { return "Download unavailable" }
         if transferErrors[job.id] != nil { return "Download interrupted · will retry" }
         if transferring == job.id { return "Saving to this device…" }
         return nil
@@ -69,7 +98,7 @@ final class Studio {
     var sending = false
     private var libraryRevision = 0
     private var pending: (url: String, target: String, id: UUID)?
-    var api: API? { connection.map { API(connection: $0) } }
+    var api: API? { connection.map { API(connection: $0, transport: transport) } }
 
     func progressDelay(failures: Int) -> Int? {
         guard jobs.contains(where: { $0.rdPhase.isActive }) else { return nil }
@@ -101,16 +130,21 @@ final class Studio {
                 }
                 // A completion or deletion needs a full reconciliation, including the balance and downloads.
             }
+            let legacyProgress = progressOnly && account != nil && account?.batch_progress != true
+            async let concurrentProfile: Data? = legacyProgress ? nil : api.data("v1/me")
             let payload = try await api.data("v1/jobs")
             guard current() else { return }
             let remote = try JSONDecoder().decode([Job].self, from: payload)
-            if progressOnly, account != nil, account?.batch_progress != true, remote.contains(where: { $0.rdPhase.isActive }) {
+            if legacyProgress, remote.contains(where: { $0.rdPhase.isActive }) {
                 mergeJobs(remote)
                 failure = nil
                 startTransfer()
                 return
             }
-            let profile = try JSONDecoder().decode(Account.self, from: await api.data("v1/me"))
+            let profileData: Data
+            if let prefetched = try await concurrentProfile { profileData = prefetched }
+            else { profileData = try await api.data("v1/me") }
+            let profile = try JSONDecoder().decode(Account.self, from: profileData)
             guard current() else { return }
             if connection?.libraryID != profile.library_id || connection?.outputLanguages != profile.output_languages {
                 let changedLibrary = connection?.libraryID != profile.library_id
@@ -163,15 +197,14 @@ final class Studio {
 
     var nextTransferRetry: Date? {
         guard transferring == nil else { return nil }
-        return jobs.compactMap { $0.available_on_server == true ? retryAfter[$0.id] : nil }.min()
+        return jobs.compactMap { $0.available_on_server == true ? transferRetries[$0.id]?.deadline : nil }.min()
     }
 
     func retryTransfers() {
-        retryAfter = retryAfter.filter { $0.value > Date() }
         startTransfer()
     }
     func connect(_ new: Connection) async throws {
-        let me = try await API(connection: new).data("v1/me")
+        let me = try await API(connection: new, transport: transport).data("v1/me")
         let profile = try JSONDecoder().decode(Account.self, from: me)
         var verified = new
         verified.libraryID = profile.library_id
@@ -204,7 +237,7 @@ final class Studio {
         libraryRevision += 1
         transferTask?.cancel()
         transferTask = nil; transferring = nil
-        deleting = []; transferErrors = [:]; retryAfter = [:]
+        deleting = []; transferErrors = [:]; transferRetries = [:]
         saved = [:]; library = nil
     }
 
@@ -217,7 +250,7 @@ final class Studio {
         guard transferTask == nil, let api, let library,
               let job = jobs.first(where: { job in
                   job.state == "done" && job.available_on_server == true && !deleting.contains(job.id) && !library.isManualDownload(job.id)
-                    && (retryAfter[job.id] ?? .distantPast) <= Date()
+                    && (transferRetries[job.id]?.permits(job, at: Date()) ?? true)
                     && (saved[job.id] == nil || library.needsReceipt(job.id))
               }) else { return }
         transferring = job.id
@@ -243,11 +276,17 @@ final class Studio {
                 try Task.checkCancellation()
                 guard matches(api), !deleting.contains(job.id), !library.isManualDownload(job.id) else { return }
                 try library.markReceived(job.id)
-                transferErrors[job.id] = nil; retryAfter[job.id] = nil
+                transferErrors[job.id] = nil; transferRetries[job.id] = nil
+            } catch is SessionError {
+                guard !Task.isCancelled, matches(api) else { return }
+                clearSession()
+                welcomeMessage = "Your session ended. Sign in again to see your dubs."
             } catch {
                 guard !Task.isCancelled, matches(api) else { return }
                 transferErrors[job.id] = error.localizedDescription
-                retryAfter[job.id] = Date().addingTimeInterval(60)
+                let retry = TransferRetry.next(for: job, error: error, previous: transferRetries[job.id], at: Date())
+                transferRetries[job.id] = retry
+                if case .stopped = retry { await refresh() }
             }
         }
     }
@@ -263,17 +302,20 @@ final class Studio {
         }
         saved[id] = nil
         transferErrors[id] = nil
-        retryAfter[id] = nil
+        transferRetries[id] = nil
         if let api { RDPosterStore.shared.remove(id, api: api) }
     }
 
     func canDownloadAgain(_ id: String) -> Bool {
-        saved[id] == nil && library?.isManualDownload(id) == true
+        guard saved[id] == nil else { return false }
+        if case .stopped = transferRetries[id] { return true }
+        return library?.isManualDownload(id) == true
     }
 
     func downloadAgain(_ id: String) throws {
         guard let library else { throw Problem("Open your Dubs library first.") }
         try library.allowDownload(id)
+        transferRetries[id] = nil
         startTransfer()
     }
 
@@ -285,7 +327,7 @@ final class Studio {
         guard matches(api) else { throw Problem("Your connection changed.") }
         libraryRevision += 1
         try library?.remove(id)
-        saved[id] = nil; transferErrors[id] = nil; retryAfter[id] = nil
+        saved[id] = nil; transferErrors[id] = nil; transferRetries[id] = nil
         RDPosterStore.shared.remove(id, api: api)
         jobs.removeAll { $0.id == id }
     }

@@ -13,7 +13,7 @@ from uuid import uuid4
 
 from fastapi import HTTPException
 
-from . import api, wakeup
+from . import api, store_history, wakeup
 from .db import db, media_db, now, uses_postgres
 
 
@@ -38,6 +38,30 @@ class LocalWakeTests(unittest.TestCase):
 
 @unittest.skipUnless(os.getenv("REELDUB_TEST_DATABASE") == "1" and uses_postgres(), "Disposable Postgres only")
 class IdleTests(unittest.TestCase):
+    def test_progress_checks_revocation_in_one_auth_lookup(self):
+        token, user, job = str(uuid4()), "apple:" + str(uuid4()), uuid4()
+        database = db()
+        digest = api.hash_value(token)
+        self.addCleanup(database.sessions.delete_one, {"_id": digest})
+        self.addCleanup(database.account_deletions.delete_one, {"_id": user})
+        database.sessions.insert_one({"_id": digest, "owner": user, "expires": now() + timedelta(minutes=2)})
+        with patch.object(database, "connection", wraps=database.connection) as checkouts:
+            self.assertEqual(api.library_progress(api.LibraryCheck(ids=[job]), api.owner("Bearer " + token)), [])
+            self.assertEqual(checkouts.call_count, 2)
+            checkouts.reset_mock()
+            self.assertEqual(api.me(api.owner("Bearer " + token), "")["tier"], "free")
+            self.assertEqual(checkouts.call_count, 2)
+        database.account_deletions.insert_one({"_id": user})
+        with self.assertRaises(HTTPException) as denied:
+            api.owner("Bearer " + token)
+        self.assertEqual(denied.exception.status_code, 401)
+
+    def test_store_history_stays_on_half_hour_boundaries(self):
+        stamp = now().replace(hour=23, minute=14, second=39)
+        half = stamp.replace(minute=30, second=0, microsecond=0)
+        self.assertEqual(store_history.next_check(stamp), half)
+        self.assertEqual(store_history.next_check(half + timedelta(seconds=8)), wakeup.next_hour(half))
+
     def test_only_one_replica_runs_a_due_sweep(self):
         schedule = media_db().maintenance
         schedule.delete_one({"_id": "postgres-hourly"})

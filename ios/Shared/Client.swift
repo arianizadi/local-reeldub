@@ -160,6 +160,11 @@ private final class NoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sen
 }
 struct API {
     let connection: Connection
+    let transport: URLSession
+    init(connection: Connection, transport: URLSession = API.session) {
+        self.connection = connection
+        self.transport = transport
+    }
     static let session: URLSession = {
         let config = URLSessionConfiguration.ephemeral
         config.tlsMinimumSupportedProtocolVersion = .TLSv12
@@ -193,7 +198,7 @@ struct API {
         return try await response(for: req)
     }
     private func response(for req: URLRequest) async throws -> Data {
-        let (data, response) = try await Self.session.data(for: req)
+        let (data, response) = try await transport.data(for: req)
         return try checked(data, response)
     }
     func checked(_ data: Data, _ response: URLResponse) throws -> Data {
@@ -219,7 +224,10 @@ struct API {
         return connection.base.appending(path: "v1/play/\(id)/\(grant.ticket)")
     }
     func movie(_ id: String) async throws -> URL {
-        let (tmp, result) = try await Self.session.download(for: request("v1/jobs/\(id)/video"))
+        let (tmp, result) = try await transport.download(for: request("v1/jobs/\(id)/video"))
+        if let http = result as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            _ = try checked(Data(), http)
+        }
         guard let r = result as? HTTPURLResponse, r.statusCode == 200, r.mimeType == "video/mp4"
         else { throw Problem("The video could not be downloaded.") }
         let length = try tmp.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0

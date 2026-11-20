@@ -1,8 +1,69 @@
 import XCTest
 @testable import ReelDub
 
+private final class ExpiredReceiptServer: URLProtocol {
+    static let job = ["id": "fixture", "url": "", "state": "done", "stage": "Ready",
+                      "created": "2026-11-18", "reported": false, "available_on_server": true] as [String: Any]
+    static let counts = NSCountedSet()
+    static let lock = NSLock()
+    static func receipts(_ host: String) -> Int { lock.withLock { counts.count(for: host) } }
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func stopLoading() {}
+    override func startLoading() {
+        let url = request.url!, host = url.host!
+        var code = 200
+        let body: Any
+        switch url.path {
+        case "/v1/me": body = ["tier": "free", "used": 0, "library_id": host] as [String: Any]
+        case "/v1/jobs": body = [Self.job]
+        case "/v1/jobs/fixture/received":
+            Self.lock.withLock { Self.counts.add(host) }
+            code = 410
+            body = ["detail": "Expired"]
+        default: code = 404; body = [:] as [String: String]
+        }
+        let reply = HTTPURLResponse(url: url, statusCode: code, httpVersion: nil, headerFields: nil)!
+        client?.urlProtocol(self, didReceive: reply, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: try! JSONSerialization.data(withJSONObject: body))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+}
+
 @MainActor
 final class OfflineRemovalTests: XCTestCase {
+    func testExpiredReceiptStopsAutomaticRetriesAndPreservesTheDeviceCopy() async throws {
+        let host = UUID().uuidString.lowercased() + ".example"
+        let connection = Connection(base: URL(string: "https://" + host)!, token: "fixture", libraryID: host)
+        let library = try XCTUnwrap(DeviceLibrary(connection: connection))
+        defer { try? library.erase() }
+        let job = try JSONDecoder().decode(Job.self, from: JSONSerialization.data(withJSONObject: ExpiredReceiptServer.job))
+        let file = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try Data([1, 2, 3]).write(to: file)
+        try library.save(file, job: job)
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [ExpiredReceiptServer.self]
+        let session = URLSession(configuration: config)
+        defer { session.invalidateAndCancel() }
+        let studio = Studio(connection: connection, transport: session)
+        await studio.refresh()
+        for _ in 0..<100 where studio.transferring != nil { try await Task.sleep(for: .milliseconds(20)) }
+        XCTAssertNil(studio.transferring)
+        XCTAssertNil(studio.nextTransferRetry)
+        studio.retryTransfers()
+        await studio.refresh()
+        XCTAssertNil(studio.transferring)
+        XCTAssertEqual(ExpiredReceiptServer.receipts(host), 1)
+        XCTAssertNotNil(studio.localMovie(job.id))
+
+        var last: TransferRetry?
+        let date = Date()
+        for seconds in [60, 120, 240, 480, 960, 1920, 3600, 3600] {
+            last = TransferRetry.next(for: job, error: URLError(.timedOut), previous: last, at: date)
+            XCTAssertEqual(last?.deadline, date.addingTimeInterval(Double(seconds)))
+        }
+    }
+
     func testProgressOnlyTracksActiveDubsAndReconcilesCompletions() throws {
         func job(_ id: String, _ state: String) throws -> Job {
             try JSONDecoder().decode(Job.self, from: JSONSerialization.data(withJSONObject: [
