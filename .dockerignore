@@ -8,3 +8,6 @@ ios
 __pycache__
 *.mp4
 *.wav
+
+.tts-graph/
+.omni-venv/

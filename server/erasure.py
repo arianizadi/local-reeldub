@@ -55,7 +55,9 @@ def erase(user):
         else:
             database.jobs.delete_one({"_id": job["_id"], "owner": user})
     database.beta_allowances.delete_many({"owner": user})
-    database.accounts.delete_one({"_id": user})
+    # Erase personal data while retaining the moderation decision for this Apple subject.
+    database.accounts.delete_one({"_id":user,"banned":{"$ne":True}})
+    database.accounts.update_one({"_id":user,"banned":True}, [{"$project":{"banned":1,"moderated_at":1,"erased":{"$literal":True}}}])
     stamp = now()
     # This also prevents erasing and creating an account repeatedly to replenish today's allowance.
     until = max(stamp + timedelta(minutes=15), stamp.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1))

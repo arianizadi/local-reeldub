@@ -20,8 +20,13 @@ def generate_batch(model, folder, lines, indices, language):
         # A reference transcript can leak source words into a cross-language dub.
         prompts.extend(model.create_voice_clone_prompt(ref_audio=(ref, rate), x_vector_only_mode=True))
         texts.append(lines[i]["text"])
+    options = {}
+    if os.getenv("REELDUB_QWEN_SIZE") == "0.6B":
+        # Bound experimental decoding per batch. Include source timing and a text-length allowance.
+        seconds = max(max(lines[i].get("end",0) - lines[i].get("start",0), len(lines[i]["text"])/5) for i in indices)
+        options["max_new_tokens"] = max(80, min(2048, round(25 * seconds + 50)))
     waveforms, rate = model.generate_voice_clone(text=texts, language=[language] * len(texts),
-                                                voice_clone_prompt=prompts)
+                                                voice_clone_prompt=prompts, **options)
     if len(waveforms) != len(indices):
         raise RuntimeError("Voice model returned an incomplete batch.")
     for i, waveform in zip(indices, waveforms):
@@ -36,9 +41,14 @@ def main():
     if not torch.cuda.is_available():
         raise RuntimeError("Voice matching needs a working CUDA GPU.")
     prepare = sys.argv[1] == "--prepare"
-    weights = snapshot_download(MODEL, local_files_only=not prepare)
     if prepare:
+        for size in ("1.7B", "0.6B"):
+            snapshot_download(MODEL.replace("1.7B", size))
         return
+    size = os.getenv("REELDUB_QWEN_SIZE", "1.7B")
+    if size not in ("1.7B", "0.6B"):
+        raise ValueError("Unsupported Qwen voice size.")
+    weights = snapshot_download(MODEL.replace("1.7B", size), local_files_only=True)
     os.environ["HF_HUB_OFFLINE"] = "1"
     from qwen_tts import Qwen3TTSModel
 

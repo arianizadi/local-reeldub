@@ -104,6 +104,9 @@ struct Job: Codable, Identifiable, Hashable {
     var last_requested: String? = nil
     var source_id: String? = nil
     var trimmed: Bool? = nil
+    var lab_mode: String? = nil
+    var lab_runtime: String? = nil
+    var voice_batch: Int? = nil
     var target_language: String? = nil
     var target: String { target_language ?? "en" }
     var targetName: String { OutputLanguage.name(target) }
@@ -143,6 +146,8 @@ struct Account: Codable {
     let limit: Int?
     let email, library_id: String?
     let output_languages: [String]?
+    var lab_runtimes: [String]? = nil
+    var admin_console: Bool? = nil
     var creator_minutes: Bool? = nil
     var batch_progress: Bool? = nil
     var monthly_seconds: Int? = nil
@@ -161,7 +166,12 @@ private final class NoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sen
 struct API {
     let connection: Connection
     let transport: URLSession
-    init(connection: Connection, transport: URLSession = API.session) {
+    let adminGrant: String?
+    let adminExpired: (@MainActor @Sendable () -> Void)?
+    init(connection: Connection, transport: URLSession = API.session, adminGrant: String? = nil,
+         adminExpired: (@MainActor @Sendable () -> Void)? = nil) {
+        self.adminExpired = adminExpired
+        self.adminGrant = adminGrant
         self.connection = connection
         self.transport = transport
     }
@@ -179,6 +189,10 @@ struct API {
         let base = try Connection.server(connection.base.absoluteString)
         var req = URLRequest(url: base.appending(path: path))
         req.httpMethod = method
+        if path.hasPrefix("v1/admin/") {
+            guard connection.isHosted else { throw Problem("Administrator access requires ReelDub Cloud.") }
+            if let adminGrant { req.setValue(adminGrant, forHTTPHeaderField: "X-ReelDub-Admin") }
+        }
         if path == "v1/me" { req.setValue("1", forHTTPHeaderField: "X-ReelDub-Checkout") }
         req.timeoutInterval = 30
         if !connection.token.isEmpty { req.setValue("Bearer " + connection.token, forHTTPHeaderField: "Authorization") }
@@ -205,6 +219,8 @@ struct API {
         if (response as? HTTPURLResponse)?.statusCode == 401 && !connection.token.isEmpty { throw SessionError.expired }
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             let error = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            if (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "X-ReelDub-Reason") == "admin_verification_required",
+               let adminExpired { Task { @MainActor in adminExpired() } }
             throw ServiceError(status: (response as? HTTPURLResponse)?.statusCode ?? 0, errorDescription: error?["detail"] as? String ?? "The server could not complete the request.",
                                reason: (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "X-ReelDub-Reason"))
         }

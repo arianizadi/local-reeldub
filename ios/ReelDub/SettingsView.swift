@@ -21,6 +21,11 @@ struct SettingsView: View {
                         LabeledContent("Daily translations", value: account.limit.map { "\(account.used) of \($0) used" } ?? "Unlimited")
                     }
                 }
+                if studio.connection?.isHosted == true, studio.account?.admin_console == true {
+                    Section { NavigationLink { AdminConsole(studio:studio).id(studio.connection?.token) } label: {
+                        Label("Admin console", systemImage:"gauge.with.dots.needle.67percent")
+                    } }
+                }
                 if studio.connection?.isHosted == true {
                     Section {
                         NavigationLink("Plans & minutes") { CloudStore(studio: studio) }

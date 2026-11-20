@@ -47,3 +47,30 @@ Running jobs report stage milestones and completed voice lines. Estimated finish
 The Ubuntu 24.04 native intake uses Landlock ABI 6 or later, the distro Python seccomp bindings, TCP DNS and systemd address-family restrictions. Intake can read its packaged code and write its private runtime folder. The kernel denies pathname Unix sockets and datagram sockets. The API, operator endpoint and worker each get their own mode-0700 runtime directory, removed when their service stops. The foreground vault process and its dependent services are supervised by systemd.
 
 The hosted quality profile uses Whisper large-v3, Index-Translate-9B Q5_K_M, Gemma 3 12B as the translation fallback, and Qwen3-TTS 1.7B for matched voices. Hindi uses Kokoro. Each new completed job records the actual models it used. On the Ryzen 9 5900X, using six CPU threads, native transcription of 13.4 seconds of Persian took 11.9 seconds on CPU and 1.1 seconds on the RTX. A 40.0-second Russian clip took 38.7 and 4.3 seconds respectively. These timings exclude model loading and the rest of the render.
+
+### Hosted administrator console
+
+In the iOS app, open **Dubs → Account → Admin console** from the library menu. The hosted API requires an active Apple session whose subject matches `ADMIN_APPLE_SUB`. Use Apple again to unlock the console. Every dashboard, moderation and experiment request checks the session and a separate, session-bound 15-minute grant. The app holds that grant in memory. A self-host key, beta review key, plan assignment or matching email cannot unlock the console.
+
+Overview groups retained requests by status, language pair and render mode and shows measured cache reuse, queue wait and render time. Cache-hit counting starts with this version. Pull to refresh. Accounts, requests and reports load in pages of 40. Open an account to see its effective allowance and request history. A ban stops hosted access and pending work and records the reason. Account deletion remains available to suspended users.
+
+The render lab queues a fresh test with its own settings. Best uses context translation and a matched voice when supported. Medium keeps context translation and chooses a preset voice where one is available. Fast uses greedy speech decoding and, for English, direct Whisper translation. All three keep source-dialogue cleanup. Paired decoding keeps a separate voice reference for each line. Experiments participate in the regular priority queue and have separate cache identities.
+
+On a native Studio worker, run `./setup-lab.sh graph` to install the optional CUDA Graphs voice engine and set `REELDUB_LAB_RUNTIMES=graph` on the hosted API after testing every eligible worker. For a Compose deployment, bake the same runtime into the worker image or persist its installation at `/app/.tts-graph`. The GPU and model versions affect timing. The app's estimate is calibrated with two English dubs on one RTX 4070 Ti Super. Time spent downloading, waiting in the queue and transferring the result is additional.
+
+Set `REELDUB_LOCAL_GPU_METRICS=1` on a hosted API that shares the worker GPU to include GPU utilization, VRAM, temperature and power in the on-demand overview. The dashboard samples at most once per minute per API process while someone uses it. FP16 dialogue separation is available as a per-experiment toggle. For the alternative vLLM voice backend, use `./setup-lab.sh omni` on each compatible worker and include `omni` in the enabled runtime list. The tested isolated build uses CUDA 12.9.
+
+#### Render lab reference timings
+
+Wall time in seconds from cached local media to a finished English MP4 on a 16 GiB RTX 4070 Ti Super. Each entry is one complete render. The inputs were a 13.42-second Persian clip and a 40.01-second Russian conversation. The voice reference changes per line. Download, queue wait and transfer to the phone are separate.
+
+| Configuration | Persian clip | Russian conversation |
+| --- | ---: | ---: |
+| Best, matched Qwen 1.7B, paired lines | 42.53 | 88.43 |
+| Medium, context translation and preset voice | 30.50 | 67.26 |
+| Fast, direct English translation and preset voice | 28.67 | 60.42 |
+| Best with CUDA Graphs, one matched line at a time | 42.17 | 83.51 |
+| Fast with FP16 dialogue separation | — | 55.26 |
+| Best with vLLM-Omni 0.16.0, paired matched voices | 155.18 | — |
+
+A separate warm test of three Spanish lines took 1.61 seconds with CUDA Graphs and 22.99 seconds with vLLM-Omni on this machine. Full renders include engine startup, separation, recognition, translation and encoding. The timing samples describe these inputs. Voice similarity, translation quality and residual dialogue still need listening checks across languages. [CUDA Graphs implementation](https://github.com/andimarafioti/faster-qwen3-tts) · [vLLM-Omni](https://github.com/vllm-project/vllm-omni)

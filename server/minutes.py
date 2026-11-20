@@ -62,6 +62,7 @@ def existing(user, url, target, trim):
         "owner": user,
         "url": url,
         "target_language": {"$in": [target, None]} if target == "en" else target,
+        "lab_mode": {"$exists":False},
         "trimmed": True if trim else {"$ne": True},
     }
     return db().jobs.find_one(
@@ -146,7 +147,7 @@ class PartialConfirmation(Exception):
 
 
 def confirm(user, quote_id):
-    from .api import daily_limit, enqueue_render, next_position, renew_media, summary, tier
+    from .api import cache_hit_count, daily_limit, enqueue_render, next_position, renew_media, summary, tier
 
     record = db().quotes.find_one({"_id": quote_id, "owner": user})
     if not record:
@@ -195,6 +196,7 @@ def confirm(user, quote_id):
                         {
                             "$set": {
                                 "last_requested": stamp,
+                                "cache_hits": cache_hit_count(line["request"]),
                                 "media_expires": renew_media(stamp),
                                 "request_keys": {
                                     "$setUnion": [{"$ifNull": ["$request_keys", []]}, [line["request"]]]

@@ -129,7 +129,14 @@ def process(job):
             else:
                 input_arg=reel_url(job["url"])
             with log.open("w") as writer, log.open() as reader:
-                proc = subprocess.Popen([engine, input_arg, "--target-language", job.get("target_language", "en"), "-o", dest], stdout=writer,
+                command = [engine, input_arg, "--target-language", job.get("target_language", "en"), "-o", dest]
+                if job.get("lab_mode"):
+                    command += ["--quality", job["lab_mode"], "--voice-batch", str(job.get("voice_batch", 2))]
+                    command += ["--lab-runtime", job.get("lab_runtime","standard")]
+                    command += ["--lab-separation", job.get("lab_separation", "fp32")]
+                    if job.get("lab_voice", "default") != "default":
+                        command += ["--lab-voice", job["lab_voice"]]
+                proc = subprocess.Popen(command, stdout=writer,
                                         stderr=subprocess.STDOUT, start_new_session=True, env=env)
                 deadline = time.monotonic() + int(os.getenv("JOB_TIMEOUT", "1800"))
                 try:
@@ -156,7 +163,7 @@ def process(job):
                                     continue
                                 seconds = event.get("duration")
                                 if type(seconds) in (int, float) and 0 < seconds <= 600 and seconds != sampled_duration:
-                                    rows = jobs.find({"state": "done", "media_seconds": {"$exists": True}},
+                                    rows = jobs.find({"state": "done", "lab_mode": job.get("lab_mode"), "media_seconds": {"$exists": True}},
                                                      {"media_seconds": 1, "started": 1, "finished": 1,
                                                       "attempt": 1, "target_language": 1}).sort("finished", -1).limit(40)
                                     runtime = nearby_runtime(rows, seconds, job.get("target_language", "en"))

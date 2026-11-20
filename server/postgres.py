@@ -139,6 +139,14 @@ def expr(value, doc):
         return items[1] if items[0] is MISSING or items[0] is None else items[0]
     if op == "$or":
         return any(items)
+    if op == "$concatArrays":
+        return [x for part in items for x in part]
+    if op == "$slice":
+        return items[0][items[1]:] if items[1] < 0 else items[0][:items[1]]
+    if op == "$in":
+        return items[0] in items[1]
+    if op == "$ne":
+        return items[0] != items[1]
     if op == "$eq":
         return items[0] == items[1]
     if op == "$add":
@@ -432,15 +440,61 @@ class Postgres:
     def live_session(self, digest, stamp):
         with self.connection() as conn:
             row = conn.execute(
-                """SELECT s.doc->>'owner', s.doc->>'purpose', d.id IS NOT NULL
+                """SELECT s.doc->>'owner', s.doc->>'purpose', d.id IS NOT NULL, a.doc->'banned'='true'::jsonb
                    FROM reeldub.sessions s
                    LEFT JOIN reeldub.account_deletions d ON d.id = s.doc->'owner'
+                   LEFT JOIN reeldub.accounts a ON a.id = s.doc->'owner'
                    WHERE s.id = %s AND s.doc->'expires' > %s""",
                 (Jsonb(digest), Jsonb(encode(stamp))),
             ).fetchone()
         if row:
-            return {"owner": row[0], "purpose": row[1], "closing": row[2]}
+            return {"owner": row[0], "purpose": row[1], "closing": row[2],"banned":bool(row[3])}
         return None
+
+    def playback_grant(self, key, job, stamp):
+        with self.connection() as conn:
+            row = conn.execute("""
+                SELECT p.doc FROM reeldub.playback p
+                LEFT JOIN reeldub.accounts a ON a.id=p.doc->'owner'
+                WHERE p.id=%s AND p.doc->'job'=%s AND p.doc->'expires'>%s
+                  AND a.doc->'banned' IS DISTINCT FROM 'true'::jsonb""",
+                (Jsonb(key),Jsonb(job),Jsonb(encode(stamp)))).fetchone()
+        return decode(row[0]) if row else None
+
+    def admit_job(self, job):
+        # The account row lock serializes admission with moderation without adding a network round trip.
+        with self.connection() as conn:
+            return conn.execute("""WITH account AS MATERIALIZED (
+                  SELECT doc FROM reeldub.accounts WHERE id=%s FOR SHARE)
+                INSERT INTO reeldub.jobs(doc) SELECT %s::jsonb
+                WHERE NOT EXISTS (SELECT 1 FROM account WHERE doc->'banned'='true'::jsonb)""",
+                (Jsonb(job["owner"]),Jsonb(encode(job)))).rowcount == 1
+
+    def admin_accounts(self, cutoff):
+        with self.connection() as conn:
+            return conn.execute("""
+                SELECT count(*), count(*) FILTER (WHERE doc->'banned'='true'::jsonb),
+                    count(*) FILTER (WHERE doc->'last_sign_in' >= %s::jsonb)
+                FROM reeldub.accounts""", (Jsonb(encode(cutoff)),)).fetchone()
+
+    def admin_performance(self):
+        # Aggregate on the server only when the operator asks. No telemetry polling or event table.
+        with self.connection() as conn:
+            return conn.execute("""WITH sample AS (
+                SELECT doc->>'state' AS state, doc->>'source_language' AS source,
+                       coalesce(doc->>'target_language','en') AS target,
+                       coalesce(doc->>'lab_mode','standard') AS mode,
+                       coalesce((doc->>'cache_hits')::bigint,0) AS hits, doc ? 'report' AS reported,
+                       (doc#>>'{created,$date}')::timestamptz AS created,
+                       (doc#>>'{started,$date}')::timestamptz AS started,
+                       (doc#>>'{finished,$date}')::timestamptz AS finished,
+                       (doc->>'media_seconds')::float8 AS duration
+                FROM reeldub.jobs WHERE doc->'deleted' IS DISTINCT FROM 'true'::jsonb)
+                SELECT state,source,target,mode,count(*),sum(hits),count(*) FILTER (WHERE reported),
+                    coalesce(sum(extract(epoch FROM finished-started)) FILTER (WHERE state='done'),0),
+                    coalesce(sum(duration) FILTER (WHERE state='done'),0),
+                    coalesce(sum(extract(epoch FROM started-created)),0),count(started)
+                FROM sample GROUP BY state,source,target,mode""").fetchall()
 
     def library(self, user, ids=None):
         scope = sql.SQL("")

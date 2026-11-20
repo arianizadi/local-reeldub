@@ -1,6 +1,7 @@
 """Estimate dialogue and the stereo music/effects bed at the source timeline's 48 kHz."""
 from pathlib import Path
 import sys
+from contextlib import nullcontext
 from server.gpu import stage
 
 import numpy as np
@@ -26,7 +27,13 @@ def main():
                 block = src.read(min(len(src), stop + 4 * rate) - left, dtype="float32", always_2d=True)
                 if len(block) < rate:
                     block = np.pad(block, ((0, rate - len(block)), (0, 0)))
-                stems = model.infer(block.T, sample_rate=rate)
+                if len(sys.argv) > 2 and sys.argv[2] == "fp16":
+                    import torch
+                    precision = torch.autocast("cuda", dtype=torch.float16)
+                else:
+                    precision = nullcontext()
+                with precision:
+                    stems = model.infer(block.T, sample_rate=rate)
                 keep = slice(start - left, stop - left)
                 speech.write(stems["speech"][:, keep].T)
                 background.write((stems["music"][:, keep] + stems["effects"][:, keep]).T)

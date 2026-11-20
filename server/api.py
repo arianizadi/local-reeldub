@@ -26,7 +26,7 @@ from starlette.concurrency import run_in_threadpool
 
 from .wakeup import next_hour, notify
 from .db import uses_postgres, media_db, db, now, setup_indexes
-from . import checkout, erasure, store, store_history, minutes, sources
+from . import console, checkout, erasure, store, store_history, minutes, sources
 from .source import reel_url
 from .languages import outputs
 
@@ -48,6 +48,14 @@ def canonical_url(value):
 
 
 def owner(authorization: str = Header(default="")):
+    return session_owner(authorization)
+
+
+def restricted_owner(authorization: str = Header(default="")):
+    return session_owner(authorization, allow_banned=True)
+
+
+def session_owner(authorization, allow_banned=False):
     scheme, _, key = authorization.partition(" ")
     if scheme.lower() != "bearer" or not 20 <= len(key) <= 256:
         raise HTTPException(401, "Connect a server or sign in.")
@@ -66,11 +74,15 @@ def owner(authorization: str = Header(default="")):
         record = db().sessions.find_one({"_id": digest, "expires": {"$gt": stamp}}, {"owner": 1, "purpose": 1})
     if record and record["owner"] == BETA_REVIEWER and record.get("purpose") == "beta-review":
         return BETA_REVIEWER
-    if not record or not (record.get("owner") or "").startswith("apple:"):
+    if not record or record.get("purpose") or not (record.get("owner") or "").startswith("apple:"):
         raise HTTPException(401, "Your connection has expired. Sign in again.")
     closing = record["closing"] if uses_postgres() else erasure.closing(record["owner"])
     if closing:
         raise HTTPException(401, "Your connection has expired. Sign in again.")
+    if not allow_banned:
+        banned = record.get("banned") if uses_postgres() else db().accounts.find_one({"_id":record["owner"], "banned":True}, {"_id":1})
+        if banned:
+            raise HTTPException(403, "This account is suspended.")
     return record["owner"]
 
 
@@ -244,7 +256,7 @@ def privacy():
 
 ReelDub uses your Apple sign-in identifier and the email Apple shares to manage your account. Hosted account and job records are held in Neon Postgres. Video and poster bytes stay in our private media cache.
 
-When uploads are enabled, ReelDub stores private source files temporarily, normally for 24 hours, and while confirmed work needs them. ReelDub fetches submitted Reel URLs from Instagram and processes the audio and video on its render workers. Cloudflare routes hosted requests. Your account can access your job history, reports and videos. Sharing a video exports a copy to the destination you choose. After the app confirms a download, the server keeps the video for 24 hours from the last eligible request. Undelivered videos expire after seven days. Removing a dub hides it from your library, revokes playback links and clears its issue report. A private cached copy can be reused by your account until its deadline. Saved dubs remain on your device until removed.
+When uploads are enabled, ReelDub stores private source files temporarily, normally for 24 hours, and while confirmed work needs them. ReelDub fetches submitted Reel URLs from Instagram and processes the audio and video on its render workers. Cloudflare routes hosted requests. Your account can access your job history, reports and videos. The service administrator can review submitted Reel links, titles, language choices, issue reports, account contact information and processing statistics for support and moderation. A minimal suspension record may be retained to enforce a ban. Sharing a video exports a copy to the destination you choose. After the app confirms a download, the server keeps the video for 24 hours from the last eligible request. Undelivered videos expire after seven days. Removing a dub hides it from your library, revokes playback links and clears its issue report. A private cached copy can be reused by your account until its deadline. Saved dubs remain on your device until removed.
 
 Apple processes App Store payments. ReelDub stores verified transaction identifiers, products, subscription expiration or revocation, and credit usage to deliver purchases across devices. ReelDub does not receive your payment card details. Job deletion preserves the minimum purchase and quota records needed to prevent duplicate spending.
 
@@ -255,10 +267,16 @@ A self-hosted server is controlled by its operator. Its storage, network and ret
 
 
 @app.get("/v1/me")
-def me(user=Depends(owner), checkout_version: str = Header(default="", alias="X-ReelDub-Checkout")):
+def me(user=Depends(restricted_owner), checkout_version: str = Header(default="", alias="X-ReelDub-Checkout")):
     with db().profile_reads() if uses_postgres() else nullcontext():
-        account = db().accounts.find_one({"_id": user}, {"email": 1, "library_id": 1, "tier": 1, "store_token": 1}) or {}
+        account = db().accounts.find_one({"_id": user}, {"email": 1, "library_id": 1, "tier": 1, "store_token": 1, "banned": 1}) or {}
+        if account.get("banned"):
+            return {"tier":"suspended","used":0,"limit":0,"purchase_preflight":False,
+                    "library_id":account.get("library_id",hash_value(user)),"email":account.get("email")}
         result = quota(user, tier(user, account), now())
+        result["admin_console"] = console.permitted(user)
+        if result["admin_console"]:
+            result["lab_runtimes"] = console.runtimes()
         result["output_languages"] = outputs(os.getenv("REELDUB_OUTPUT_PROFILE", "light"))
         result["library_id"] = account.get("library_id", hash_value(user))
         result["email"] = account.get("email")
@@ -435,6 +453,11 @@ def apple(login: AppleLogin):
     user = "apple:" + claims["sub"]
     if erasure.closing(user):
         raise HTTPException(409, "This account was deleted. New registration opens after the daily quota resets and deletion finishes.")
+    if db().accounts.find_one({"_id":user,"banned":True},{"_id":1}):
+        # Keep Apple-verified erasure available without repopulating a moderation tombstone.
+        token = secrets.token_urlsafe(48)
+        db().sessions.insert_one({"_id":hash_value(token),"owner":user,"expires":now()+timedelta(minutes=15)})
+        return {"token":token}
     admin_email = os.getenv("ADMIN_APPLE_EMAIL", "").strip().casefold()
     verified = claims.get("email_verified") in (True, "true")
     email = claims.get("email")
@@ -460,7 +483,7 @@ class DeleteAccount(AppleLogin):
 
 
 @app.delete("/v1/account")
-def delete_account(body: DeleteAccount, user=Depends(owner)):
+def delete_account(body: DeleteAccount, user=Depends(restricted_owner)):
     if not user.startswith("apple:") or "apple:" + verify_identity(body)["sub"] != user:
         raise HTTPException(403, "Confirm deletion with the Apple Account that owns these dubs.")
     db().account_deletions.update_one({"_id": user}, {"$setOnInsert": {"created": now()}}, upsert=True)
@@ -469,7 +492,7 @@ def delete_account(body: DeleteAccount, user=Depends(owner)):
 
 
 @app.delete("/v1/session", status_code=204)
-def logout(authorization: str = Header(), user=Depends(owner)):
+def logout(authorization: str = Header(), user=Depends(restricted_owner)):
     # The review key is a reusable, operator-provisioned credential until expiry or revocation.
     if user != BETA_REVIEWER:
         db().sessions.delete_one({"_id": hash_value(authorization.split(" ", 1)[1]), "owner": user})
@@ -494,6 +517,12 @@ def live_media_query(stamp, include_cache=False):
     return {"state": "done", "artifact": {"$exists": True}, **visibility,
             "media_expired": {"$ne": True}, "$or": [
                 {"media_expires": {"$exists": False}}, {"media_expires": {"$gt": stamp}}]}
+
+
+def cache_hit_count(request_id):
+    count = {"$ifNull":["$cache_hits",0]}
+    replay = {"$in":[{"$literal":request_id},{"$ifNull":["$request_keys",[]]}]}
+    return {"$cond":[{"$or":[replay,{"$ne":["$state","done"]}]}, count, {"$add":[count,1]}]}
 
 
 def renew_media(stamp):
@@ -525,7 +554,7 @@ def summary(job, before=None):
                 title=job.get("title"), author=job.get("author"), has_poster=job.get("has_poster", False),
                 available_on_server=media_available(job), cache_expires=job.get("media_expires"),
                 source_id=str(job["source_file"]) if job.get("source_file") else None, trimmed=job.get("trimmed",False),
-                target_language=job.get("target_language", "en"), source_language=job.get("source_language"), first_caption=job.get("first_caption"))
+                lab_mode=job.get("lab_mode"), lab_runtime=job.get("lab_runtime"), voice_batch=job.get("voice_batch"), target_language=job.get("target_language", "en"), source_language=job.get("source_language"), first_caption=job.get("first_caption"))
 
 
 def enqueue_render(job, plan, limit):
@@ -550,7 +579,14 @@ def enqueue_render(job, plan, limit):
     ticket = notify(preparing=True)
     if not ticket:
         raise HTTPException(503, "The render queue is temporarily unavailable. Try again shortly.")
-    db().jobs.insert_one(job)
+    if uses_postgres():
+        if not db().admit_job(job):
+            raise HTTPException(403,"This account is suspended.")
+    else:
+        db().jobs.insert_one(job)
+        if job["owner"].startswith("apple:") and db().accounts.find_one({"_id":job["owner"],"banned":True},{"_id":1}):
+            console.cancel_pending(job["owner"])
+            raise HTTPException(403,"This account is suspended.")
     notify(ticket=ticket)
 
 
@@ -570,7 +606,7 @@ def submit(body: Submission, user=Depends(owner)):
         if previous:
             if previous.get("deleted"):
                 raise HTTPException(410, "This dub was deleted.")
-            if previous["url"] != url or previous.get("target_language", "en") != target:
+            if previous.get("lab_mode") or previous["url"] != url or previous.get("target_language", "en") != target:
                 raise HTTPException(409, "This request was already used for another Reel.")
             return summary(previous)
 
@@ -580,9 +616,9 @@ def submit(body: Submission, user=Depends(owner)):
     stamp = now()
     try:
         cached = db().jobs.find_one_and_update(
-            {"owner": user, "url": url, "trimmed":{"$ne":True}, "target_language": target_filter, **live_media_query(stamp, include_cache=True),
+            {"owner": user, "url": url, "lab_mode":{"$exists":False}, "trimmed":{"$ne":True}, "target_language": target_filter, **live_media_query(stamp, include_cache=True),
              "$and": [{"$or": [{"deleted": {"$ne": True}}, {"cache_retained": True}]}]},
-            [{"$unset": ["deleted", "cache_retained"]}, {"$set": {"last_requested": stamp, "media_expires": renew_media(stamp), "request_keys": {
+            [{"$unset": ["deleted", "cache_retained"]}, {"$set": {"last_requested": stamp, "cache_hits": cache_hit_count(request_id), "media_expires": renew_media(stamp), "request_keys": {
                 "$setUnion": [{"$ifNull": ["$request_keys", []]}, [request_id]]}}}],
             projection={"poster": 0}, sort=[("created", -1)], return_document=ReturnDocument.AFTER)
     except DuplicateKeyError:
@@ -814,7 +850,12 @@ def playback(job_id: str, user=Depends(owner)):
 
 @app.api_route("/v1/play/{job_id}/{ticket}", methods=["GET", "HEAD"])
 def stream(job_id: str, ticket: str, request: Request, range: str | None = Header(default=None)):
-    grant = db().playback.find_one({"_id": hash_value(ticket), "job": job_id, "expires": {"$gt": now()}})
+    if uses_postgres():
+        grant = db().playback_grant(hash_value(ticket), job_id, now())
+    else:
+        grant = db().playback.find_one({"_id": hash_value(ticket), "job": job_id, "expires": {"$gt": now()}})
+        if grant and db().accounts.find_one({"_id":grant["owner"],"banned":True},{"_id":1}):
+            grant = None
     if not grant:
         raise HTTPException(404, "Playback link expired.")
     job = owned(job_id, grant["owner"])
@@ -875,3 +916,6 @@ def report(job_id: str, issue: Issue, user=Depends(owner)):
     if not result.matched_count:
         raise HTTPException(404, "Reel not found.")
     return {"reported": True}
+
+
+app.include_router(console.router(owner))

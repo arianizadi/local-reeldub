@@ -12,6 +12,19 @@ final class StudioSmoke: XCTestCase {
         XCTAssertTrue(app.buttons["continue-apple"].waitForExistence(timeout: 6))
     }
 
+    func testConsoleOnSignedInAdministratorDevice() throws {
+        let app = XCUIApplication()
+        app.launch()
+        guard app.buttons["library-options"].waitForExistence(timeout: 6) else { throw XCTSkip("Signed-in device required.") }
+        app.buttons["library-options"].tap()
+        app.buttons["account"].tap()
+        guard app.buttons["Admin console"].waitForExistence(timeout: 8) else { throw XCTSkip("Pinned administrator required.") }
+        app.buttons["Admin console"].tap()
+        XCTAssertTrue(app.buttons["continue-apple"].waitForExistence(timeout: 6))
+        XCTAssertFalse(app.buttons["Render lab"].exists)
+
+    }
+
     func testCreatorCatalogOnSignedInDevice() throws {
         let app = XCUIApplication()
         app.launch()

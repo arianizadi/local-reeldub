@@ -26,3 +26,6 @@ xcuserdata/
 *.dump
 *.mobileprovision
 ios/Config/LocalSigning.xcconfig
+
+.tts-graph/
+.omni-venv/

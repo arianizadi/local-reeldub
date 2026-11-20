@@ -38,6 +38,7 @@ services:
       REELDUB_ACCESS_MODE: operator
       SELF_HOST_KEY: ${SELF_HOST_KEY}
       APPLE_CLIENT_ID: ""
+      REELDUB_LAB_RUNTIMES: ${REELDUB_LAB_RUNTIMES:-}
       ADMIN_APPLE_SUB: ${ADMIN_APPLE_SUB:-}
     ports: ["127.0.0.1:${REELDUB_PORT:-8300}:8300"]
     networks: [database, web, intake]

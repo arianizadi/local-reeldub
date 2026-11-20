@@ -32,6 +32,8 @@ Setup generates a private `.env`, starts MongoDB and the API, and downloads the 
 
 A physical phone needs a reachable HTTPS address for the API. TestFlight delivers the app over the internet. A private network such as NetBird can carry API traffic to your home server. For the Studio GPU worker, remote nodes, Apple account setup and private TestFlight distribution, see the [operator and product guide](PRODUCT.md).
 
+The hosted owner can open **Account → Admin console** to inspect requests and reports, review allowances, suspend accounts and compare fresh dubs in the render lab. See the [hosted console setup and GPU timings](HOSTING.md#hosted-administrator-console).
+
 ## Use the standalone command line
 
 On macOS, Linux, or Windows with WSL2, run:

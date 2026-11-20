@@ -303,6 +303,9 @@ private struct TransferRow: View {
             }.frame(width: 50, height: 64).clipShape(RoundedRectangle(cornerRadius: 8))
             VStack(alignment: .leading, spacing: 4) {
                 Text(job.displayTitle).font(.subheadline.weight(.semibold)).lineLimit(2)
+                if let mode = job.lab_mode {
+                    Text("Lab · " + mode.capitalized + " · " + (job.lab_runtime ?? "standard")).font(.caption2).foregroundStyle(.secondary)
+                }
                 switch job.rdPhase {
                 case .running, .queued:
                     TimelineView(.periodic(from: .now, by: 1)) { context in

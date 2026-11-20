@@ -132,7 +132,16 @@ final class Studio {
             }
             let legacyProgress = progressOnly && account != nil && account?.batch_progress != true
             async let concurrentProfile: Data? = legacyProgress ? nil : api.data("v1/me")
-            let payload = try await api.data("v1/jobs")
+            let payload: Data
+            do { payload = try await api.data("v1/jobs") }
+            catch let denial as ServiceError where denial.status == 403 {
+                let data: Data
+                if let profile = try await concurrentProfile { data = profile }
+                else { data = try await api.data("v1/me") }
+                let profile = try JSONDecoder().decode(Account.self, from: data)
+                if current(), profile.tier == "suspended" { account = profile }
+                throw denial
+            }
             guard current() else { return }
             let remote = try JSONDecoder().decode([Job].self, from: payload)
             if legacyProgress, remote.contains(where: { $0.rdPhase.isActive }) {

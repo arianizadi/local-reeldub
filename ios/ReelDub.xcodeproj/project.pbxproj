@@ -33,6 +33,7 @@
 		C2738F45B7E4966A9BDBB60D /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = FB74316CA58B05D52430B6D2 /* Assets.xcassets */; };
 		C61CDDE95B6BC5E80D12403C /* ReelDubApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B3FB6960C8146A94CA0E243 /* ReelDubApp.swift */; };
 		D86B833390C7DEFB1BBE23F6 /* OfflineRemovalTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 48AEB550E3BE07777FF7AB5A /* OfflineRemovalTests.swift */; };
+		E5CD5541F98AA3E478DFD001 /* AdminConsole.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E00C4E65D8618D94922BB95 /* AdminConsole.swift */; };
 		FE9615081EFA68F9F24F1C01 /* QuoteSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE343891330017A0F05F9F8B /* QuoteSheet.swift */; };
 /* End PBXBuildFile section */
 
@@ -89,6 +90,7 @@
 		5B1D4417B7F3B25C34A902A4 /* ReelDubShare.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = ReelDubShare.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		69B0AEF679C982E1261D3F4D /* CloudStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudStore.swift; sourceTree = "<group>"; };
 		6B3FB6960C8146A94CA0E243 /* ReelDubApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReelDubApp.swift; sourceTree = "<group>"; };
+		6E00C4E65D8618D94922BB95 /* AdminConsole.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdminConsole.swift; sourceTree = "<group>"; };
 		8E562891A2A6B21798745625 /* ReportView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReportView.swift; sourceTree = "<group>"; };
 		92D9542904E859E6EB12DAD1 /* ReelDubTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = ReelDubTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		96FA3CC01133F139E561B528 /* VideoImport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoImport.swift; sourceTree = "<group>"; };
@@ -197,6 +199,7 @@
 		AC6D25E938ED0AD08F1670B6 /* ReelDub */ = {
 			isa = PBXGroup;
 			children = (
+				6E00C4E65D8618D94922BB95 /* AdminConsole.swift */,
 				FB74316CA58B05D52430B6D2 /* Assets.xcassets */,
 				69B0AEF679C982E1261D3F4D /* CloudStore.swift */,
 				E92049E5BD652058AAE3905E /* DeviceLibrary.swift */,
@@ -361,6 +364,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				E5CD5541F98AA3E478DFD001 /* AdminConsole.swift in Sources */,
 				2B0CA8FB30D77B3E183948A2 /* Client.swift in Sources */,
 				B70E7BF1D75E02F7521DB48D /* CloudStore.swift in Sources */,
 				668F34419ECB618A32D75CA2 /* DeviceLibrary.swift in Sources */,
@@ -551,7 +555,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 5;
+				CURRENT_PROJECT_VERSION = 7;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
@@ -654,7 +658,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 5;
+				CURRENT_PROJECT_VERSION = 7;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;

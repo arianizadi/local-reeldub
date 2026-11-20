@@ -1,4 +1,5 @@
 import json
+import os
 from itertools import groupby
 from pathlib import Path
 import subprocess
@@ -95,11 +96,27 @@ def write_references(lines, turns, source, folder):
             sf.write(folder / f"reference-{i}.wav", ref.mean(axis=1), rate)
 
 
-def synthesize(lines, folder, match, target="en"):
+def synthesize(lines, folder, match, target="en", runtime="standard"):
     if match:
         python = Path(__file__).resolve().parent / ".qwen-venv/bin/python"
         (folder / "lines.json").write_text(json.dumps(lines))
-        subprocess.run([python, Path(__file__).with_name("qwen_voice.py"), folder, target], check=True)
+        if runtime == "standard":
+            subprocess.run([python, Path(__file__).with_name("qwen_voice.py"), folder, target], check=True)
+        else:
+            root = Path(__file__).resolve().parent
+            env = os.environ.copy()
+            if runtime == "omni":
+                python = root / ".omni-venv/bin/python"
+                # vLLM ships a different PyTorch/CUDA build from the Studio environment.
+                env["LD_LIBRARY_PATH"] = os.pathsep.join(
+                    path for path in env.get("LD_LIBRARY_PATH", "").split(os.pathsep)
+                    if path and not Path(path).is_relative_to(root / ".qwen-venv")
+                )
+            elif runtime == "graph":
+                env["PYTHONPATH"] = str(root / ".tts-graph")
+            else:
+                raise ValueError("Unsupported lab voice runtime.")
+            subprocess.run([python, root / "lab_voice.py", folder, target, runtime], env=env, check=True)
     else:
         from kokoro_onnx import Kokoro
 

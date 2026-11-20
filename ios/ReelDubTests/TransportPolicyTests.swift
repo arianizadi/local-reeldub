@@ -14,6 +14,16 @@ final class TransportPolicyTests: XCTestCase {
         XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer test-only")
     }
 
+    func testConsoleProofAndGrantAreConfinedToTheHostedAdminAPI() throws {
+        let cloud = API(connection: Connection(base: Connection.hosted, token: "fixture"), adminGrant: "grant")
+        XCTAssertEqual(try cloud.request("v1/admin/overview").value(forHTTPHeaderField: "X-ReelDub-Admin"), "grant")
+        XCTAssertNil(try cloud.request("v1/me").value(forHTTPHeaderField: "X-ReelDub-Admin"))
+        let privateServer = try Connection.server("https://private.example")
+        let own = API(connection: Connection(base: privateServer, token: "fixture"), adminGrant: "grant")
+        XCTAssertThrowsError(try own.request("v1/admin/unlock", method: "POST", body: ["identity_token": "proof"]))
+        XCTAssertThrowsError(try own.request("v1/admin/accounts", method: "POST"))
+    }
+
     func testPlaintextLoopbackIsConfinedToSimulatorDevelopment() throws {
         for host in ["127.0.0.1", "localhost", "[::1]"] {
             #if DEBUG && targetEnvironment(simulator)
