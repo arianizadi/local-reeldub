@@ -126,9 +126,11 @@ struct Home: View {
         }
         .task(id: scenePhase == .active && studio.jobs.contains { $0.rdPhase.isActive }) {
             guard scenePhase == .active else { return }
-            while studio.jobs.contains(where: { $0.rdPhase.isActive }) && !Task.isCancelled {
-                do { try await Task.sleep(for: .seconds(studio.failure == nil ? 2 : 15)) } catch { return }
+            var failures = 0
+            while let delay = studio.progressDelay(failures: failures), !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(delay)) } catch { return }
                 await studio.refresh(progressOnly: true)
+                failures = studio.failure == nil ? 0 : min(failures + 1, 3)
             }
         }
         .task(id: scenePhase == .active ? studio.nextTransferRetry : nil) {

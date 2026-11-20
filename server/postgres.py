@@ -414,14 +414,19 @@ class Postgres:
             conn.execute("SELECT id FROM reeldub.jobs LIMIT 0")
         return {"ok": 1}
 
-    def library(self, user):
+    def library(self, user, ids=None):
+        scope = sql.SQL("")
+        params = [Jsonb(user)]
+        if ids is not None:
+            scope = sql.SQL("AND id = ANY(%s::jsonb[])")
+            params.append([Jsonb(value) for value in ids])
         with self.connection() as conn:
             rows = conn.execute(
-                """WITH feed AS MATERIALIZED (
+                sql.SQL("""WITH feed AS MATERIALIZED (
                        SELECT id, doc - ARRAY['minute_units','minute_grants','request_keys','poster'] AS item,
                               coalesce(doc->'last_requested',doc->'created') AS activity
                        FROM reeldub.jobs
-                       WHERE doc->'owner'=%s AND doc->'deleted' IS DISTINCT FROM 'true'::jsonb
+                       WHERE doc->'owner'=%s AND doc->'deleted' IS DISTINCT FROM 'true'::jsonb {scope}
                        ORDER BY activity DESC, id DESC LIMIT 100
                    ), positions AS (
                        SELECT id, rank() OVER (ORDER BY doc->'priority' DESC,
@@ -432,8 +437,8 @@ class Postgres:
                            AND EXISTS (SELECT 1 FROM feed WHERE item->>'state'='queued')
                    )
                    SELECT feed.item, positions.ahead FROM feed LEFT JOIN positions USING (id)
-                   ORDER BY feed.activity DESC, feed.id DESC""",
-                (Jsonb(user),),
+                   ORDER BY feed.activity DESC, feed.id DESC""").format(scope=scope),
+                params,
             ).fetchall()
         return [(decode(item), ahead) for item, ahead in rows]
 

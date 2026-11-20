@@ -168,10 +168,13 @@ class QueueIntegration(unittest.TestCase):
         self.assertEqual(call(path + "/poster")[0], 404)
         self.assertEqual(call("play/" + job + "/" + ticket)[0], 404)
         self.assertEqual(call("library/deletions", {"ids": [job]})[1], [])
+        self.assertEqual([item["id"] for item in call("library/progress", {"ids": [job]})[1]], [job])
+        self.assertEqual(call("library/progress", {"ids": [job]}, key=other)[1], [])
         self.assertNotEqual(call("jobs", submission())[1]["id"], job)
         self.assertEqual(call(path, method="DELETE")[0], 204)
         self.assertEqual(call("jobs", cached)[0], 410)
         self.assertEqual(call("library/deletions", {"ids": [job]})[1], [job])
+        self.assertEqual(call("library/progress", {"ids": [job]})[1], [])
         self.assertEqual(call("library/deletions", {"ids": [job]}, key=other)[1], [])
 
     def test_verified_apple_session_is_single_use(self):

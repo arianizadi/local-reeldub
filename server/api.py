@@ -171,16 +171,21 @@ def maintain_postgres():
     if claimed.matched_count:
         resume_deletions()
         purge_orphaned_uploads()
+        due = next_hour(now())
         schedule.update_one({**key, "lease": lease},
-                            {"$set": {"due": next_hour(now())}, "$unset": {"lease": ""}})
+                            {"$set": {"due": due}, "$unset": {"lease": ""}})
+    else:
+        due = schedule.find_one(key, {"due": 1})["due"]
+    return max(1, (due - now()).total_seconds())
 
 
 async def sweep_media():
     ticks = 0
     while True:
+        delay = 60
         try:
             if uses_postgres():
-                await run_in_threadpool(maintain_postgres)
+                delay = await run_in_threadpool(maintain_postgres)
             else:
                 await run_in_threadpool(resume_deletions)
                 if ticks % 60 == 0:
@@ -188,7 +193,7 @@ async def sweep_media():
             ticks += 1
         except Exception:
             logging.exception("ReelDub media cleanup will retry")
-        await asyncio.sleep(60)
+        await asyncio.sleep(delay)
 
 
 @asynccontextmanager
@@ -250,6 +255,7 @@ def me(user=Depends(owner), checkout_version: str = Header(default="", alias="X-
     result["email"] = account.get("email")
     result.update(store.balances(user))
     result["creator_minutes"] = minutes.enabled()
+    result["batch_progress"] = True
     if minutes.enabled():
         monthly, pack = minutes.funding(user,result["tier"],now())
         result.update(monthly_seconds=len(monthly), pack_seconds=len(pack))
@@ -532,10 +538,11 @@ def enqueue_render(job, plan, limit):
             funded = daily or bool(job.get("extra_ticket"))
         if not funded:
             raise HTTPException(402, "There is not enough time in your balance.")
-    if not notify(preparing=True):
+    ticket = notify(preparing=True)
+    if not ticket:
         raise HTTPException(503, "The render queue is temporarily unavailable. Try again shortly.")
     db().jobs.insert_one(job)
-    notify()
+    notify(ticket=ticket)
 
 
 @app.post("/v1/jobs")
@@ -654,10 +661,17 @@ def owned(job_id, user, *, poster=False):
 
 @app.get("/v1/jobs")
 def jobs(user=Depends(owner)):
+    return library_feed(user)
+
+
+def library_feed(user, ids=None):
     if uses_postgres():
-        return [summary(item, ahead) for item, ahead in db().library(user)]
+        return [summary(item, ahead) for item, ahead in db().library(user, ids)]
+    query = {"owner": user, "deleted": {"$ne": True}}
+    if ids is not None:
+        query["_id"] = {"$in": ids}
     feed = db().jobs.aggregate([
-        {"$match": {"owner": user, "deleted": {"$ne": True}}},
+        {"$match": query},
         {"$unset": ["poster", "request_keys", "minute_units", "minute_grants"]},
         {"$set": {"activity": {"$ifNull": ["$last_requested", "$created"]}}},
         {"$sort": {"activity": -1, "_id": -1}}, {"$limit": 100}])
@@ -666,6 +680,11 @@ def jobs(user=Depends(owner)):
 
 class LibraryCheck(BaseModel):
     ids: list[UUID] = Field(max_length=100)
+
+
+@app.post("/v1/library/progress")
+def library_progress(body: LibraryCheck, user=Depends(owner)):
+    return library_feed(user, [str(value) for value in body.ids]) if body.ids else []
 
 
 @app.post("/v1/library/deletions")

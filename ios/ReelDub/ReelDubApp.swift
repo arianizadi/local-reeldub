@@ -26,6 +26,7 @@ final class Studio {
     private var deleting: Set<String> = []
     private var refreshGeneration = 0
     private var fullRefreshes = 0
+    @ObservationIgnored var unfinishedPurchases: AsyncStream<Void>.Continuation?
 
     init(connection: Connection? = Connection.read()) {
         self.connection = connection
@@ -70,6 +71,12 @@ final class Studio {
     private var pending: (url: String, target: String, id: UUID)?
     var api: API? { connection.map { API(connection: $0) } }
 
+    func progressDelay(failures: Int) -> Int? {
+        guard jobs.contains(where: { $0.rdPhase.isActive }) else { return nil }
+        if failures > 0 { return failures == 1 ? 15 : (failures == 2 ? 30 : 60) }
+        return jobs.contains(where: { $0.rdPhase == .running }) ? 5 : 10
+    }
+
     func refresh(progressOnly: Bool = false) async {
         guard let api else { return }
         if progressOnly && fullRefreshes > 0 { return }
@@ -80,10 +87,24 @@ final class Studio {
         var revision = libraryRevision
         func current() -> Bool { matches(api) && revision == libraryRevision && generation == refreshGeneration }
         do {
+            if progressOnly, account?.batch_progress == true {
+                let active = jobs.filter { $0.rdPhase.isActive }.map(\.id)
+                guard !active.isEmpty else { return }
+                if active.count <= 100 {
+                    let data = try await api.post("v1/library/progress", ["ids": active])
+                    guard current() else { return }
+                    let updates = try JSONDecoder().decode([Job].self, from: data)
+                    if applyActiveProgress(updates, expected: Set(active)) {
+                        failure = nil
+                        return
+                    }
+                }
+                // A completion or deletion needs a full reconciliation, including the balance and downloads.
+            }
             let payload = try await api.data("v1/jobs")
             guard current() else { return }
             let remote = try JSONDecoder().decode([Job].self, from: payload)
-            if progressOnly, account != nil, remote.contains(where: { $0.rdPhase.isActive }) {
+            if progressOnly, account != nil, account?.batch_progress != true, remote.contains(where: { $0.rdPhase.isActive }) {
                 mergeJobs(remote)
                 failure = nil
                 startTransfer()
@@ -128,6 +149,12 @@ final class Studio {
         } catch {
             if current(), !Task.isCancelled { failure = error.localizedDescription }
         }
+    }
+    func applyActiveProgress(_ updates: [Job], expected: Set<String>) -> Bool {
+        guard updates.allSatisfy({ $0.rdPhase.isActive }), Set(updates.map(\.id)) == expected else { return false }
+        let latest = Dictionary(updates.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
+        jobs = jobs.map { latest[$0.id] ?? $0 }
+        return true
     }
     private func mergeJobs(_ remote: [Job]) {
         let ids = Set(remote.map(\.id))
@@ -183,6 +210,7 @@ final class Studio {
 
     private func clearSession() {
         resetTransfers()
+        unfinishedPurchases = nil
         Connection.clear(); connection = nil; jobs = []; account = nil; failure = nil; pending = nil
     }
     private func startTransfer() {

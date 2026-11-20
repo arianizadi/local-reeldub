@@ -144,6 +144,7 @@ struct Account: Codable {
     let email, library_id: String?
     let output_languages: [String]?
     var creator_minutes: Bool? = nil
+    var batch_progress: Bool? = nil
     var monthly_seconds: Int? = nil
     var pack_seconds: Int? = nil
     let store_token: UUID?

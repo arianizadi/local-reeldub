@@ -28,18 +28,29 @@ extension Studio {
         guard transaction.environment != .xcode else { throw Problem("This Xcode test purchase has no live account value.") }
         var body = ["signed_transaction": result.jwsRepresentation]
         body["intent"] = intent?.uuidString
-        _ = try await api.data("v1/store/transactions", method: "POST", body: body)
+        do { _ = try await api.data("v1/store/transactions", method: "POST", body: body) }
+        catch {
+            if account?.store_token == token { unfinishedPurchases?.yield(()) }
+            throw error
+        }
         await transaction.finish()
     }
 
     func observePurchases() async {
         guard let api, api.connection.isHosted, let token = account?.store_token else { return }
         // Start listening before scanning unfinished purchases. A verified transaction may arrive through both paths.
+        let (retries, trigger) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        unfinishedPurchases = trigger
+        trigger.yield(())
+        defer { trigger.finish() }
         await withTaskGroup(of: Void.self) { group in
             group.addTask { @MainActor in
                 for await result in StoreKit.Transaction.updates {
                     guard !Task.isCancelled else { return }
-                    if (try? await self.deliver(result, using: api, token: token)) != nil { await self.refresh() }
+                    do {
+                        try await self.deliver(result, using: api, token: token)
+                        await self.refresh()
+                    } catch { trigger.yield(()) }
                 }
             }
             group.addTask { @MainActor in
@@ -49,14 +60,24 @@ extension Studio {
                         try? await self.deliver(result, using: api, token: token)
                     }
                 }
-                while !Task.isCancelled {
+                var retryDelay = 60
+                for await _ in retries {
+                    guard !Task.isCancelled else { return }
                     var delivered = false
+                    var failed = false
                     for await result in StoreKit.Transaction.unfinished {
                         guard !Task.isCancelled else { return }
-                        if (try? await self.deliver(result, using: api, token: token)) != nil { delivered = true }
+                        do {
+                            try await self.deliver(result, using: api, token: token)
+                            delivered = true
+                        } catch { failed = true }
                     }
                     if delivered { await self.refresh() }
-                    try? await Task.sleep(for: .seconds(60))
+                    if failed {
+                        do { try await Task.sleep(for: .seconds(retryDelay)) } catch { return }
+                        retryDelay = min(retryDelay * 2, 600)
+                        trigger.yield(())
+                    } else { retryDelay = 60 }
                 }
             }
             await group.waitForAll()

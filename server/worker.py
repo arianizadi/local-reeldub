@@ -203,9 +203,10 @@ def serve():
             if not indexed:
                 db().command("ping")
                 indexed = True
-            if not draining and not wake.due():
-                time.sleep(1)
-                continue
+            if not draining:
+                wake.wait()
+                if not wake.due():
+                    continue
             with pipeline_slot() as available:
                 job = claim() if available else None
                 if available:
@@ -216,7 +217,7 @@ def serve():
                     draining = True
                 if job:
                     process(job)
-            if not job:
+            if not available:
                 time.sleep(0.5)
         except (PyMongoError, PostgresError, PoolTimeout) as error:
             draining = True

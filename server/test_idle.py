@@ -2,7 +2,11 @@
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 import os
+import select
+import sys
+import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 from uuid import uuid4
@@ -13,6 +17,25 @@ from . import api, wakeup
 from .db import db, media_db, now, uses_postgres
 
 
+class LocalWakeTests(unittest.TestCase):
+    @unittest.skipUnless(sys.platform == "linux", "Linux notification")
+    def test_one_signal_wakes_every_waiter_and_idle_reads_no_queue(self):
+        with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {"REELDUB_WAKE_FILE": str(Path(temp) / "signal")}), patch.object(wakeup, "uses_postgres", return_value=False):
+            workers = [wakeup.Wake(), wakeup.Wake()]
+            for worker in workers:
+                self.assertIsNotNone(worker.watcher)
+                self.addCleanup(worker.watcher.close)
+                worker.watcher.read(timeout=0)
+            wakeup.notify()
+            for worker in workers:
+                self.assertTrue(select.select([worker.watcher], [], [], 1)[0])
+                worker.wait()
+                self.assertFalse(select.select([worker.watcher], [], [], 0)[0])
+                with patch.object(worker.watcher, "read", return_value=[]) as read:
+                    worker.wait()
+                    read.assert_called_once_with(timeout=60000)
+
+
 @unittest.skipUnless(os.getenv("REELDUB_TEST_DATABASE") == "1" and uses_postgres(), "Disposable Postgres only")
 class IdleTests(unittest.TestCase):
     def test_only_one_replica_runs_a_due_sweep(self):
@@ -21,7 +44,9 @@ class IdleTests(unittest.TestCase):
         with patch.object(api, "resume_deletions") as cleanup, patch.object(api, "purge_orphaned_uploads") as purge:
             with ThreadPoolExecutor(max_workers=4) as pool:
                 list(pool.map(lambda _: api.maintain_postgres(), range(4)))
-            api.maintain_postgres()
+            delay = api.maintain_postgres()
+            self.assertGreater(delay, 0)
+            self.assertLessEqual(delay, 3600)
             cleanup.assert_called_once()
             purge.assert_called_once()
         self.assertGreater(schedule.find_one({"_id": "postgres-hourly"})["due"], now())
@@ -51,6 +76,22 @@ class IdleTests(unittest.TestCase):
         self.assertEqual(failure.exception.status_code, 503)
         self.assertIsNone(db().jobs.find_one({"_id": job["_id"]}))
 
+    def test_completed_admission_skips_recovery_polls_but_overlap_retains_them(self):
+        signals = media_db().queue_wake
+        signals.delete_one({"_id": "gpu"})
+        worker = wakeup.Wake()
+        first = wakeup.notify(preparing=True)
+        self.assertTrue(worker.due())
+        wakeup.notify(ticket=first)
+        self.assertTrue(worker.due())
+        self.assertIsNone(worker.settle_until)
+        first = wakeup.notify(preparing=True)
+        second = wakeup.notify(preparing=True)
+        wakeup.notify(ticket=second)
+        wakeup.notify(ticket=first)
+        self.assertTrue(worker.due())
+        self.assertGreater(worker.settle_until, now())
+
     def test_anonymous_challenge_uses_local_ttl_and_can_be_consumed_only_once(self):
         req = SimpleNamespace(client=SimpleNamespace(host="127.0.0.1"), headers={})
         with patch.object(api, "db", side_effect=AssertionError("unexpected metadata connection")):
@@ -77,3 +118,9 @@ class IdleTests(unittest.TestCase):
         for row, position in feed:
             self.assertEqual(row["owner"], user)
             self.assertEqual(position, api.summary(row)["ahead"])
+        selected, _ = feed[0]
+        other_job = db().jobs.find_one({"owner": other})
+        ids = api.LibraryCheck(ids=[selected["_id"], other_job["_id"], uuid4()])
+        self.assertEqual(api.library_progress(ids, user), [api.summary(selected)])
+        db().jobs.update_one({"_id": selected["_id"]}, {"$set": {"deleted": True}})
+        self.assertEqual(api.library_progress(ids, user), [])

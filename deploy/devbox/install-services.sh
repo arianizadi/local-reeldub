@@ -72,6 +72,7 @@ Wants=reeldub-media.service
 WorkingDirectory=$repo
 EnvironmentFile=$cfg/$name.env
 Environment=REELDUB_GPU_SCHEDULER=1 WORKER_PROCESSES=2 MONGO_TLS_CA_FILE=$cfg/ca.pem TMPDIR=%t/reeldub-$name-tmp
+Environment=REELDUB_WAKE_FILE=%t/reeldub-queue.signal
 RuntimeDirectory=reeldub-$name-tmp
 RuntimeDirectoryMode=0700
 MemoryMax=$memory
