@@ -7,6 +7,8 @@ import numpy as np
 import sherpa_onnx as so
 import soundfile as sf
 
+from server.languages import LANGUAGES
+from server.progress import report
 from assets import CACHE, SPEAKER
 
 
@@ -93,18 +95,19 @@ def write_references(lines, turns, source, folder):
             sf.write(folder / f"reference-{i}.wav", ref.mean(axis=1), rate)
 
 
-def synthesize(lines, folder, match):
+def synthesize(lines, folder, match, target="en"):
     if match:
         python = Path(__file__).resolve().parent / ".qwen-venv/bin/python"
         (folder / "lines.json").write_text(json.dumps(lines))
-        subprocess.run([python, Path(__file__).with_name("qwen_voice.py"), folder], check=True)
+        subprocess.run([python, Path(__file__).with_name("qwen_voice.py"), folder, target], check=True)
     else:
         from kokoro_onnx import Kokoro
 
         model = Kokoro(str(CACHE / "kokoro-v1.0.fp16.onnx"), str(CACHE / "voices-v1.0.bin"))
-        voices = ["af_heart", "am_fenrir", "bf_emma", "bm_george", "af_bella", "am_michael"]
+        voices = LANGUAGES[target].voices
         assigned = {}
         for i, line in enumerate(lines):
             voice = assigned.setdefault(line["speaker"], voices[len(assigned) % len(voices)])
-            samples, rate = model.create(line["text"], voice=voice, lang="en-us", speed=1.0)
+            samples, rate = model.create(line["text"], voice=voice, lang=LANGUAGES[target].preset_lang, speed=1.0)
             sf.write(folder / f"{i}.wav", samples, rate)
+            report(completed=i+1, total=len(lines))

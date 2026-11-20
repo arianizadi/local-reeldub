@@ -3,31 +3,44 @@ import json
 from pathlib import Path
 import re
 import sys
+from server.gpu import stage
+from server.languages import LANGUAGES as OUTPUTS
 
 MODEL = "unsloth/gemma-3-12b-it-bnb-4bit"
 
 
 def main():
     from huggingface_hub import snapshot_download
-    prepare = sys.argv[1] == "--prepare"
-    weights = snapshot_download(MODEL, local_files_only=not prepare)
-    if prepare:
+    if sys.argv[1] == "--prepare":
+        snapshot_download(MODEL)
         return
-    from transformers import AutoModelForCausalLM, AutoTokenizer
+    from http.client import HTTPException
+    import index_translate as index
+    path = Path(sys.argv[1]) / "lines.json"
+    lines = json.loads(path.read_text())
     from transformers.models.whisper.tokenization_whisper import LANGUAGES
+    lang = LANGUAGES.get(sys.argv[2], sys.argv[2]).title()
+    target = OUTPUTS[sys.argv[3] if len(sys.argv) > 3 else "en"].name
+    if index.SERVER.is_file() and index.WEIGHTS.is_file():
+        try:
+            index.translate(lines, lang, target)
+        except (OSError, ValueError, RuntimeError, KeyError, IndexError, TypeError, HTTPException) as exc:
+            print(f"Index translation unavailable ({type(exc).__name__}). Retrying with Gemma.", flush=True)
+        else:
+            path.write_text(json.dumps(lines, ensure_ascii=False))
+            path.with_name("translator.txt").write_text("IndexTeam/Index-Translate-9B-Q5_K_M")
+            return
+    weights = snapshot_download(MODEL, local_files_only=True)
+    from transformers import AutoModelForCausalLM, AutoTokenizer
     import torch
 
     tokenizer = AutoTokenizer.from_pretrained(weights)
     model = AutoModelForCausalLM.from_pretrained(weights, dtype=torch.bfloat16, device_map="cuda:0")
-    path = Path(sys.argv[1]) / "lines.json"
-    lines = json.loads(path.read_text())
-    lang = LANGUAGES.get(sys.argv[2], sys.argv[2]).title()
-
     def translate(batch):
         numbered = "\n".join(f"{i}. {line['text']}" for i, line in enumerate(batch, 1))
-        prompt = (f"Translate this {lang} dialogue into natural spoken English. It was transcribed by ear; "
+        prompt = (f"Translate this {lang} dialogue into natural spoken {target}. It was transcribed by ear; "
                   "resolve homophones using the whole conversation. Preserve the literal objects, slang, "
-                  "vulgarity, negation and joke. Return one numbered English line per original line, "
+                  f"vulgarity, negation and joke. Return one numbered {target} line per original line, "
                   "in order, with no commentary.\n\n" + numbered)
         ids = tokenizer.apply_chat_template([{"role": "user", "content": prompt}], tokenize=True,
                                             add_generation_prompt=True, return_tensors="pt").to(model.device)
@@ -51,8 +64,14 @@ def main():
     for start in range(0, len(pending), 12):
         translate(pending[start:start + 12])
     path.write_text(json.dumps(lines, ensure_ascii=False))
+    path.with_name("translator.txt").write_text(MODEL)
 
 
 if __name__ == "__main__":
-    main()
+    if sys.argv[1] == "--prepare":
+        main()
+    else:
+        with stage("translation"):
+            print("GPU stage: Translating", flush=True)
+            main()
 

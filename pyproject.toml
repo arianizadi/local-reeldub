@@ -1,7 +1,7 @@
 [project]
 name = "local-reeldub"
 version = "0.1.0"
-description = "Turn a YouTube video, Instagram Reel, or local video into an English dub on your own machine."
+description = "Turn an Instagram Reel or local video into a multilingual dub on your own machine."
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "faster-whisper==1.2.1",

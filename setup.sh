@@ -3,12 +3,14 @@ set -euo pipefail
 cd "$(dirname "$0")"
 model=large-v3
 qwen=auto
+index=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --model) model="${2:?Supply small, medium, or large-v3}"; shift 2 ;;
     --studio|--qwen) qwen=1; shift ;;
+    --index) index=1; qwen=1; shift ;;
     --light) qwen=0; shift ;;
-    *) echo "Usage: ./setup.sh [--model small|medium|large-v3] [--studio|--light]" >&2; exit 2 ;;
+    *) echo "Usage: ./setup.sh [--model small|medium|large-v3] [--studio|--light] [--index]" >&2; exit 2 ;;
   esac
 done
 case "$model" in small|medium|large-v3) ;; *) echo "Unknown translation model: $model" >&2; exit 2 ;; esac
@@ -49,7 +51,9 @@ if [[ "$qwen" == 1 ]]; then
   uv pip install --python .qwen-venv/bin/python 'qwen-tts==0.1.1' 'bitsandbytes==0.46.1' 'bandit-infer @ git+https://github.com/openmirlab/bandit-infer.git@96ea0ec12aeb444f379c2f5145fb8ee58b58cf19'
   .qwen-venv/bin/python qwen_voice.py --prepare
   .qwen-venv/bin/python translate_lines.py --prepare
+  if [[ "$index" == 1 ]]; then .qwen-venv/bin/python index_translate.py; fi
   .qwen-venv/bin/python separate.py --prepare
+  .qwen-venv/bin/python clean_background.py --prepare
   touch .qwen-venv/ready
 else
   rm -f .qwen-venv/ready

@@ -4,11 +4,29 @@ import Vision
 final class StudioSmoke: XCTestCase {
     private func welcome(_ app: XCUIApplication) {
         app.launch()
-        if app.buttons["Account"].waitForExistence(timeout: 2) {
-            app.buttons["Account"].tap()
+        if app.buttons["library-options"].waitForExistence(timeout: 2) {
+            app.buttons["library-options"].tap()
+            app.buttons["account"].tap()
             app.buttons["Sign out"].tap()
         }
         XCTAssertTrue(app.buttons["continue-apple"].waitForExistence(timeout: 6))
+    }
+
+    func testCreatorCatalogOnSignedInDevice() throws {
+        let app = XCUIApplication()
+        app.launch()
+        guard app.buttons["library-options"].waitForExistence(timeout: 5) else {
+            throw XCTSkip("The plan picker requires a signed-in review device.")
+        }
+        app.buttons["library-options"].tap()
+        app.buttons["account"].tap()
+        let plans = app.buttons["Plans & minutes"]
+        guard plans.waitForExistence(timeout: 3) else { throw XCTSkip("Cloud plans require a Cloud account.") }
+        plans.tap()
+        XCTAssertTrue(app.staticTexts["5 short dubs each day"].waitForExistence(timeout: 4))
+        let shot = XCTAttachment(screenshot: app.screenshot())
+        shot.name = "Creator plan picker"; shot.lifetime = .keepAlways; add(shot)
+        XCTAssertTrue(app.staticTexts["Minute pack"].exists)
     }
 
     func testHostedSignInOpensAppleAuthorization() throws {
@@ -66,12 +84,25 @@ final class StudioSmoke: XCTestCase {
         libraryImage.name = "Dubs library"
         libraryImage.lifetime = .keepAlways
         add(libraryImage)
-        app.buttons["Dub in English"].tap()
-        XCTAssertTrue(app.staticTexts["Reel link error. Paste an Instagram Reel link to get started."].waitForExistence(timeout: 4))
-        app.swipeUp()
+        app.buttons["add-reel"].tap()
+        let composer = app.textFields["new-dub"]
+        composer.tap()
+        composer.typeText("example")
+        app.buttons["confirm-dub"].tap()
+        XCTAssertTrue(app.staticTexts["reel-link-error"].waitForExistence(timeout: 4))
+        app.buttons["Clear link"].tap()
+        app.buttons["Close"].tap()
         if !job.isHittable { app.swipeDown() }
         job.tap()
         XCTAssertTrue(app.buttons["Share English video"].waitForExistence(timeout: 15))
+        let subtitles = app.switches["english-subtitles"]
+        XCTAssertTrue(subtitles.waitForExistence(timeout: 12))
+        let previous = subtitles.value as? String
+        XCTAssertNotNil(previous)
+        subtitles.tap()
+        XCTAssertNotEqual(subtitles.value as? String, previous)
+        subtitles.tap()
+        XCTAssertEqual(subtitles.value as? String, previous)
         let report = app.buttons.matching(NSPredicate(format: "label CONTAINS[c] 'issue report' OR label == 'Report an issue'")).firstMatch
         if !report.isHittable { app.swipeUp() }
         report.tap()

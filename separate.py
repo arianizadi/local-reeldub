@@ -1,6 +1,7 @@
 """Estimate dialogue and the stereo music/effects bed at the source timeline's 48 kHz."""
 from pathlib import Path
 import sys
+from server.gpu import stage
 
 import numpy as np
 import soundfile as sf
@@ -32,4 +33,9 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    if sys.argv[1] == "--prepare":
+        main()
+    else:
+        with stage("exclusive"):
+            print("GPU stage: Separating audio", flush=True)
+            main()

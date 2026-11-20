@@ -1,6 +1,11 @@
 services:
+  api:
+    environment: {REELDUB_OUTPUT_PROFILE: studio}
   worker:
     gpus: all
+    environment:
+      REELDUB_GPU_SCHEDULER: "1"
+      WORKER_PROCESSES: ${WORKER_PROCESSES:-2}
     command: ["/bin/bash","-ec","./setup.sh --studio && exec python -m server.worker"]
     volumes:
       - studio-env:/app/.qwen-venv

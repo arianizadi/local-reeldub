@@ -1,3 +1,5 @@
+from server.languages import LANGUAGES
+import os
 import subprocess
 
 import numpy as np
@@ -71,15 +73,26 @@ def clock(seconds):
     return f"{ms // 3600000:02}:{ms // 60000 % 60:02}:{ms // 1000 % 60:02},{ms % 1000:03}"
 
 
-def render(media, lines, folder):
-    captions = folder / "english.srt"
+def source_time_limit():
+    seconds = os.getenv("REELDUB_MAX_SECONDS")
+    return ["-t", str(max(1, min(600, int(seconds))))] if seconds else []
+
+
+def source_input_options():
+    # The hosted downloader requests MP4 only. Do not interpret it as a playlist.
+    return ["-protocol_whitelist", "file", "-f", "mov"] if os.getenv("REELDUB_SERVICE_LIMITS") else []
+
+
+def render(media, lines, folder, target="en"):
+    tag = "language=" + LANGUAGES[target].mp4
+    captions = folder / f"{target}.srt"
     captions.write_text("".join(
         f"{i}\n{clock(line['start'])} --> {clock(line['spoken_end'])}\n{line['text']}\n\n"
         for i, line in enumerate(lines, 1)
     ), encoding="utf-8")
-    ff("-i", media, "-i", folder / "mix.wav", "-i", captions,
-       "-map", "0:v:0", "-map", "1:a:0", "-map", "2:s:0", "-map_metadata", "-1",
+    ff(*source_input_options(), "-i", media, "-i", folder / "mix.wav", "-i", captions,
+       *source_time_limit(), "-map", "0:v:0", "-map", "1:a:0", "-map", "2:s:0", "-map_metadata", "-1",
        "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2", "-c:v", "libx264", "-crf", "19", "-preset", "fast",
        "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-c:s", "mov_text",
-       "-metadata:s:a:0", "language=eng", "-metadata:s:s:0", "language=eng",
+       "-metadata:s:a:0", tag, "-metadata:s:s:0", tag,
        "-disposition:s:0", "0", "-movflags", "+faststart", folder / "finished.mp4")

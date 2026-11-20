@@ -1,0 +1,60 @@
+{
+  "identifier": "DDD24C39-E811-5D81-B60C-33E109913A5C",
+  "nonRenewingSubscriptions": [],
+  "products": [
+    {
+      "displayPrice": "4.99",
+      "familyShareable": false,
+      "internalID": "11B77809-0BDE-5FC8-AF7F-9CABEE8411B2",
+      "localizations": [
+        {
+          "description": "15 additional minutes that carry forward.",
+          "displayName": "Minute pack",
+          "locale": "en_US"
+        }
+      ],
+      "productID": "com.arianizadi.reeldub.minutes15",
+      "referenceName": "Minute pack",
+      "type": "Consumable"
+    }
+  ],
+  "settings": {
+    "_locale": "en_US",
+    "_storefront": "USA",
+    "_failTransactionsEnabled": false
+  },
+  "subscriptionGroups": [
+    {
+      "id": "F13B304B-86C1-55E8-B52B-7F1E15559137",
+      "localizations": [],
+      "name": "ReelDub Creator",
+      "subscriptions": [
+        {
+          "displayPrice": "19.99",
+          "familyShareable": false,
+          "internalID": "F0A5D0ED-B91C-56DF-AB24-9CAB44C4F951",
+          "localizations": [
+            {
+              "description": "120 additional minutes each month and priority processing.",
+              "displayName": "ReelDub Creator",
+              "locale": "en_US"
+            }
+          ],
+          "productID": "com.arianizadi.reeldub.creator.monthly",
+          "referenceName": "ReelDub Creator",
+          "type": "RecurringSubscription",
+          "adHocOffers": [],
+          "codeOffers": [],
+          "introductoryOffer": null,
+          "recurringSubscriptionPeriod": "P1M",
+          "groupNumber": 1,
+          "subscriptionGroupID": "F13B304B-86C1-55E8-B52B-7F1E15559137"
+        }
+      ]
+    }
+  ],
+  "version": {
+    "major": 3,
+    "minor": 0
+  }
+}

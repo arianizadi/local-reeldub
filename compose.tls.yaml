@@ -1,0 +1,15 @@
+# Generate the private certificate directory with ./server/setup-mongo-tls.sh first.
+services:
+  mongo:
+    command: ["mongod", "--bind_ip_all", "--tlsMode", "requireTLS", "--tlsCertificateKeyFile", "/run/reeldub/server.pem", "--tlsCAFile", "/run/reeldub/ca.pem", "--tlsAllowConnectionsWithoutCertificates"]
+    volumes:
+      - ${REELDUB_TLS_DIR:?Set REELDUB_TLS_DIR}/server.pem:/run/reeldub/server.pem:ro
+      - ${REELDUB_TLS_DIR}/ca.pem:/run/reeldub/ca.pem:ro
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--host", "localhost", "--tls", "--tlsCAFile", "/run/reeldub/ca.pem", "--eval", "db.adminCommand('ping').ok"]
+  api:
+    environment: {MONGO_TLS_CA_FILE: /run/reeldub/ca.pem}
+    volumes: ["${REELDUB_TLS_DIR}/ca.pem:/run/reeldub/ca.pem:ro"]
+  worker:
+    environment: {MONGO_TLS_CA_FILE: /run/reeldub/ca.pem}
+    volumes: ["${REELDUB_TLS_DIR}/ca.pem:/run/reeldub/ca.pem:ro"]

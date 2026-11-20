@@ -30,16 +30,16 @@ struct Welcome: View {
                     Spacer(minLength: 28)
                     Image("voice-print").resizable().scaledToFit()
                         .frame(maxWidth: .infinity).accessibilityHidden(true)
-                    Text("Reels, in English.")
+                    Text("Reels, in your language.")
                         .font(.system(size: headline, weight: .medium, design: .serif)).tracking(-2)
                         .fixedSize(horizontal: false, vertical: true).padding(.top, 14)
-                    Text("Share a Reel from Instagram. Hear it in English, with the original background sound.")
+                    Text("Share a Reel from Instagram. Choose a dub language and hear it with the original background sound.")
                         .font(.body).foregroundStyle(.white.opacity(0.76)).fixedSize(horizontal: false, vertical: true).padding(.top, 12)
                     Spacer(minLength: 34)
                     VStack(alignment: .leading, spacing: 12) {
                         Label("ReelDub Cloud", systemImage: "cloud").font(.subheadline.weight(.semibold))
                         Text("Create an account or sign in to start dubbing.").font(.subheadline).foregroundStyle(.white.opacity(0.75))
-                        AppleButton(studio: studio, base: Connection.hosted, white: true, busy: $busy, issue: $issue)
+                        AppleButton(studio: studio, white: true, busy: $busy, issue: $issue)
                             .frame(height: 54).disabled(busy)
                         if busy { Label("Signing in…", systemImage: "clock").font(.footnote) }
                         if let message = issue ?? studio.welcomeMessage { Text(message).font(.footnote).foregroundStyle(.white).accessibilityLabel("Sign-in message. " + message) }
@@ -59,10 +59,10 @@ struct Welcome: View {
 // Use Apple's own control. A tap always starts a fresh challenge or displays an error.
 struct AppleButton: UIViewRepresentable {
     let studio: Studio
-    let base: URL
     let white: Bool
     @Binding var busy: Bool
     @Binding var issue: String?
+    var onProof: ((String, String, String) async throws -> Void)? = nil
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeUIView(context: Context) -> ASAuthorizationAppleIDButton {
@@ -86,7 +86,7 @@ struct AppleButton: UIViewRepresentable {
 
         @objc func begin(_ sender: ASAuthorizationAppleIDButton) {
             guard !view.busy, let window = sender.window else { return }
-            let base = view.base
+            let base = Connection.hosted
             self.window = window
             view.busy = true
             view.issue = nil
@@ -98,7 +98,7 @@ struct AppleButton: UIViewRepresentable {
                     guard sender.window != nil else { finish(nil); return }
                     flow = (base, nonce)
                     let request = ASAuthorizationAppleIDProvider().createRequest()
-                    request.requestedScopes = [.email]
+                    request.requestedScopes = view.onProof == nil ? [.email] : []
                     request.nonce = SHA256.hash(data: Data(nonce.utf8)).map { String(format: "%02x", $0) }.joined()
                     let auth = ASAuthorizationController(authorizationRequests: [request])
                     controller = auth
@@ -117,6 +117,12 @@ struct AppleButton: UIViewRepresentable {
             }
             Task {
                 do {
+                    if let onProof = view.onProof {
+                        let code = credential.authorizationCode.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+                        try await onProof(identity, challenge, code)
+                        finish(nil)
+                        return
+                    }
                     let api = API(connection: Connection(base: base, token: ""))
                     let payload = try await api.data("v1/apple/session", method: "POST", body: ["identity_token": identity, "challenge": challenge])
                     let session = try JSONDecoder().decode(SessionKey.self, from: payload)

@@ -3,11 +3,17 @@ ENV PYTHONUNBUFFERED=1 PIP_DISABLE_PIP_VERSION_CHECK=1
 WORKDIR /app
 COPY server/requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir -r /tmp/requirements.txt && useradd -m -u 10001 reel
-COPY server /app/server
 
 FROM base AS api
+COPY server /app/server
 USER reel
 CMD ["uvicorn","server.api:app","--host","0.0.0.0","--port","8300","--no-access-log"]
+
+FROM base AS intake
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg ca-certificates && rm -rf /var/lib/apt/lists/* && pip install --no-cache-dir yt-dlp==2026.10.26
+COPY server /app/server
+USER reel
+CMD ["uvicorn","server.intake:app","--host","0.0.0.0","--port","8310","--no-access-log"]
 
 FROM base AS worker
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg curl ca-certificates git libgomp1 && rm -rf /var/lib/apt/lists/* && pip install --no-cache-dir uv

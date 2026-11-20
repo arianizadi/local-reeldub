@@ -44,6 +44,17 @@
             parallelizable = "NO">
             <BuildableReference
                BuildableIdentifier = "primary"
+               BlueprintIdentifier = "D6EA222C091EE5412A10A687"
+               BuildableName = "ReelDubTests.xctest"
+               BlueprintName = "ReelDubTests"
+               ReferencedContainer = "container:ReelDub.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
+         <TestableReference
+            skipped = "NO"
+            parallelizable = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
                BlueprintIdentifier = "5481F381B4CE78AE4A558672"
                BuildableName = "ReelDubUITests.xctest"
                BlueprintName = "ReelDubUITests"
@@ -74,6 +85,11 @@
             ReferencedContainer = "container:ReelDub.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
+      <CommandLineArguments>
+      </CommandLineArguments>
+      <StoreKitConfigurationFileReference
+         identifier = "../../Store/ReelDub.storekit">
+      </StoreKitConfigurationFileReference>
    </LaunchAction>
    <ProfileAction
       buildConfiguration = "Release"

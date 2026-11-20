@@ -1,173 +1,1124 @@
+import PhotosUI
+import UniformTypeIdentifiers
+import CryptoKit
 import SwiftUI
+import UIKit
 
+@MainActor
 struct Home: View {
     let studio: Studio
-    @State private var settings = false
-    @State private var url = ""
-    @State private var issue: String?
-    @State private var detail: Job?
-    @Environment(\.scenePhase) private var phase
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.dynamicTypeSize) private var type
-    @FocusState private var editing: Bool
-    private var working: [Job] { studio.jobs.filter { ["running", "queued"].contains($0.state) } }
-    private var library: [Job] { studio.jobs.filter { !["running", "queued"].contains($0.state) } }
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var path: [Job] = []
+    @State private var sheet: LibrarySheet?
+    @State private var hasLoaded = false
+    @State private var searching = false
+    @State private var query = ""
+    @State private var filter: RDShelfFilter = .all
+    @State private var selecting = false
+    @State private var selected: Set<String> = []
+    @State private var deletion: [Job] = []
+    @State private var removing = false
+    private var eligible: [String] { visible.filter { !$0.rdPhase.isActive }.map(\.id) }
+    @State private var deletionError: String?
+
+    private enum LibrarySheet: String, Identifiable {
+        case composer, account
+        var id: Self { self }
+    }
+
+    private let canvas = Color(red: 0.064, green: 0.074, blue: 0.070)
+    private let leaf = Color(red: 0.75, green: 0.87, blue: 0.64)
+    private var visible: [Job] {
+        let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        return studio.jobs.filter { job in
+            filter.admits(job) && (filter != .ready || !studio.isExpired(job)) && (text.isEmpty || [job.displayTitle, job.author ?? "", job.code]
+                .contains { $0.localizedStandardContains(text) })
+        }
+    }
 
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 28) {
+        NavigationStack(path: $path) {
+            VStack(alignment: .leading, spacing: 0) {
+                header
+                if searching {
                     HStack {
-                        HStack(spacing: 7) {
-                            Image("brand-mark").resizable().frame(width: 29, height: 29).clipShape(RoundedRectangle(cornerRadius: 8))
-                            Text("ReelDub").font(.headline)
-                        }.accessibilityElement(children: .combine)
-                        Spacer()
-                        Button { settings = true } label: {
-                            Image(systemName: "person.crop.circle").font(.title2).frame(width: 44, height: 44)
-                        }.accessibilityLabel("Account")
-                    }
-                    VStack(alignment: .leading, spacing: 13) {
-                        Text("Dubs").font(.system(.largeTitle, design: .serif, weight: .semibold))
-                            .accessibilityAddTraits(.isHeader)
-                        HStack(spacing: 8) {
-                            Image(systemName: "link").foregroundStyle(.secondary).accessibilityHidden(true)
-                            TextField("Instagram Reel link", text: $url)
-                                .keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
-                                .focused($editing).onSubmit { Task { await submit() } }
-                            PasteButton(payloadType: String.self) { values in
-                                if let value = values.first { url = value; issue = nil }
-                            }.labelStyle(.iconOnly).tint(.secondary).frame(minWidth: 44, minHeight: 44)
-                        }.padding(.horizontal, 12).frame(minHeight: 53)
-                            .background(Palette.surface, in: RoundedRectangle(cornerRadius: 14))
-                        Button { Task { await submit() } } label: {
-                            HStack {
-                                Text(studio.sending ? "Queuing Reel…" : "Dub in English").font(.headline)
-                                Spacer()
-                                if studio.sending { ProgressView() } else { Image(systemName: "arrow.up.right") }
-                            }.padding(.horizontal, 17).frame(minHeight: 51)
-                                .foregroundStyle(Palette.ink).background(Palette.ember, in: RoundedRectangle(cornerRadius: 14))
-                        }.disabled(studio.sending)
-                        if let issue { Text(issue).font(.footnote).foregroundStyle(.red).accessibilityLabel("Reel link error. " + issue) }
-                    }
-                    if let error = studio.failure { Text(error).font(.footnote).foregroundStyle(.red) }
-                    if !working.isEmpty {
-                        VStack(alignment: .leading, spacing: 12) {
-                            sectionTitle("In progress")
-                            ForEach(working) { job in
-                                Button { detail = job } label: { ProgressRow(job: job) }
-                                    .buttonStyle(.plain).accessibilityIdentifier("job-" + job.state)
-                            }
-                        }
-                    }
-                    VStack(alignment: .leading, spacing: 15) {
-                        sectionTitle("Library")
-                        if library.isEmpty {
-                            VStack(alignment: .leading, spacing: 9) {
-                                Image(systemName: "rectangle.stack").font(.title2)
-                                Text("Your dubs will appear here.").font(.headline)
-                                Text("In Instagram, tap Share → ReelDub, then confirm. You can also paste a Reel link above.")
-                                    .font(.subheadline).foregroundStyle(.secondary)
-                            }.frame(maxWidth: .infinity, alignment: .leading).padding(18)
-                                .background(Palette.surface, in: RoundedRectangle(cornerRadius: 16))
-                        } else {
-                            LazyVGrid(columns: [GridItem(.adaptive(minimum: type.isAccessibilitySize ? 260 : 147), spacing: 15)], alignment: .leading, spacing: 21) {
-                                ForEach(library) { job in
-                                    Button { detail = job } label: { DubTile(job: job, api: studio.api) }
-                                        .buttonStyle(.plain).accessibilityIdentifier("job-" + job.state)
-                                }
-                            }
-                        }
-                    }
-                }.frame(maxWidth: 760).padding(.horizontal, 21).padding(.vertical, 8)
-                    .frame(maxWidth: .infinity)
-            }.background(Palette.canvas).scrollDismissesKeyboard(.interactively)
-                .refreshable { await studio.refresh() }
-                .navigationDestination(item: $detail) { job in JobView(studio: studio, initial: job) }
-        }.sheet(isPresented: $settings) { SettingsView(studio: studio) }
-            .task(id: "\(phase == .active)-\(studio.connection?.base.absoluteString ?? "")-\(studio.connection?.token.hashValue ?? 0)") {
-                guard phase == .active else { return }
-                while !Task.isCancelled, studio.api != nil {
-                    await studio.refresh()
-                    try? await Task.sleep(for: .seconds(working.isEmpty ? 8 : 2))
+                        RDSearchField(text: $query)
+                        Button("Cancel") { searching = false; query = "" }
+                    }.padding(.horizontal, 18).padding(.bottom, 12)
                 }
-            }.animation(reduceMotion ? nil : .easeOut(duration: 0.23), value: working.map(\.id))
+                Picker("Show dubs", selection: $filter) {
+                    ForEach(RDShelfFilter.allCases) { Text($0.title).tag($0) }
+                }.pickerStyle(.segmented).padding(.horizontal, 18).padding(.bottom, 12)
+                Divider()
+                transfers
+                if selecting {
+                    Divider()
+                    HStack {
+                        Button(selected.count == eligible.count && !eligible.isEmpty ? "Deselect All" : "Select All") {
+                            selected = selected.count == eligible.count ? [] : Set(eligible)
+                        }.disabled(eligible.isEmpty)
+                        Spacer()
+                        Button(role: .destructive) {
+                            deletion = visible.filter { selected.contains($0.id) }
+                        } label: {
+                            Label(selected.isEmpty ? "Delete" : "Delete (\(selected.count))", systemImage: "trash")
+                        }.disabled(selected.isEmpty).accessibilityIdentifier("delete-selected")
+                    }.font(.headline).padding(.horizontal, 20).frame(minHeight: 56)
+                }
+            }
+            .background(canvas.ignoresSafeArea())
+            .toolbar(.hidden, for: .navigationBar)
+            .navigationDestination(for: Job.self) { job in
+                JobView(studio: studio, initial: job, requestDeletion: { deletion = [$0] })
+            }
+            .sheet(item: $sheet) { item in
+                switch item {
+                case .account: SettingsView(studio: studio).presentationDragIndicator(.visible)
+                case .composer:
+                    NavigationStack {
+                        VStack {
+                            RDComposer(studio: studio) { query = ""; filter = .all; sheet = nil }
+                            Spacer(minLength: 0)
+                        }
+                        .navigationTitle("Translate a Reel").navigationBarTitleDisplayMode(.inline)
+                        .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { sheet = nil } } }
+                    }.presentationDetents([.height(190), .medium]).presentationDragIndicator(.visible)
+                }
+            }
+        }
+        .preferredColorScheme(.dark).tint(leaf)
+        .disabled(removing)
+        .onChange(of: eligible) { _, ids in selected.formIntersection(ids) }
+        .confirmationDialog("Remove dubs", isPresented: Binding(get: { !deletion.isEmpty }, set: { if !$0 { deletion = [] } }),
+                            titleVisibility: .visible, presenting: deletion.isEmpty ? nil : deletion) { items in
+            let downloads = items.filter { studio.saved[$0.id] != nil }
+            if !downloads.isEmpty {
+                Button(downloads.count == 1 ? "Remove download from this device" : "Remove \(downloads.count) downloads from this device", role: .destructive) {
+                    do {
+                        for item in downloads {
+                            try studio.removeDownload(item.id)
+                            selected.remove(item.id)
+                            path.removeAll { $0.id == item.id }
+                        }
+                        if selected.isEmpty { selecting = false }
+                        AccessibilityNotification.Announcement("Downloads removed from this device").post()
+                    } catch { deletionError = error.localizedDescription }
+                }.accessibilityIdentifier("remove-local-downloads")
+            }
+            Button(items.count == 1 ? "Delete dub from library" : "Delete \(items.count) dubs from library", role: .destructive) {
+                removing = true
+                Task { await delete(items) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: { items in
+            if items.contains(where: { studio.saved[$0.id] != nil }) {
+                Text("Removing a download frees device storage, even offline. You can download it again while the server copy is available.")
+            } else {
+                Text("Library deletion needs a connection. Your private cached video expires on its own schedule.")
+            }
+        }
+        .alert("Couldn’t finish deleting", isPresented: Binding(get: { deletionError != nil },
+               set: { if !$0 { deletionError = nil } })) { Button("OK") {} } message: { Text(deletionError ?? "") }
+        .task(id: scenePhase) {
+            guard scenePhase == .active else { return }
+            await studio.refresh()
+            hasLoaded = true
+        }
+        .task(id: scenePhase == .active && studio.jobs.contains { $0.rdPhase.isActive }) {
+            guard scenePhase == .active else { return }
+            while studio.jobs.contains(where: { $0.rdPhase.isActive }) && !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(studio.failure == nil ? 2 : 15)) } catch { return }
+                await studio.refresh(progressOnly: true)
+            }
+        }
+        .task(id: scenePhase == .active ? studio.nextTransferRetry : nil) {
+            guard scenePhase == .active, let retry = studio.nextTransferRetry else { return }
+            do { try await Task.sleep(for: .seconds(max(0, retry.timeIntervalSinceNow))) } catch { return }
+            studio.retryTransfers()
+        }
     }
 
-    private func sectionTitle(_ title: String) -> some View {
-        Text(title).font(.title2.weight(.semibold)).accessibilityAddTraits(.isHeader)
+    private var header: some View {
+        HStack(spacing: 10) {
+            Text("Dubs").font(.largeTitle.bold()).tracking(-1.5).accessibilityAddTraits(.isHeader)
+            Spacer()
+            if selecting {
+                Button("Done") { selecting = false; selected = [] }.frame(minHeight: 44)
+            } else {
+                if !eligible.isEmpty {
+                    Button("Select") { selecting = true }.frame(minHeight: 44).accessibilityIdentifier("select-dubs")
+                }
+                Menu {
+                    Button("Search library", systemImage: "magnifyingglass") { searching = true }
+                    Button("Account", systemImage: "person.crop.circle") { sheet = .account }.accessibilityIdentifier("account")
+                } label: {
+                    Image(systemName: "ellipsis.circle").font(.title3).frame(width: 44, height: 44)
+                }.accessibilityLabel("Library options").accessibilityIdentifier("library-options")
+                Button { sheet = .composer } label: {
+                    Label("Add Reel", systemImage: "plus").font(.subheadline.weight(.semibold))
+                        .padding(.horizontal, 13).padding(.vertical, 9)
+                        .background(leaf, in: Capsule()).foregroundStyle(.black).frame(minHeight: 44)
+                }.accessibilityIdentifier("add-reel")
+            }
+        }.padding(.horizontal, 18).padding(.bottom, 12).padding(.top, 4)
     }
-    private func submit() async {
+
+    private var transfers: some View {
+        let items = visible
+        return List {
+            if let failure = studio.failure {
+                RDNotice(message: failure) { Task { await studio.refresh() } }
+                    .listRowBackground(Color.clear)
+            }
+            if items.isEmpty && studio.failure == nil {
+                Group {
+                    if !hasLoaded { RDLoading() }
+                    else if studio.jobs.isEmpty {
+                        ContentUnavailableView {
+                            Label("Your first dub", systemImage: "film.stack")
+                        } description: { Text("Share a Reel from Instagram or add its link here.") }
+                        actions: { Button("Add Reel") { sheet = .composer } }
+                    } else {
+                        ContentUnavailableView(query.isEmpty ? filter.emptyTitle : "No matching dubs",
+                                               systemImage: query.isEmpty ? "tray" : "magnifyingglass")
+                    }
+                }.listRowBackground(Color.clear).listRowSeparator(.hidden)
+            }
+            section("Processing", items.filter { $0.rdPhase == .running })
+            section("Queued", items.filter { $0.rdPhase == .queued }.sorted { ($0.ahead ?? Int.max) < ($1.ahead ?? Int.max) })
+            section("Ready", items.filter { $0.rdPhase == .done && !studio.isExpired($0) })
+            section("Expired", items.filter { studio.isExpired($0) })
+            section("Failed", items.filter { $0.rdPhase == .failed })
+        }
+        .listStyle(.plain).scrollContentBackground(.hidden)
+        .scrollDismissesKeyboard(.interactively)
+        .refreshable { await studio.refresh(); hasLoaded = true }
+    }
+
+    @ViewBuilder private func section(_ title: String, _ jobs: [Job]) -> some View {
+        if !jobs.isEmpty {
+            Section {
+                ForEach(jobs) { job in
+                    HStack(spacing: 6) {
+                        Button {
+                            if !selecting { path.append(job) }
+                            else if selected.contains(job.id) { selected.remove(job.id) }
+                            else { selected.insert(job.id) }
+                        } label: {
+                            HStack(spacing: 12) {
+                                if selecting {
+                                    Image(systemName: selected.contains(job.id) ? "checkmark.circle.fill" : "circle")
+                                        .frame(width: 24).foregroundStyle(selected.contains(job.id) ? leaf : .secondary)
+                                }
+                                TransferRow(job: job, api: studio.api, storage: studio.storageLabel(job))
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .disabled(selecting && job.rdPhase.isActive)
+                        .accessibilityAddTraits(selected.contains(job.id) ? .isSelected : [])
+                        .buttonStyle(.plain).accessibilityIdentifier("job-" + job.state)
+                        if !selecting && job.rdPhase.isActive {
+                            Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary).accessibilityHidden(true)
+                                .allowsHitTesting(false)
+                        } else if !selecting {
+                            Menu { actions(job) } label: {
+                                Image(systemName: "ellipsis").frame(width: 44, height: 44)
+                                    .contentShape(Rectangle())
+                            }.accessibilityLabel("Actions for " + job.displayTitle)
+                        }
+                    }
+                    .contextMenu { if !selecting { actions(job) } }
+                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                        if !selecting && !job.rdPhase.isActive {
+                            Button("Delete dub", systemImage: "trash", role: .destructive) { deletion = [job] }
+                        }
+                    }
+                    .listRowInsets(EdgeInsets(top: 9, leading: 18, bottom: 9, trailing: 10))
+                    .listRowBackground(canvas).listRowSeparatorTint(.white.opacity(0.12))
+                }
+            } header: {
+                HStack(spacing: 6) {
+                    Text(title).font(.headline)
+                    Text(jobs.count, format: .number).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                }.foregroundStyle(.primary).textCase(nil).accessibilityElement(children: .combine)
+            }
+        }
+    }
+
+    @ViewBuilder private func actions(_ job: Job) -> some View {
+        RDJobMenu(job: job, expired: studio.isExpired(job)) { path.append(job) }
+        if !job.rdPhase.isActive {
+            Divider()
+            Button("Delete dub", systemImage: "trash", role: .destructive) { deletion = [job] }
+        }
+    }
+
+    private func delete(_ items: [Job]) async {
+        defer { removing = false }
+        let original = studio.connection
+        var reason: String?
+        for job in items {
+            guard studio.connection?.token == original?.token, studio.connection?.base == original?.base else {
+                reason = "Your connection changed."
+                break
+            }
+            do {
+                do { try await studio.deleteDub(job.id) }
+                catch let error as ServiceError where error.status == 429 {
+                    try await Task.sleep(for: .seconds(1))
+                    try await studio.deleteDub(job.id)
+                }
+                selected.remove(job.id)
+                path.removeAll { $0.id == job.id }
+            } catch {
+                reason = error.localizedDescription
+                if error is URLError || error is SessionError { break }
+            }
+        }
+        if let reason { deletionError = reason }
+        else {
+            selecting = false; selected = []
+            AccessibilityNotification.Announcement(items.count == 1 ? "Dub deleted" : "\(items.count) dubs deleted").post()
+        }
+    }
+}
+
+private struct TransferRow: View {
+    let job: Job
+    let api: API?
+    let storage: String?
+    private let leaf = Color(red: 0.75, green: 0.87, blue: 0.64)
+    var body: some View {
+        HStack(spacing: 13) {
+            ZStack {
+                if job.has_poster == true {
+                    Poster(job: job, api: api)
+                } else {
+                    Rectangle().fill(Color(white: 0.14))
+                    Image(systemName: job.rdPhase.isActive ? "film" : "play.rectangle")
+                        .foregroundStyle(.secondary)
+                }
+            }.frame(width: 50, height: 64).clipShape(RoundedRectangle(cornerRadius: 8))
+            VStack(alignment: .leading, spacing: 4) {
+                Text(job.displayTitle).font(.subheadline.weight(.semibold)).lineLimit(2)
+                switch job.rdPhase {
+                case .running, .queued:
+                    TimelineView(.periodic(from: .now, by: 1)) { context in
+                        Text(job.timing(at: context.date)).font(.caption.monospacedDigit()).foregroundStyle(leaf)
+                    }
+                    if job.rdPhase == .running {
+                        if let start = Job.date(job.started), let created = Job.date(job.created) {
+                            Text(Job.duration(max(0, Int(start.timeIntervalSince(created)))) + " queued")
+                                .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                        }
+                        RDActivityBar(moving: true, tint: leaf, progress: job.progress)
+                        TimelineView(.periodic(from: .now, by: 1)) { context in
+                            Text(job.remaining(at: context.date)).font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                        }
+                    }
+                case .done:
+                    Text([job.targetName, job.rdByline, job.rdRuntime].compactMap { $0 }.joined(separator: " · "))
+                        .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                    if let storage { Text(storage).font(.caption2).foregroundStyle(leaf) }
+                    Text(job.timing(at: .now)).font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                case .failed:
+                    Text(job.error ?? "Open for details or retry.").font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                }
+            }.frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .multilineTextAlignment(.leading).contentShape(Rectangle()).accessibilityElement(children: .combine)
+    }
+}
+
+// MARK: - Composer
+
+@MainActor
+struct RDComposer: View {
+    let studio: Studio
+    let onQueued: () -> Void
+
+    @State private var project: ProjectInput?
+    @State private var showBalance = false
+    @State private var importing = false
+    @State private var photo: PhotosPickerItem?
+    @State private var tempImport: URL?
+    @State private var link = ""
+    @State private var preferredLanguage = OutputLanguage.read()
+    private var languages: [String] { studio.account?.output_languages ?? studio.connection?.outputLanguages ?? ["en"] }
+    @State private var problem: String?
+    @State private var notice: String?
+    @State private var successes = 0
+    @State private var rejections = 0
+    @FocusState private var focused: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var trimmed: String { link.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let problem {
+                Label {
+                    Text(problem).accessibilityIdentifier("reel-link-error")
+                } icon: {
+                    Image(systemName: "exclamationmark.circle.fill")
+                }
+                .font(.footnote.weight(.medium))
+                .foregroundStyle(.red)
+                .fixedSize(horizontal: false, vertical: true)
+                .transition(.opacity)
+            } else if let notice {
+                Label {
+                    Text(notice).foregroundStyle(.primary)
+                } icon: {
+                    Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                }
+                .font(.footnote.weight(.medium))
+                .transition(.opacity)
+            }
+
+            if languages.count > 1 {
+                OutputLanguagePicker(supported: languages, preference: $preferredLanguage)
+                    .disabled(studio.sending)
+            }
+            if showBalance, studio.connection?.isHosted == true {
+                BalanceOptions(live: studio.account?.purchase_preflight == true, plans: AnyView(CloudPlanSheet(studio: studio)))
+            }
+            HStack(spacing: 10) {
+                if studio.account?.creator_minutes == true {
+                    Menu {
+                        PhotosPicker(selection:$photo, matching:.videos) { Label("Photos",systemImage:"photo.on.rectangle") }
+                        Button { importing=true } label: { Label("Files",systemImage:"folder") }
+                    } label: { Image(systemName:"plus.circle").font(.title2).frame(minWidth:40,minHeight:44) }
+                    .accessibilityLabel("Import video")
+                }
+                field
+                trailing
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .frame(maxWidth: 900)
+        .frame(maxWidth: .infinity)
+        .background(.bar)
+        .overlay(alignment: .top) { Divider() }
+        .animation(reduceMotion ? nil : .snappy(duration: 0.25), value: problem)
+        .animation(reduceMotion ? nil : .snappy(duration: 0.25), value: notice)
+        .animation(reduceMotion ? nil : .snappy(duration: 0.2), value: trimmed.isEmpty)
+        .sensoryFeedback(.success, trigger: successes)
+        .sensoryFeedback(.error, trigger: rejections)
+        .onChange(of: link) { _, value in
+            problem = nil
+            showBalance = false
+            if !value.isEmpty { notice = nil }
+        }
+        .fileImporter(isPresented:$importing, allowedContentTypes:[.mpeg4Movie,.quickTimeMovie]) { result in
+            do {
+                let url=try result.get()
+                let access=url.startAccessingSecurityScopedResource()
+                defer { if access { url.stopAccessingSecurityScopedResource() } }
+                openImport(try ImportedMovie.copy(url))
+            } catch { reject(error.localizedDescription) }
+        }
+        .task(id:photo) {
+            guard let photo else { return }
+            defer { self.photo=nil }
+            do {
+                if let movie=try await photo.loadTransferable(type:ImportedMovie.self) { openImport(movie) }
+                else { reject("This video could not be imported.") }
+            } catch { if !Task.isCancelled { reject(error.localizedDescription) } }
+        }
+        .sheet(item:$project,onDismiss:{
+            if let tempImport { try? FileManager.default.removeItem(at:tempImport); self.tempImport=nil }
+        }) { input in
+            if let api=studio.api {
+                QuoteSheet(api:api,input:input,languages:languages,target:OutputLanguage.selected(preferredLanguage,supported:languages),liveOffers:studio.account?.purchase_preflight == true,plans:AnyView(CloudPlanSheet(studio:studio))) { _ in
+                    link=""; focused=false; notice="Your dubs are in the library."; successes+=1
+                    Task { await studio.refresh() }; onQueued()
+                }
+            }
+        }
+        .task(id: notice) {
+            guard notice != nil else { return }
+            try? await Task.sleep(for: .seconds(5))
+            if !Task.isCancelled { notice = nil }
+        }
+    }
+
+    private var field: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "link")
+                .font(.body.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
+            TextField("Paste an Instagram Reel link", text: $link)
+                .font(.body)
+                .keyboardType(.URL)
+                .textContentType(.URL)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .submitLabel(.go)
+                .focused($focused)
+                .onSubmit(send)
+                .disabled(studio.sending)
+                .accessibilityLabel("Instagram Reel link")
+                .accessibilityIdentifier("new-dub")
+            if !link.isEmpty && !studio.sending {
+                Button {
+                    link = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.tertiary)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Clear link")
+            }
+        }
+        .padding(.leading, 14)
+        .padding(.trailing, link.isEmpty ? 14 : 0)
+        .frame(minHeight: 50)
+        .background(Color(.tertiarySystemFill), in: Capsule())
+        .overlay {
+            Capsule().strokeBorder(problem == nil ? Color.clear : Color.red.opacity(0.7), lineWidth: 1.5)
+        }
+    }
+
+    @ViewBuilder
+    private var trailing: some View {
+        if trimmed.isEmpty && !studio.sending {
+            PasteButton(payloadType: String.self) { strings in
+                Task { @MainActor in paste(strings) }
+            }
+            .labelStyle(.iconOnly)
+            .buttonBorderShape(.circle)
+            .controlSize(.large)
+            .tint(RD.accent)
+            .transition(.scale(scale: 0.8).combined(with: .opacity))
+        } else {
+            Button(action: send) {
+                ZStack {
+                    Circle().fill(RD.accent)
+                    if studio.sending {
+                        ProgressView().tint(.white)
+                    } else {
+                        Image(systemName: "arrow.up")
+                            .font(.body.weight(.bold))
+                            .foregroundStyle(.white)
+                    }
+                }
+                .frame(width: 50, height: 50)
+            }
+            .buttonStyle(RDPressStyle())
+            .disabled(studio.sending)
+            .accessibilityLabel(studio.sending ? "Sending" : "Dub this Reel")
+            .accessibilityIdentifier("confirm-dub")
+            .transition(.scale(scale: 0.8).combined(with: .opacity))
+        }
+    }
+
+    private func openImport(_ movie: ImportedMovie) {
+        tempImport=movie.file
+        project = .file(movie.file,movie.title)
+        problem=nil
+    }
+
+    private func paste(_ strings: [String]) {
+        if let reel = RDLink.reel(in: strings.joined(separator: " ")) {
+            link = reel
+        } else {
+            reject("Your clipboard doesn’t contain an Instagram Reel link.")
+        }
+    }
+
+    private func send() {
         guard !studio.sending else { return }
-        let link = url.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard Job.isReel(link) else {
-            issue = link.isEmpty ? "Paste an Instagram Reel link to get started." : "That link doesn’t point to an Instagram Reel."
-            editing = true
+        guard !trimmed.isEmpty else {
+            reject("Paste a link to an Instagram Reel first.")
             return
         }
-        editing = false
-        issue = nil
-        do { try await studio.submit(link); url = "" }
-        catch { issue = error.localizedDescription }
+        guard let reel = RDLink.reel(in: trimmed) else {
+            reject("That isn’t a Reel link. In Instagram, tap Share on a Reel, then Copy link.")
+            return
+        }
+        if studio.account?.creator_minutes == true { project = .reel(reel); return }
+        Task {
+            do {
+                let job = try await studio.submit(reel, target: OutputLanguage.selected(preferredLanguage, supported: languages))
+                link = ""
+                focused = false
+                successes += 1
+                let status = job.state == "done" ? "Your \(job.targetName) dub is ready." : "Queued for translation."
+                notice = status
+                AccessibilityNotification.Announcement(status).post()
+                onQueued()
+            } catch let error as ServiceError where error.status == 428 {
+                project = .reel(reel)
+            } catch {
+                showBalance = (error as? ServiceError)?.needsBalance == true
+                reject(error.localizedDescription)
+            }
+        }
+    }
+
+    private func reject(_ message: String) {
+        notice = nil
+        problem = message
+        rejections += 1
+        AccessibilityNotification.Announcement(message).post()
+    }
+}
+
+@MainActor
+enum RDLink {
+    /// Accepts a bare Reel URL or text containing one (e.g. a share caption).
+    static func reel(in text: String) -> String? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if Job.isReel(trimmed) { return trimmed }
+        guard let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue) else { return nil }
+        let range = NSRange(trimmed.startIndex..., in: trimmed)
+        for match in detector.matches(in: trimmed, range: range) {
+            if let url = match.url?.absoluteString, Job.isReel(url) { return url }
+        }
+        return nil
     }
 }
 
 struct ProgressRow: View {
     let job: Job
+
     var body: some View {
-        HStack(spacing: 14) {
-            Image(systemName: job.state == "queued" ? "clock" : "waveform")
-                .font(.title3.weight(.medium)).frame(width: 44, height: 46)
-                .foregroundStyle(Palette.ember).background(Palette.ink, in: RoundedRectangle(cornerRadius: 12))
-            VStack(alignment: .leading, spacing: 4) {
-                Text(job.displayTitle).font(.subheadline.weight(.semibold)).lineLimit(1)
-                TimelineView(.periodic(from: .now, by: 1)) { context in
-                    Text(job.timing(at: context.date)).font(.footnote).monospacedDigit().foregroundStyle(.secondary)
+        let phase = job.rdPhase
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                RDStateBadge(phase: phase)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(headline(phase))
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(phase == .failed ? Color.red : Color.primary)
+                        .lineLimit(2)
+                    clock(phase)
                 }
             }
-            Spacer()
-            Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-        }.padding(13).background(Palette.surface, in: RoundedRectangle(cornerRadius: 15))
-            .accessibilityElement(children: .ignore).accessibilityLabel(job.displayTitle + ", " + job.timing(at: Date()))
+            if phase.isActive {
+                RDActivityBar(moving: phase == .running, progress: phase == .running ? job.progress : nil)
+            }
+            if phase == .failed, let error = job.error?.trimmingCharacters(in: .whitespacesAndNewlines), !error.isEmpty {
+                Text(error)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(3)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    @ViewBuilder
+    private func clock(_ phase: RDPhase) -> some View {
+        if phase.isActive {
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                if let created = Job.date(job.created) {
+                    let start = Job.date(job.started) ?? created
+                    if phase == .running {
+                        let elapsed = max(0, Int(context.date.timeIntervalSince(start)))
+                        let wait = max(0, Int(start.timeIntervalSince(created)))
+                        Text("\(Job.duration(elapsed)) elapsed · \(Job.duration(wait)) queued")
+                        Text(job.remaining(at: context.date))
+                    } else {
+                        let wait = max(0, Int(context.date.timeIntervalSince(created)))
+                        Text("\(Job.duration(wait)) waiting")
+                    }
+                }
+            }
+            .font(.footnote.monospacedDigit())
+            .foregroundStyle(.secondary)
+        } else {
+            Text(job.timing(at: .now))
+                .font(.footnote.monospacedDigit())
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func headline(_ phase: RDPhase) -> String {
+        switch phase {
+        case .queued:
+            guard let ahead = job.ahead else { return "Queued" }
+            switch ahead {
+            case ...0: return "Queued · next up"
+            case 1: return "Queued · 1 ahead"
+            default: return "Queued · \(ahead) ahead"
+            }
+        case .running:
+            return job.rdStageName
+        case .done:
+            return job.rdRuntime.map { "Ready · " + $0 } ?? "Ready to watch"
+        case .failed:
+            return "Dub failed"
+        }
     }
 }
 
+struct RDStateBadge: View {
+    let phase: RDPhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ScaledMetric(relativeTo: .subheadline) private var size: CGFloat = 26
+
+    var body: some View {
+        Image(systemName: phase.symbol)
+            .font(.system(size: size * 0.48, weight: .bold))
+            .foregroundStyle(phase.tint)
+            .symbolEffect(.variableColor.iterative, isActive: phase == .running && !reduceMotion)
+            .frame(width: size, height: size)
+            .background(phase.tint.opacity(0.15), in: Circle())
+            .accessibilityHidden(true)
+    }
+}
+
+/// Older workers send stage updates without a numeric fraction.
+struct RDActivityBar: View {
+    let moving: Bool
+    var tint: Color = RD.accent
+    var progress: Double? = nil
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        if let progress {
+            ProgressView(value: min(1, max(0, progress)))
+                .tint(tint)
+                .accessibilityLabel("Render progress")
+                .accessibilityValue(progress.formatted(.percent.precision(.fractionLength(0))))
+        } else {
+        GeometryReader { geo in
+            let width = geo.size.width
+            ZStack(alignment: .leading) {
+                Capsule().fill(Color.primary.opacity(0.08))
+                if moving {
+                    if reduceMotion {
+                        Capsule().fill(tint.opacity(0.5))
+                    } else {
+                        TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { context in
+                            let t = context.date.timeIntervalSinceReferenceDate
+                            let phase = t.truncatingRemainder(dividingBy: 1.6) / 1.6
+                            let eased = CGFloat((1 - cos(phase * .pi)) / 2)
+                            let segment = max(width * 0.36, 24)
+                            Capsule()
+                                .fill(LinearGradient(
+                                    colors: [tint.opacity(0), tint, tint.opacity(0)],
+                                    startPoint: .leading, endPoint: .trailing))
+                                .frame(width: segment)
+                                .offset(x: -segment + (width + segment) * eased)
+                        }
+                    }
+                }
+            }
+            .clipShape(Capsule())
+        }
+        .frame(height: 4)
+        .accessibilityHidden(true)
+        }
+    }
+}
+
+// MARK: - Posters
+
+/// Real JPEG poster when the server has one, otherwise a deterministic generated cover.
+/// Fills whatever frame the caller gives it.
+@MainActor
 struct Poster: View {
     let job: Job
     let api: API?
-    @State private var image: UIImage?
+
+    @State private var loaded: RDLoadedPoster?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var wants: Bool { job.has_poster == true && api != nil }
+
     var body: some View {
-        ZStack {
-            Color(red: 0.16, green: 0.14, blue: 0.13)
-            if let image { Image(uiImage: image).resizable().scaledToFill() }
-            else { Image(systemName: "film.stack").font(.largeTitle.weight(.light)).foregroundStyle(.white.opacity(0.64)) }
-        }.clipped().accessibilityHidden(true)
-            .task(id: "\(job.id)-\(job.has_poster == true)") {
-                image = nil
-                guard job.has_poster == true, let api else { return }
-                if let bytes = try? await api.data("v1/jobs/\(job.id)/poster"), !Task.isCancelled {
-                    image = UIImage(data: bytes)
+        let key = RDPosterStore.key(for: job.id, api: api)
+        let image = loaded?.key == key ? loaded?.image : (wants ? RDPosterStore.shared.cached(key) : nil)
+
+        Color.clear
+            .overlay {
+                if let image {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFill()
+                        .transition(.opacity)
+                } else {
+                    RDFallbackArt(seed: job.id)
                 }
             }
+            .clipped()
+            .accessibilityHidden(true)
+            .task(id: key + (wants ? "|1" : "|0")) { await load(key) }
+    }
+
+    private func load(_ key: String) async {
+        guard wants, let api, loaded?.key != key else { return }
+        if let hit = RDPosterStore.shared.cached(key) {
+            loaded = RDLoadedPoster(key: key, image: hit)
+            return
+        }
+        guard let image = await RDPosterStore.shared.image(for: job.id, key: key, api: api), !Task.isCancelled else { return }
+        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.3)) {
+            loaded = RDLoadedPoster(key: key, image: image)
+        }
     }
 }
 
-struct DubTile: View {
-    let job: Job
-    let api: API?
+struct RDLoadedPoster {
+    let key: String
+    let image: UIImage
+}
+
+/// Shared poster cache. One download per poster (in-flight requests are joined),
+/// decoded and downsampled off the main thread, scoped per server + account so
+/// switching accounts never shows another account's art.
+@MainActor
+final class RDPosterStore {
+    static let shared = RDPosterStore()
+
+    private let cache = NSCache<NSString, UIImage>()
+    private var inflight: [String: Task<UIImage?, Never>] = [:]
+    private let misses = NSCache<NSString, NSDate>()
+
+    private init() {
+        misses.countLimit = 240
+        cache.countLimit = 240
+        cache.totalCostLimit = 128 * 1024 * 1024
+    }
+
+    static func key(for id: String, api: API?) -> String {
+        guard let connection = api?.connection else { return "offline/" + id }
+        let digest = SHA256.hash(data: Data(connection.token.utf8))
+        return connection.base.absoluteString + "|" + Data(digest).base64EncodedString() + "|" + id
+    }
+
+    func remove(_ id: String, api: API) {
+        let key = Self.key(for: id, api: api)
+        inflight[key]?.cancel()
+        cache.removeObject(forKey: key as NSString)
+        misses.removeObject(forKey: key as NSString)
+    }
+
+    func cached(_ key: String) -> UIImage? {
+        cache.object(forKey: key as NSString)
+    }
+
+    func image(for id: String, key k: String, api: API) async -> UIImage? {
+        if let hit = cache.object(forKey: k as NSString) { return hit }
+        if let running = inflight[k] { return await running.value }
+        if let miss = misses.object(forKey: k as NSString), miss.timeIntervalSinceNow > -30 { return nil }
+
+        let task = Task<UIImage?, Never> {
+            guard let data = try? await api.data("v1/jobs/\(id)/poster"), !Task.isCancelled else { return nil }
+            return await Task.detached(priority: .utility) { RDPosterStore.decode(data) }.value
+        }
+        inflight[k] = task
+        let image = await task.value
+
+        inflight[k] = nil
+        guard !task.isCancelled else { return nil }
+        if let image {
+            let pixels = image.size.width * image.scale * image.size.height * image.scale
+            cache.setObject(image, forKey: k as NSString, cost: Int(pixels * 4))
+        } else {
+            misses.setObject(NSDate(), forKey: k as NSString)
+        }
+        return image
+    }
+
+    nonisolated static func decode(_ data: Data) -> UIImage? {
+        guard let image = UIImage(data: data) else { return nil }
+        let pixelW = image.size.width * image.scale
+        let pixelH = image.size.height * image.scale
+        let longest = max(pixelW, pixelH)
+        if longest > 1280 {
+            let factor = 1280 / longest
+            return image.preparingThumbnail(of: CGSize(width: pixelW * factor, height: pixelH * factor)) ?? image
+        }
+        return image.preparingForDisplay() ?? image
+    }
+}
+
+/// Generated cover: a duotone field with a waveform unique to the job.
+struct RDFallbackArt: View {
+    let seed: String
+    var colors: [Color]? = nil
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Color.clear.aspectRatio(0.78, contentMode: .fit)
-                .overlay { Poster(job: job, api: api) }
-                .overlay(alignment: .bottomLeading) {
-                    HStack(spacing: 5) {
-                        Image(systemName: job.state == "failed" ? "exclamationmark.circle" : "play.fill")
-                        if let duration = job.media_seconds { Text(Job.duration(Int(duration.rounded()))) }
-                    }.font(.caption.weight(.bold)).monospacedDigit().foregroundStyle(.white)
-                        .padding(.horizontal, 9).padding(.vertical, 6).background(.black.opacity(0.75), in: Capsule()).padding(9)
-                }.clipShape(RoundedRectangle(cornerRadius: 14))
-            Text(job.displayTitle).font(.subheadline.weight(.semibold)).lineLimit(2)
-            Text(job.state == "failed" ? "Couldn’t dub" : "English dub").font(.footnote).foregroundStyle(.secondary)
-        }.accessibilityElement(children: .ignore).accessibilityLabel(job.displayTitle + (job.state == "failed" ? ", failed" : ", play English dub"))
+        let hash = RDHash.stable(seed)
+        let palette = colors ?? RD.palettes[Int(hash % UInt64(RD.palettes.count))]
+        let glowX = 0.15 + Double((hash >> 8) & 0xFF) / 255 * 0.7
+
+        ZStack {
+            LinearGradient(colors: palette, startPoint: .topLeading, endPoint: .bottomTrailing)
+            RadialGradient(colors: [.white.opacity(0.24), .clear],
+                           center: UnitPoint(x: glowX, y: 0.18),
+                           startRadius: 0, endRadius: 260)
+            Canvas { context, size in
+                var rng = RDRandom(state: hash)
+                let count = 13
+                let span = size.width * 0.7
+                let gap = span * 0.035
+                let bar = (span - gap * CGFloat(count - 1)) / CGFloat(count)
+                let x0 = (size.width - span) / 2
+                let midY = size.height * 0.64
+                let maxH = min(size.height * 0.24, size.width * 0.5)
+                for i in 0..<count {
+                    let envelope = 0.35 + 0.65 * sin(Double(i) / Double(count - 1) * .pi)
+                    let h = max(bar, maxH * CGFloat(envelope * (0.3 + 0.7 * rng.unit())))
+                    let rect = CGRect(x: x0 + CGFloat(i) * (bar + gap), y: midY - h / 2, width: bar, height: h)
+                    context.fill(Path(roundedRect: rect, cornerRadius: bar / 2), with: .color(.white.opacity(0.6)))
+                }
+            }
+        }
+        .accessibilityHidden(true)
+    }
+}
+
+// MARK: - Empty, loading & notices
+
+struct RDLoading: View {
+    var body: some View {
+        VStack(spacing: 12) {
+            ProgressView().controlSize(.large)
+            Text("Loading your library")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.top, 120)
+    }
+}
+
+struct RDNotice: View {
+    let message: String
+    let retry: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: "exclamationmark.icloud.fill")
+                .font(.title3)
+                .foregroundStyle(.orange)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Couldn’t refresh")
+                    .font(.subheadline.weight(.semibold))
+                Text(message)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(4)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityElement(children: .combine)
+            Button("Retry", action: retry)
+                .buttonStyle(.bordered)
+                .font(.subheadline.weight(.semibold))
+        }
+        .padding(14)
+        .background(RDCard())
+    }
+}
+
+// MARK: - Small components
+
+struct RDSearchField: View {
+    @Binding var text: String
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
+            TextField("Search titles and creators", text: $text)
+                .submitLabel(.search)
+                .autocorrectionDisabled()
+            if !text.isEmpty {
+                Button {
+                    text = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.tertiary)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Clear search")
+            }
+        }
+        .padding(.leading, 12)
+        .frame(minHeight: 44)
+        .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+}
+
+struct RDJobMenu: View {
+    let job: Job
+    let expired: Bool
+    let open: () -> Void
+
+    var body: some View {
+        Button(action: open) {
+            switch job.rdPhase {
+            case .done: Label(expired ? "View details" : "Watch", systemImage: expired ? "info.circle" : "play.fill")
+            case .failed: Label("Details & Report Issue", systemImage: "exclamationmark.bubble")
+            default: Label("Show Progress", systemImage: "waveform")
+            }
+        }
+        if Job.isReel(job.url), let url = URL(string: job.url) {
+            Link(destination: url) {
+                Label("Open in Instagram", systemImage: "arrow.up.forward.app")
+            }
+            ShareLink(item: url) {
+                Label("Share Reel Link", systemImage: "square.and.arrow.up")
+            }
+            Button { UIPasteboard.general.string = job.url } label: { Label("Copy Reel Link", systemImage: "link") }
+        }
+    }
+}
+
+struct RDCard: View {
+    var body: some View {
+        RoundedRectangle(cornerRadius: 22, style: .continuous)
+            .fill(Color(.secondarySystemGroupedBackground))
+    }
+}
+
+struct RDPressStyle: ButtonStyle {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.97 : 1)
+            .opacity(configuration.isPressed ? 0.85 : 1)
+            .animation(reduceMotion ? nil : .spring(response: 0.25, dampingFraction: 0.8), value: configuration.isPressed)
+    }
+}
+
+// MARK: - Model helpers
+
+enum RDPhase: String {
+    case queued, running, done, failed
+
+    var isActive: Bool { self == .queued || self == .running }
+
+    var symbol: String {
+        switch self {
+        case .queued: "hourglass"
+        case .running: "waveform"
+        case .done: "checkmark"
+        case .failed: "exclamationmark"
+        }
+    }
+
+    var tint: Color {
+        switch self {
+        case .queued: .secondary
+        case .running: RD.accent
+        case .done: .green
+        case .failed: .red
+        }
+    }
+}
+
+enum RDShelfFilter: String, CaseIterable, Identifiable {
+    case all = "All", active = "Active", ready = "Ready", failed = "Failed"
+    var id: Self { self }
+    var title: String { rawValue }
+    var emptyTitle: String {
+        switch self {
+        case .all: "No dubs"
+        case .active: "No active translations"
+        case .ready: "No ready dubs"
+        case .failed: "No failed dubs"
+        }
+    }
+    func admits(_ job: Job) -> Bool {
+        switch self {
+        case .all: true
+        case .active: job.rdPhase.isActive
+        case .ready: job.rdPhase == .done
+        case .failed: job.rdPhase == .failed
+        }
+    }
+}
+
+extension Job {
+    var rdPhase: RDPhase { RDPhase(rawValue: state) ?? .queued }
+
+    var rdByline: String {
+        let name = (author ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return "Instagram Reel" }
+        return name.hasPrefix("@") || name.contains(" ") ? name : "@" + name
+    }
+
+    var rdRuntime: String? {
+        guard let seconds = media_seconds, seconds.isFinite, seconds > 0 else { return nil }
+        let total = Int(seconds.rounded())
+        return String(format: "%d:%02d", total / 60, total % 60)
+    }
+
+    var rdStageName: String {
+        let raw = stage
+            .replacingOccurrences(of: "_", with: " ")
+            .replacingOccurrences(of: "-", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !raw.isEmpty, !["queued", "running", "done", "failed"].contains(raw.lowercased()) else {
+            return "Dubbing"
+        }
+        return raw.prefix(1).uppercased() + raw.dropFirst()
+    }
+
+
+}
+
+// MARK: - Theme & utilities
+
+enum RD {
+    /// Warm vermilion; deeper in light mode for text contrast, brighter in dark mode.
+    static let accent = Color(uiColor: UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(red: 1.00, green: 0.45, blue: 0.35, alpha: 1)
+            : UIColor(red: 0.80, green: 0.22, blue: 0.13, alpha: 1)
+    })
+
+    static let palettes: [[Color]] = [
+        [Color(red: 0.17, green: 0.11, blue: 0.33), Color(red: 0.89, green: 0.33, blue: 0.48)],
+        [Color(red: 0.06, green: 0.23, blue: 0.30), Color(red: 0.25, green: 0.72, blue: 0.69)],
+        [Color(red: 0.23, green: 0.11, blue: 0.05), Color(red: 0.94, green: 0.54, blue: 0.24)],
+        [Color(red: 0.11, green: 0.17, blue: 0.39), Color(red: 0.42, green: 0.55, blue: 1.00)],
+        [Color(red: 0.12, green: 0.24, blue: 0.18), Color(red: 0.61, green: 0.80, blue: 0.42)],
+        [Color(red: 0.29, green: 0.07, blue: 0.19), Color(red: 1.00, green: 0.48, blue: 0.35)],
+        [Color(red: 0.13, green: 0.13, blue: 0.23), Color(red: 0.60, green: 0.55, blue: 0.62)],
+    ]
+}
+
+enum RDHash {
+    /// FNV-1a — stable across launches (unlike `hashValue`).
+    static func stable(_ string: String) -> UInt64 {
+        var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+        for byte in string.utf8 {
+            hash ^= UInt64(byte)
+            hash &*= 0x0000_0100_0000_01b3
+        }
+        return hash
+    }
+}
+
+struct RDRandom {
+    var state: UInt64
+
+    mutating func next() -> UInt64 {
+        state &+= 0x9E37_79B9_7F4A_7C15
+        var z = state
+        z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
+        z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
+        return z ^ (z >> 31)
+    }
+
+    mutating func unit() -> Double {
+        Double(next() >> 11) / Double(UInt64(1) << 53)
     }
 }

@@ -20,4 +20,9 @@ xcuserdata/
 *.xcresult/
 *.p8
 *.p12
+*.dsn
+*.key
+*.pem
+*.dump
 *.mobileprovision
+ios/Config/LocalSigning.xcconfig

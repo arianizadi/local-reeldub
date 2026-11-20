@@ -1,0 +1,19 @@
+[Unit]
+Description=ReelDub GPU queue worker
+After=network.target
+
+[Service]
+WorkingDirectory=%h/local-reeldub
+EnvironmentFile=%t/reeldub-credentials/worker.env
+Environment=WORKER_PROCESSES=2 REELDUB_GPU_SCHEDULER=1 MONGO_TLS_CA_FILE=%h/.config/reeldub/mongo-ca.pem TMPDIR=/dev/shm/reeldub-runtime-%U
+ExecStartPre=/usr/bin/install -d -m 0700 /dev/shm/reeldub-runtime-%U
+ExecStart=%h/.local/share/reeldub-service/bin/python -m server.worker
+UMask=0077
+LimitCORE=0
+MemorySwapMax=0
+MemoryMax=48G
+TasksMax=1024
+NoNewPrivileges=yes
+KillMode=control-group
+Restart=on-failure
+RestartSec=5

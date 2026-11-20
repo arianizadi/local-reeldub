@@ -1,0 +1,7 @@
+// Each developer may set DEVELOPMENT_TEAM in their local override.
+#include? "LocalSigning.xcconfig"
+
+INFOPLIST_PREPROCESS = YES
+// Preserve literal https:// URLs in XML text.
+INFOPLIST_OTHER_PREPROCESSOR_FLAGS = $(inherited) -traditional
+INFOPLIST_PREPROCESSOR_DEFINITIONS[config=Debug][sdk=iphonesimulator*] = $(inherited) REELDUB_DEBUG_SIMULATOR=1

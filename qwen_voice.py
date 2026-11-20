@@ -1,8 +1,11 @@
-"""GPU worker in an isolated environment for reference-conditioned English speech."""
+"""GPU worker in an isolated environment for reference-conditioned multilingual speech."""
 from pathlib import Path
 import json
 import os
 import sys
+from server.progress import report
+from server.gpu import stage
+from server.languages import LANGUAGES
 
 MODEL = "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
 
@@ -22,15 +25,24 @@ def main():
     import soundfile as sf
 
     folder = Path(sys.argv[1])
+    language = LANGUAGES[sys.argv[2] if len(sys.argv) > 2 else "en"].name
     model = Qwen3TTSModel.from_pretrained(weights, device_map="cuda:0",
                                          dtype=torch.bfloat16, attn_implementation="sdpa")
-    for i, line in enumerate(json.loads((folder / "lines.json").read_text())):
+    lines = json.loads((folder / "lines.json").read_text())
+    for i, line in enumerate(lines):
         ref, rate = sf.read(folder / f"reference-{i}.wav", dtype="float32")
+        # Conditioning on the reference transcript can repeat source words in a cross-language dub.
         prompt = model.create_voice_clone_prompt(ref_audio=(ref, rate), x_vector_only_mode=True)
-        waveforms, rate = model.generate_voice_clone(text=line["text"], language="English",
+        waveforms, rate = model.generate_voice_clone(text=line["text"], language=language,
                                                     voice_clone_prompt=prompt)
         sf.write(folder / f"{i}.wav", waveforms[0], rate)
+        report(completed=i+1, total=len(lines))
 
 
 if __name__ == "__main__":
-    main()
+    if sys.argv[1] == "--prepare":
+        main()
+    else:
+        with stage("voice"):
+            print("GPU stage: Voicing", flush=True)
+            main()

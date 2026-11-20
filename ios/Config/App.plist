@@ -22,15 +22,13 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
-	<key>NSAppTransportSecurity</key>
-	<dict>
-		<key>NSAllowsLocalNetworking</key>
-		<true/>
-	</dict>
+#include "SimulatorLoopback.plistinc"
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Connect to your own ReelDub server on your network.</string>
 	<key>ReelDubKeychainGroup</key>
 	<string>$(AppIdentifierPrefix)com.arianizadi.reeldub.shared</string>
+	<key>UIAppFonts</key>
+	<array><string>InstrumentSerif-Italic.ttf</string></array>
 	<key>UILaunchScreen</key>
 	<dict/>
 	<key>UISupportedInterfaceOrientations</key>
