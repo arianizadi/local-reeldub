@@ -5,6 +5,7 @@ services:
     gpus: all
     environment:
       REELDUB_GPU_SCHEDULER: "1"
+      REELDUB_TTS_BATCH_SIZE: ${REELDUB_TTS_BATCH_SIZE:-1}
       WORKER_PROCESSES: ${WORKER_PROCESSES:-2}
     command: ["/bin/bash","-ec","./setup.sh --studio && exec python -m server.worker"]
     volumes:

@@ -7,11 +7,29 @@ import secrets
 import unittest
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
+from unittest.mock import Mock, patch
 from uuid import uuid4
 
 from .api import hash_value
 from .db import media_db, db, now
-from .worker import claim
+from .worker import LEASE, RenderLease, claim
+
+
+class WorkerLeaseTests(unittest.TestCase):
+    def test_progress_renews_fenced_lease_and_quiet_stage_still_heartbeats(self):
+        jobs = Mock()
+        jobs.update_one.return_value.matched_count = 1
+        fence = {"_id": "test", "state": "running", "lease": "attempt-1"}
+        stamp = now()
+        with patch("server.worker.time.monotonic", side_effect=[0, 12, 15, 30, 31]), patch("server.worker.now", return_value=stamp):
+            lease = RenderLease(jobs, fence)
+            self.assertTrue(lease.renew({"stage": "Voicing"}))
+            self.assertTrue(lease.renew())
+            jobs.update_one.assert_called_once_with(fence, {"$set": {"stage": "Voicing", "lease_end": stamp + LEASE}})
+            self.assertTrue(lease.renew())
+            self.assertEqual(jobs.update_one.call_count, 2)
+            jobs.update_one.return_value.matched_count = 0
+            self.assertFalse(lease.renew({"progress": 0.70}))
 
 
 @unittest.skipUnless(os.getenv("REELDUB_TEST_DATABASE") == "1", "Requires a disposable queue database")

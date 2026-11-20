@@ -24,6 +24,7 @@ from psycopg import Error as PostgresError
 from psycopg_pool import PoolTimeout
 
 LEASE = timedelta(seconds=90)
+HEARTBEAT_SECONDS = 15
 MAX_ATTEMPTS = 3
 STAGES = {"Waiting for GPU capacity": "Waiting for GPU", "GPU stage: ": "Processing", "Downloading video": "Downloading", "Separating original": "Separating audio",
           "Cleaning residual": "Cleaning background voices", "Listening with": "Transcribing", "Identifying speakers": "Identifying voices",
@@ -59,16 +60,36 @@ def claim():
     return doc
 
 
+class RenderLease:
+    def __init__(self, jobs, fence):
+        self.jobs = jobs
+        self.fence = fence
+        self.lock = threading.Lock()
+        self.last_renewed = time.monotonic()
+
+    def renew(self, fields=None):
+        with self.lock:
+            tick = time.monotonic()
+            if fields is None and tick - self.last_renewed < HEARTBEAT_SECONDS:
+                return True
+            update = {"lease_end": now() + LEASE, **(fields or {})}
+            result = self.jobs.update_one(self.fence, {"$set": update})
+            if result.matched_count:
+                self.last_renewed = tick
+            return bool(result.matched_count)
+
+
 def process(job):
     fence = {"_id": job["_id"], "lease": job["lease"], "state": "running"}
     jobs = db().jobs
+    lease = RenderLease(jobs, fence)
     stop = threading.Event()
     lost = threading.Event()
 
     def heartbeat():
-        while not stop.wait(15):
+        while not stop.wait(HEARTBEAT_SECONDS):
             try:
-                if jobs.update_one(fence, {"$set": {"lease_end": now() + LEASE}}).matched_count:
+                if lease.renew():
                     continue
             except Exception:
                 pass
@@ -89,7 +110,7 @@ def process(job):
             log = Path(temp) / "render.log"
             names = {"PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "CUDA_VISIBLE_DEVICES",
                      "LD_LIBRARY_PATH", "HF_HOME", "XDG_CACHE_HOME", "REELDUB_GPU_LOCK_DIR",
-                     "OMP_NUM_THREADS", "MKL_NUM_THREADS"}
+                     "OMP_NUM_THREADS", "MKL_NUM_THREADS", "REELDUB_TTS_BATCH_SIZE"}
             env = {k: v for k, v in os.environ.items() if k in names}
             if not job.get("priority") and os.getenv("REELDUB_FREE_CPU_OVERFLOW") == "1":
                 env["REELDUB_FREE_CPU_ASR"] = "1"
@@ -147,7 +168,8 @@ def process(job):
                                 fields = {"stage": stage, "progress": round(progress, 4)}
                                 if runtime:
                                     fields["estimated_finish"] = now() + timedelta(seconds=round(runtime*(1-progress)))
-                                jobs.update_one(fence, {"$set": fields})
+                                if not lease.renew(fields):
+                                    raise RuntimeError("Worker lease expired.")
                                 published, last_write = progress, tick
                         if finished:
                             break
@@ -175,7 +197,8 @@ def process(job):
                                       "-f", "image2pipe", "-c:v", "mjpeg", "pipe:1"], capture_output=True, timeout=30)
             if preview.returncode == 0 and 0 < len(preview.stdout) < 512_000:
                 details["has_poster"] = True
-            jobs.update_one(fence, {"$set": {"stage": "Saving", "progress": STEPS["Saving"]}})
+            if not lease.renew({"stage": "Saving", "progress": STEPS["Saving"]}):
+                raise RuntimeError("Worker lease expired.")
             bucket = gridfs.GridFS(media_db())
             with dest.open("rb") as video:
                 artifact = bucket.put(video, **({"poster":preview.stdout} if details.get("has_poster") else {}), filename=job["_id"] + ".mp4", lease=job["lease"], job=job["_id"])

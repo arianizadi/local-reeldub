@@ -12,6 +12,8 @@ On the devbox the API and workers share a private `REELDUB_WAKE_FILE`. A submiss
 
 ### Measuring performance
 
+The Studio GPU worker accepts `REELDUB_TTS_BATCH_SIZE=2` to synthesize two lines together. The default is one line. Each line uses its own reference audio. If a pair runs out of CUDA memory the worker retries those lines individually for the rest of the job. Compare voice similarity, timing and peak GPU memory under load before enabling pairs on a hosted worker.
+
 Use the Neon dashboard for billed compute and transfer. For changes to API queries, enable `pg_stat_statements` in a disposable Postgres instance and compare statement calls and shared-buffer reads for the same requests and data. `EXPLAIN (ANALYZE, BUFFERS)` shows whether a running dub needs a queue scan. The integration tests in `server/test_idle.py` also check the connection-checkout budget for authenticated progress and account reads.
 
 On the devbox, use `pidstat` on the worker processes for CPU usage and `nvidia-smi` for GPU load and power. Xcode Instruments’ Network template can measure iPhone request counts and transfer sizes during a render or after the library goes idle.

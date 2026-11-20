@@ -785,7 +785,7 @@ final class RDPosterStore {
     private var inflight: [String: Task<UIImage?, Never>] = [:]
     private let misses = NSCache<NSString, NSDate>()
 
-    private init() {
+    init() {
         misses.countLimit = 240
         cache.countLimit = 240
         cache.totalCostLimit = 128 * 1024 * 1024
@@ -813,9 +813,19 @@ final class RDPosterStore {
         if let running = inflight[k] { return await running.value }
         if let miss = misses.object(forKey: k as NSString), miss.timeIntervalSinceNow > -30 { return nil }
 
-        let task = Task<UIImage?, Never> {
+        // A saved movie's directory is private to this account and is removed with the movie.
+        // Never create a directory here. A late download must not resurrect deleted local data.
+        let poster = DeviceLibrary(connection: api.connection)?.poster(id)
+        let task = Task.detached(priority: .utility) { () -> UIImage? in
+            if let poster, let data = try? Data(contentsOf: poster), let image = RDPosterStore.decode(data) {
+                return image
+            }
             guard let data = try? await api.data("v1/jobs/\(id)/poster"), !Task.isCancelled else { return nil }
-            return await Task.detached(priority: .utility) { RDPosterStore.decode(data) }.value
+            guard let image = RDPosterStore.decode(data) else { return nil }
+            if let poster, data.count <= 512_000 {
+                try? data.write(to: poster, options: [.atomic, .completeFileProtection])
+            }
+            return image
         }
         inflight[k] = task
         let image = await task.value

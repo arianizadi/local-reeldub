@@ -17,6 +17,9 @@ private final class ExpiredReceiptServer: URLProtocol {
         switch url.path {
         case "/v1/me": body = ["tier": "free", "used": 0, "library_id": host] as [String: Any]
         case "/v1/jobs": body = [Self.job]
+        case "/v1/jobs/fixture/poster":
+            Self.lock.withLock { Self.counts.add("poster/" + host) }
+            body = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGMwypgDAAIGATcR4TxKAAAAAElFTkSuQmCC")!
         case "/v1/jobs/fixture/received":
             Self.lock.withLock { Self.counts.add(host) }
             code = 410
@@ -25,13 +28,42 @@ private final class ExpiredReceiptServer: URLProtocol {
         }
         let reply = HTTPURLResponse(url: url, statusCode: code, httpVersion: nil, headerFields: nil)!
         client?.urlProtocol(self, didReceive: reply, cacheStoragePolicy: .notAllowed)
-        client?.urlProtocol(self, didLoad: try! JSONSerialization.data(withJSONObject: body))
+        let data = (body as? Data) ?? (try! JSONSerialization.data(withJSONObject: body))
+        client?.urlProtocol(self, didLoad: data)
         client?.urlProtocolDidFinishLoading(self)
     }
 }
 
 @MainActor
 final class OfflineRemovalTests: XCTestCase {
+    func testSavedPosterSurvivesColdLaunchAndIsRemovedWithMovie() async throws {
+        let host = UUID().uuidString.lowercased() + ".example"
+        let connection = Connection(base: URL(string: "https://" + host)!, token: "fixture", libraryID: host)
+        let library = try XCTUnwrap(DeviceLibrary(connection: connection))
+        defer { try? library.erase() }
+        let job = try JSONDecoder().decode(Job.self, from: JSONSerialization.data(withJSONObject: ExpiredReceiptServer.job))
+        let movie = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try Data([1]).write(to: movie)
+        try library.save(movie, job: job)
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [ExpiredReceiptServer.self]
+        let session = URLSession(configuration: config)
+        defer { session.invalidateAndCancel() }
+        let api = API(connection: connection, transport: session)
+        let key = RDPosterStore.key(for: job.id, api: api)
+        for _ in 0..<2 {
+            let image = await RDPosterStore().image(for: job.id, key: key, api: api)
+            XCTAssertNotNil(image)
+        }
+        XCTAssertEqual(ExpiredReceiptServer.receipts("poster/" + host), 1)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: library.poster(job.id).path))
+        try library.remove(job.id)
+        let remote = await RDPosterStore().image(for: job.id, key: key, api: api)
+        XCTAssertNotNil(remote)
+        XCTAssertEqual(ExpiredReceiptServer.receipts("poster/" + host), 2)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: library.poster(job.id).path))
+    }
+
     func testExpiredReceiptStopsAutomaticRetriesAndPreservesTheDeviceCopy() async throws {
         let host = UUID().uuidString.lowercased() + ".example"
         let connection = Connection(base: URL(string: "https://" + host)!, token: "fixture", libraryID: host)

@@ -28,6 +28,7 @@ struct DeviceLibrary {
     }
     private func directory(_ id: String) -> URL { root.appending(path: Self.digest(id), directoryHint: .isDirectory) }
     func movie(_ id: String) -> URL { directory(id).appending(path: "dub.mp4") }
+    func poster(_ id: String) -> URL { directory(id).appending(path: "poster.jpg") }
     private func receipt(_ id: String) -> URL { directory(id).appending(path: "received") }
     func needsReceipt(_ id: String) -> Bool { !files.fileExists(atPath: receipt(id).path) }
     func markReceived(_ id: String) throws { try Data().write(to: receipt(id), options: .atomic) }
