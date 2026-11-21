@@ -15,6 +15,8 @@ The Creator review build accepts private MP4/MOV uploads from **Dubs → + → P
 
 On first launch, tap **Continue with Apple** to create an account or sign in to the preconfigured ReelDub Cloud service. The same button handles returning users. For your own installation, choose **Use my own server**.
 
+ReelDub Cloud uses **Best** for new dubs from the app and share sheet. Best translates dialogue in context and matches each speaker’s voice when the output language supports it. Hindi uses a preset voice.
+
 Share an Instagram Reel to **ReelDub**, or paste its link in the library. Choose the output language and confirm. Follow its place in the queue, the current render stage and elapsed time. Use the subtitles switch underneath the player to switch captions on or off. ReelDub remembers the setting for future dubs. Share the MP4 with its selectable subtitle track, or report a translation, voice, timing or background issue with the original Reel and a note.
 
 The library groups jobs under **Processing**, **Queued**, **Ready**, and **Failed**. Swipe left on a ready or failed dub, or use its **•••** menu, then choose **Delete dub** and confirm. This removes the library entry, hosted video, poster, and attached issue report. Copies exported to Photos or Files are separate.

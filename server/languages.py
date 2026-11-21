@@ -1,4 +1,5 @@
 """Output languages supported by the installed Studio translator and speech engines."""
+import os
 from typing import NamedTuple
 
 
@@ -23,6 +24,11 @@ LANGUAGES = {
     "ru": Language("Russian", "rus"),
     "es": Language("Spanish", "spa", True, "es", ("ef_dora", "em_alex", "em_santa")),
 }
+
+
+def default_render_quality():
+    """Studio admissions request the explicit Best preset. Light uses its installed models."""
+    return "best" if os.getenv("REELDUB_OUTPUT_PROFILE") == "studio" else None
 
 
 def outputs(profile):

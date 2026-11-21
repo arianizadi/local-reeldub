@@ -28,7 +28,7 @@ from .wakeup import next_hour, notify
 from .db import uses_postgres, media_db, db, now, setup_indexes
 from . import console, checkout, erasure, store, store_history, minutes, sources
 from .source import reel_url
-from .languages import outputs
+from .languages import default_render_quality, outputs
 
 MEDIA_WINDOW = timedelta(hours=24)
 LIMITS = {"free": 5, "paid": 50, "admin": None}
@@ -554,7 +554,7 @@ def summary(job, before=None):
                 title=job.get("title"), author=job.get("author"), has_poster=job.get("has_poster", False),
                 available_on_server=media_available(job), cache_expires=job.get("media_expires"),
                 source_id=str(job["source_file"]) if job.get("source_file") else None, trimmed=job.get("trimmed",False),
-                lab_mode=job.get("lab_mode"), lab_runtime=job.get("lab_runtime"), voice_batch=job.get("voice_batch"), target_language=job.get("target_language", "en"), source_language=job.get("source_language"), first_caption=job.get("first_caption"))
+                render_quality=job.get("render_quality"), lab_mode=job.get("lab_mode"), lab_runtime=job.get("lab_runtime"), voice_batch=job.get("voice_batch"), target_language=job.get("target_language", "en"), source_language=job.get("source_language"), first_caption=job.get("first_caption"))
 
 
 def enqueue_render(job, plan, limit):
@@ -595,6 +595,7 @@ def submit(body: Submission, user=Depends(owner)):
     limit_writes(user, "submit", 90)
     url = canonical_url(body.url)
     target = body.target_language
+    quality = default_render_quality()
     if target not in outputs(os.getenv("REELDUB_OUTPUT_PROFILE", "light")):
         raise HTTPException(422, "This server does not support the selected output language.")
     target_filter = {"$in": ["en", None]} if target == "en" else target
@@ -616,7 +617,7 @@ def submit(body: Submission, user=Depends(owner)):
     stamp = now()
     try:
         cached = db().jobs.find_one_and_update(
-            {"owner": user, "url": url, "lab_mode":{"$exists":False}, "trimmed":{"$ne":True}, "target_language": target_filter, **live_media_query(stamp, include_cache=True),
+            {"owner": user, "url": url, "lab_mode":{"$exists":False}, "render_quality": quality, "trimmed":{"$ne":True}, "target_language": target_filter, **live_media_query(stamp, include_cache=True),
              "$and": [{"$or": [{"deleted": {"$ne": True}}, {"cache_retained": True}]}]},
             [{"$unset": ["deleted", "cache_retained"]}, {"$set": {"last_requested": stamp, "cache_hits": cache_hit_count(request_id), "media_expires": renew_media(stamp), "request_keys": {
                 "$setUnion": [{"$ifNull": ["$request_keys", []]}, [request_id]]}}}],
@@ -637,6 +638,8 @@ def submit(body: Submission, user=Depends(owner)):
             raise HTTPException(429, "Too many failed renders today. Try again after midnight UTC.")
     job = dict(_id=str(uuid4()), **key, request_keys=[request_id], url=url, target_language=target, state="queued", stage="Queued", created=stamp,
                priority=int(plan != "free"), queue_seq=next_position(), day=stamp.date().isoformat(), attempt=0)
+    if quality:
+        job["render_quality"] = quality
     # The quota slot and job share one document. Unique indexes serialize concurrent submissions.
     occupied = set(db().jobs.distinct("slot", {"owner": user, "day": job["day"]})) if limit is not None else set()
     for slot in range(limit or 1):

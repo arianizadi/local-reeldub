@@ -68,6 +68,49 @@ class CreatorTests(TestCase):
     def confirm(self, q):
         return minutes.confirm(self.owner, q["id"])
 
+    def test_studio_best_reuse_keeps_legacy_jobs_and_funding_separate(self):
+        source = self.source(25)
+        with patch.dict(os.environ, {"REELDUB_OUTPUT_PROFILE": "light"}):
+            original_quote = self.quote(source)
+            original, = self.confirm(original_quote)
+            self.assertIsNone(original["render_quality"])
+            db().jobs.update_one({"_id": original["id"]}, {"$set": {"state": "done", "artifact": ObjectId()}})
+            old_reuse_quote = self.quote(source)
+            self.assertTrue(old_reuse_quote["lines"][0]["reused"])
+
+        with self.assertRaises(HTTPException) as changed:
+            self.confirm(old_reuse_quote)
+        self.assertEqual(changed.exception.status_code, 409)
+        self.assertEqual(self.confirm(original_quote)[0]["id"], original["id"])
+
+        fresh = self.quote(source)
+        self.assertFalse(fresh["lines"][0]["reused"])
+        best, = self.confirm(fresh)
+        self.assertEqual(best["render_quality"], "best")
+        self.assertIsNone(best["lab_mode"])
+        self.assertNotEqual(best["id"], original["id"])
+        db().jobs.update_one({"_id": best["id"]}, {"$set": {"state": "done", "artifact": ObjectId()}})
+        again = self.quote(source)
+        self.assertTrue(again["lines"][0]["reused"])
+        self.assertEqual(self.confirm(again)[0]["id"], best["id"])
+        self.assertEqual(db().jobs.count_documents({"owner":self.owner, "slot":{"$exists":True}}), 2)
+
+    def test_direct_best_submit_replays_the_same_request_and_separates_old_cache(self):
+        def submission():
+            return api.Submission(url="https://www.instagram.com/reel/DEFAULT/", request_id=uuid4())
+        old_request = submission()
+        with patch.dict(os.environ, {"REELDUB_CREATOR_MINUTES":"0"}):
+            with patch.dict(os.environ, {"REELDUB_OUTPUT_PROFILE":"light"}):
+                original = api.submit(old_request, self.owner)
+                db().jobs.update_one({"_id":original["id"]}, {"$set":{"state":"done", "artifact":ObjectId()}})
+            self.assertEqual(api.submit(old_request, self.owner)["id"], original["id"])
+            best = api.submit(submission(), self.owner)
+            self.assertEqual(best["render_quality"], "best")
+            self.assertIsNone(best["lab_mode"])
+            self.assertNotEqual(best["id"], original["id"])
+            db().jobs.update_one({"_id":best["id"]}, {"$set":{"state":"done", "artifact":ObjectId()}})
+            self.assertEqual(api.submit(submission(), self.owner)["id"], best["id"])
+
     def test_beta_quote_and_confirm_use_the_same_daily_cap(self):
         db().beta_allowances.insert_one({"_id": str(uuid4()), "owner": self.owner, "limit": 50})
         for slot in range(49):

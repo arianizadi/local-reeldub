@@ -25,7 +25,7 @@ private struct Overview: Decodable {
 private struct Activity: Decodable, Identifiable {
   struct Report: Decodable { let category, note, status: String? }
   let id, account, state, created: String
-  let title, url, source_language, target_language, lab_mode, stage, error, started,
+  let title, url, source_language, target_language, lab_mode, render_quality, stage, error, started,
     finished: String?
   let asr_model, voice_model, translation_model, media_expires: String?
   let media_seconds, quoted_seconds, progress: Double?
@@ -33,6 +33,7 @@ private struct Activity: Decodable, Identifiable {
   let lab_runtime, lab_separation: String?
   let cache_hits, voice_batch, priority, attempt: Int?
   let report: Report?
+  var modeLabel: String { (lab_mode ?? render_quality ?? "standard").capitalized }
 }
 private struct OperatorAccount: Decodable, Identifiable {
   let id: String
@@ -219,7 +220,7 @@ private struct ConsoleContent: View {
                 VStack(alignment: .leading, spacing: 4) {
                   Text(item.title ?? item.url ?? "Video upload").lineLimit(2)
                   Text(
-                    "\(item.state.capitalized) · \(item.lab_mode ?? "standard") · \(OutputLanguage.name(item.target_language ?? "en"))"
+                    "\(item.state.capitalized) · \(item.modeLabel) · \(OutputLanguage.name(item.target_language ?? "en"))"
                   )
                   .font(.caption).foregroundStyle(.secondary)
                 }
@@ -346,7 +347,7 @@ private struct AdminRequestDetails: View {
         if let error = job.error { Text(error).foregroundStyle(.red) }
       }
       Section("Render settings") {
-        LabeledContent("Mode", value: (job.lab_mode ?? "standard").capitalized)
+        LabeledContent("Mode", value: job.modeLabel)
         if let runtime = job.lab_runtime { LabeledContent("Runtime", value: runtime) }
         if let size = job.voice_batch {
           LabeledContent("Requested voice batch", value: String(size))

@@ -70,6 +70,9 @@ struct JobView: View {
                     }
                     if let seconds = job.media_seconds { LabeledContent("Video length", value: Job.duration(Int(seconds.rounded()))) }
                 }
+                if let quality = job.lab_mode ?? job.render_quality {
+                    LabeledContent("Render quality", value: quality.capitalized)
+                }
                 if job.state == "queued", let lane = job.lane {
                     LabeledContent("Queue", value: lane == "premium" ? "Priority" : "Standard")
                     if lane == "free", (job.ahead ?? 0) > 0, (studio.account?.queue_skips ?? 0) > 0 {

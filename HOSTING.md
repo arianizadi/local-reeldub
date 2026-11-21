@@ -46,7 +46,7 @@ Running jobs report stage milestones and completed voice lines. Estimated finish
 
 The Ubuntu 24.04 native intake uses Landlock ABI 6 or later, the distro Python seccomp bindings, TCP DNS and systemd address-family restrictions. Intake can read its packaged code and write its private runtime folder. The kernel denies pathname Unix sockets and datagram sockets. The API, operator endpoint and worker each get their own mode-0700 runtime directory, removed when their service stops. The foreground vault process and its dependent services are supervised by systemd.
 
-The hosted quality profile uses Whisper large-v3, Index-Translate-9B Q5_K_M, Gemma 3 12B as the translation fallback, and Qwen3-TTS 1.7B for matched voices. Hindi uses Kokoro. Each new completed job records the actual models it used. On the Ryzen 9 5900X, using six CPU threads, native transcription of 13.4 seconds of Persian took 11.9 seconds on CPU and 1.1 seconds on the RTX. A 40.0-second Russian clip took 38.7 and 4.3 seconds respectively. These timings exclude model loading and the rest of the render.
+New dubs on the hosted Studio worker use the **Best** preset across both queue tiers. Best uses Whisper large-v3, context translation, and Qwen3-TTS 1.7B for matched voices. On the hosted devbox, Index-Translate-9B Q5_K_M handles translation with Gemma 3 12B available as a fallback. Hindi uses Kokoro. Each new completed job records the actual models it used. On the Ryzen 9 5900X, using six CPU threads, native transcription of 13.4 seconds of Persian took 11.9 seconds on CPU and 1.1 seconds on the RTX. A 40.0-second Russian clip took 38.7 and 4.3 seconds respectively. These timings exclude model loading and the rest of the render.
 
 ### Hosted administrator console
 

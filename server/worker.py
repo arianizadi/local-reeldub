@@ -52,12 +52,27 @@ def claim():
         "$unset": {"slot": "", "minute_grants": "", "minute_units": "", "render_key": "", "extra_ticket": "", "skip_ticket": "", "lease": ""}})
     studio = (Path(__file__).resolve().parents[1] / ".qwen-venv/ready").is_file()
     eligible = outputs("studio" if studio else "light") + [None]
+    # A Light worker cannot fulfill a job that promises a Studio quality preset.
+    profile_filter = {} if studio else {"render_quality": None, "lab_mode": None}
     doc = jobs.find_one_and_update(
-        {"deleted": {"$ne": True}, "target_language": {"$in": eligible}, "$or": [{"state": "queued"}, {**expired, "attempt": {"$lt": MAX_ATTEMPTS}}]},
+        {**profile_filter, "deleted": {"$ne": True}, "target_language": {"$in": eligible}, "$or": [{"state": "queued"}, {**expired, "attempt": {"$lt": MAX_ATTEMPTS}}]},
         [{"$set": {"state": "running", "stage": "Starting", "progress": 0.01, "estimated_finish": None, "lease": str(uuid4()), "lease_end": stamp + LEASE,
                    "started": {"$ifNull": ["$started", stamp]}, "attempt": {"$add": ["$attempt", 1]}}}],
         sort=QUEUE_ORDER, return_document=ReturnDocument.AFTER)
     return doc
+
+
+def quality_options(job):
+    if mode := job.get("lab_mode"):
+        options = ["--quality", mode, "--voice-batch", str(job.get("voice_batch", 2)),
+                   "--lab-runtime", job.get("lab_runtime", "standard"),
+                   "--lab-separation", job.get("lab_separation", "fp32")]
+        if job.get("lab_voice", "default") != "default":
+            options += ["--lab-voice", job["lab_voice"]]
+        return options
+    if quality := job.get("render_quality"):
+        return ["--quality", quality]
+    return []
 
 
 class RenderLease:
@@ -130,12 +145,7 @@ def process(job):
                 input_arg=reel_url(job["url"])
             with log.open("w") as writer, log.open() as reader:
                 command = [engine, input_arg, "--target-language", job.get("target_language", "en"), "-o", dest]
-                if job.get("lab_mode"):
-                    command += ["--quality", job["lab_mode"], "--voice-batch", str(job.get("voice_batch", 2))]
-                    command += ["--lab-runtime", job.get("lab_runtime","standard")]
-                    command += ["--lab-separation", job.get("lab_separation", "fp32")]
-                    if job.get("lab_voice", "default") != "default":
-                        command += ["--lab-voice", job["lab_voice"]]
+                command += quality_options(job)
                 proc = subprocess.Popen(command, stdout=writer,
                                         stderr=subprocess.STDOUT, start_new_session=True, env=env)
                 deadline = time.monotonic() + int(os.getenv("JOB_TIMEOUT", "1800"))
@@ -163,7 +173,8 @@ def process(job):
                                     continue
                                 seconds = event.get("duration")
                                 if type(seconds) in (int, float) and 0 < seconds <= 600 and seconds != sampled_duration:
-                                    rows = jobs.find({"state": "done", "lab_mode": job.get("lab_mode"), "media_seconds": {"$exists": True}},
+                                    rows = jobs.find({"state": "done", "lab_mode": job.get("lab_mode"),
+                                                      "render_quality": job.get("render_quality"), "media_seconds": {"$exists": True}},
                                                      {"media_seconds": 1, "started": 1, "finished": 1,
                                                       "attempt": 1, "target_language": 1}).sort("finished", -1).limit(40)
                                     runtime = nearby_runtime(rows, seconds, job.get("target_language", "en"))

@@ -483,7 +483,7 @@ class Postgres:
             return conn.execute("""WITH sample AS (
                 SELECT doc->>'state' AS state, doc->>'source_language' AS source,
                        coalesce(doc->>'target_language','en') AS target,
-                       coalesce(doc->>'lab_mode','standard') AS mode,
+                       coalesce(doc->>'lab_mode',doc->>'render_quality','standard') AS mode,
                        coalesce((doc->>'cache_hits')::bigint,0) AS hits, doc ? 'report' AS reported,
                        (doc#>>'{created,$date}')::timestamptz AS created,
                        (doc#>>'{started,$date}')::timestamptz AS started,

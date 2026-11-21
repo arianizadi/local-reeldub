@@ -105,6 +105,7 @@ struct Job: Codable, Identifiable, Hashable {
     var source_id: String? = nil
     var trimmed: Bool? = nil
     var lab_mode: String? = nil
+    var render_quality: String? = nil
     var lab_runtime: String? = nil
     var voice_batch: Int? = nil
     var target_language: String? = nil

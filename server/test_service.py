@@ -12,10 +12,29 @@ from uuid import uuid4
 
 from .api import hash_value
 from .db import media_db, db, now
-from .worker import LEASE, RenderLease, claim
+from .worker import LEASE, RenderLease, claim, quality_options
 
 
 class WorkerLeaseTests(unittest.TestCase):
+    def test_new_best_jobs_use_preset_and_lab_runs_keep_their_own_options(self):
+        self.assertEqual(quality_options({"render_quality":"best"}), ["--quality","best"])
+        self.assertEqual(quality_options({}), [])
+        experiment = {"lab_mode":"medium", "lab_voice":"small", "voice_batch":1, "lab_separation":"fp16"}
+        self.assertEqual(quality_options(experiment), [
+            "--quality","medium","--voice-batch","1","--lab-runtime","standard",
+            "--lab-separation","fp16","--lab-voice","small"])
+
+    def test_light_worker_only_claims_jobs_it_can_render(self):
+        queue = Mock()
+        with patch("server.worker.db", return_value=queue), patch("server.worker.Path.is_file", return_value=False):
+            claim()
+        query = queue.jobs.find_one_and_update.call_args.args[0]
+        self.assertIsNone(query["render_quality"])
+        self.assertIsNone(query["lab_mode"])
+        with patch("server.worker.db", return_value=queue), patch("server.worker.Path.is_file", return_value=True):
+            claim()
+        self.assertNotIn("render_quality",queue.jobs.find_one_and_update.call_args.args[0])
+
     def test_progress_renews_fenced_lease_and_quiet_stage_still_heartbeats(self):
         jobs = Mock()
         jobs.update_one.return_value.matched_count = 1

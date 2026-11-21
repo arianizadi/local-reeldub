@@ -10,6 +10,7 @@ from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
 from . import sources, store
+from .languages import default_render_quality
 from .db import db, now
 
 
@@ -63,6 +64,7 @@ def existing(user, url, target, trim):
         "url": url,
         "target_language": {"$in": [target, None]} if target == "en" else target,
         "lab_mode": {"$exists":False},
+        "render_quality": default_render_quality(),
         "trimmed": True if trim else {"$ne": True},
     }
     return db().jobs.find_one(
@@ -212,15 +214,18 @@ def confirm(user, quote_id):
                 continue
             if line["reused"] or line["unlimited"] and plan != "admin":
                 raise HTTPException(409, "The quote changed. Review the cost again.")
-            identity = sha256(
-                repr((user, source["identity"], target, record["trimmed"])).encode()
-            ).hexdigest()
+            quality = default_render_quality()
+            identity = (user, source["identity"], target, record["trimmed"])
+            # Preserve historical Light keys. A Studio Best render can coexist with a legacy copy.
+            if quality:
+                identity += (quality,)
+            render_key = sha256(repr(identity).encode()).hexdigest()
             job = {
                 "_id": line["request"],
                 "owner": user,
                 "request_id": line["request"],
                 "request_keys": [line["request"]],
-                "render_key": identity,
+                "render_key": render_key,
                 "source_file": source["_id"],
                 "url": source["identity"],
                 "title": source["title"],
@@ -236,6 +241,8 @@ def confirm(user, quote_id):
                 "queue_seq": next_position(),
                 "day": record["day"],
             }
+            if quality:
+                job["render_quality"] = quality
             if line["free"]:
                 used = db().jobs.distinct("slot", {"owner": user, "day": record["day"]})
                 slot = next((i for i in range(limit) if i not in used), None)
@@ -262,7 +269,7 @@ def confirm(user, quote_id):
                     return response(old)
                 # A completed copy may have expired before the periodic sweep removes its deduplication key.
                 db().jobs.update_many(
-                    {"render_key": identity, "state": "done", "media_expires": {"$lte": stamp}},
+                    {"render_key": render_key, "state": "done", "media_expires": {"$lte": stamp}},
                     {"$unset": {"render_key": ""}},
                 )
         raise HTTPException(409, "Another submission changed the balance. Review the quote again.")
