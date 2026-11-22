@@ -230,6 +230,19 @@ final class StudioSmoke: XCTestCase {
             XCTAssertEqual(previous, "1")
             XCTAssertEqual(initialSound, "Mute video")
         }
+        if let cue = ProcessInfo.processInfo.environment["REELDUB_TEST_CAPTION"], !cue.isEmpty {
+            let deadline = Date().addingTimeInterval(10)
+            var visible = false
+            repeat {
+                let scan = VNRecognizeTextRequest()
+                try VNImageRequestHandler(data: app.screenshot().pngRepresentation).perform([scan])
+                visible = (scan.results ?? []).contains { result in
+                    result.topCandidates(1).first?.string.localizedCaseInsensitiveContains(cue) == true
+                }
+                if !visible { RunLoop.current.run(until: Date().addingTimeInterval(0.2)) }
+            } while !visible && Date() < deadline
+            XCTAssertTrue(visible, "The selected caption cue should be visible on the video.")
+        }
         let playing = XCTAttachment(screenshot: app.screenshot())
         playing.name = "Dub playing with sound and caption controls"
         playing.lifetime = .keepAlways

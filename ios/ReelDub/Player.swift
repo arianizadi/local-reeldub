@@ -230,7 +230,11 @@ struct JobView: View {
             let track = try? await DubSubtitles.load(from: item, language: job.target)
             guard playbackRequest == request, !Task.isCancelled else { return }
             let next = AVPlayer()
-            if track != nil { next.appliesMediaSelectionCriteriaAutomatically = false }
+            if let track {
+                next.appliesMediaSelectionCriteriaAutomatically = false
+                // Select before attachment so a cue starting at time zero is delivered.
+                track.setEnabled(wantsSubtitles)
+            }
             next.isMuted = wantsMuted
             if !wantsMuted { try activatePlaybackAudio() }
             player = next
@@ -240,7 +244,7 @@ struct JobView: View {
                     switch item.status {
                     case .readyToPlay:
                         if let track {
-                            applyCaptions(wantsSubtitles, to: track)
+                            if track.isEnabled != wantsSubtitles { applyCaptions(wantsSubtitles, to: track) }
                             subtitles = track
                         }
                         next.play()
