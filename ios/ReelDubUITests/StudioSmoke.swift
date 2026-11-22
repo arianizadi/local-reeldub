@@ -19,6 +19,10 @@ final class StudioSmoke: XCTestCase {
         let connectButton = app.buttons["self-host-connect"]
         XCTAssertTrue(connectButton.waitForExistence(timeout: 12), app.debugDescription)
         connectButton.tap()
+        // iOS may offer to save the local fixture key in its system password sheet.
+        let passwords = XCUIApplication(bundleIdentifier: "com.apple.SafariViewService")
+        let dismiss = passwords.buttons["Not Now"]
+        if dismiss.waitForExistence(timeout: 3) { dismiss.tap() }
     }
 
     func testFreeSelfHostConnection() throws {
@@ -268,8 +272,6 @@ final class StudioSmoke: XCTestCase {
         let port = ProcessInfo.processInfo.environment["REELDUB_TEST_PORT"].flatMap(UInt16.init) ?? 8300
         enterServer(app, url: "http://127.0.0.1:\(port)", key: key)
         testAndConnect(app)
-        let prompt = app.buttons["Not Now"]
-        if prompt.waitForExistence(timeout: 2) { prompt.tap() }
         let job = app.buttons.matching(identifier: "job-done").firstMatch
         XCTAssertTrue(job.waitForExistence(timeout: 15))
         let libraryImage = XCTAttachment(screenshot: app.screenshot())
