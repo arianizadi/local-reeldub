@@ -12,18 +12,48 @@ struct Welcome: View {
     @ScaledMetric(relativeTo: .largeTitle) private var headline = 54.0
     @Environment(\.dynamicTypeSize) private var typeSize
 
+    private var usesWindowToolbar: Bool { UIDevice.current.userInterfaceIdiom == .pad }
+
     var body: some View {
+        Group {
+            if usesWindowToolbar {
+                NavigationStack {
+                    content
+                        .navigationTitle("ReelDub")
+                        .navigationBarTitleDisplayMode(.inline)
+                        .toolbar { ToolbarItem(placement: .principal) { brand } }
+                }
+            } else {
+                content
+            }
+        }
+        .sheet(isPresented: $help) { ReelDubHelp() }
+        .sheet(isPresented: $selfHost) { SelfHost(studio: studio) }
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: busy)
+        .onChange(of: issue) { _, value in
+            if let value { AccessibilityNotification.Announcement(value).post() }
+        }
+    }
+
+    private var brand: some View {
+        HStack(spacing: 9) {
+            Image(decorative: "brand-mark").resizable().frame(width: 36, height: 36)
+            Text("ReelDub").font(.title3.weight(.bold))
+        }
+        .foregroundStyle(.white)
+        .accessibilityElement(children: .combine)
+    }
+
+    private var content: some View {
         GeometryReader { geo in
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                    HStack(spacing: 9) {
-                        Image("brand-mark").resizable().frame(width: 36, height: 36)
-                        Text("ReelDub").font(.title3.weight(.bold))
-                    }
-                    .accessibilityElement(children: .combine)
+                    if !usesWindowToolbar { brand }
                     Spacer(minLength: 28)
                     Image("voice-print").resizable().scaledToFit()
-                        .frame(maxWidth: .infinity).frame(maxHeight: typeSize.isAccessibilitySize ? 46 : 160).accessibilityHidden(true)
+                        .frame(maxWidth: .infinity)
+                        .frame(maxHeight: typeSize.isAccessibilitySize || (usesWindowToolbar && geo.size.height < 600) ? 46 : 160)
+                        .accessibilityHidden(true)
                     Text("Reels, in your language.")
                         .font(typeSize.isAccessibilitySize ? .system(.title, design: .serif) : .system(size: headline, weight: .medium, design: .serif)).tracking(-1)
                         .fixedSize(horizontal: false, vertical: true).padding(.top, 14)
@@ -50,12 +80,6 @@ struct Welcome: View {
                     .frame(maxWidth: .infinity)
             }
         }.background(Palette.ink.ignoresSafeArea()).foregroundStyle(.white)
-            .sheet(isPresented: $help) { ReelDubHelp() }
-            .sheet(isPresented: $selfHost) { SelfHost(studio: studio) }
-            .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: busy)
-            .onChange(of: issue) { _, value in
-                if let value { AccessibilityNotification.Announcement(value).post() }
-            }
     }
 }
 

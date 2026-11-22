@@ -80,6 +80,24 @@ For private testing, archive the Release scheme for a generic iOS device. In Xco
 
 ## Verification
 
+For iOS layout tests, select the stable simulator with `deploy/qa/simulator.sh`. Xcode 27.3 beta simulator build `24C5037i` can repeatedly crash Apple's `identityservicesd` when a device or preview starts. Select an installed stable runtime in Device Hub for interactive work. [Apple Developer Technical Support's confirmation](https://developer.apple.com/forums/thread/855649)
+
+`LayoutMatrixTests` checks the composer, render progress and player across phone, tablet and compact window sizes. To exercise the actual share extension, start the local fixture with `python3 -m http.server 8037 --bind 127.0.0.1 --directory deploy/qa/share-fixture`. Run this on a signed-out simulator from the repository root:
+
+```bash
+TEST_RUNNER_REELDUB_SHARE_FIXTURE_URL=http://127.0.0.1:8037/ \
+  xcodebuild test -project ios/ReelDub.xcodeproj -scheme ReelDub \
+  -destination "platform=iOS Simulator,id=$(deploy/qa/simulator.sh)" \
+  -parallel-testing-enabled NO -only-testing:ReelDubUITests/ShareLayoutTests
+```
+
+For a live fold test, install [AXe](https://github.com/cameroncooke/AXe) 2.1.1 or later and Apple's Duo-specific simulator image. The runner creates a temporary iPhone Duo, checks its runtime build, and stops if that simulator reports an identity-service crash.
+
+```bash
+xcodebuild -downloadPlatform iOS -buildVersion 24B91016s -architectureVariant arm64
+python3 deploy/qa/test_duo_layout.py --result /tmp/ReelDub-Duo.xcresult
+```
+
 Run server integration tests in a new disposable Compose project. They require an empty test database and a hosted-mode API. The test exercises concurrent quotas, priority, owner isolation, idempotency, reports, recovery of an expired lease, and Apple audience, issuer, expiration and nonce checks against a local test signing key.
 
 ```bash

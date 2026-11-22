@@ -41,7 +41,11 @@ struct Home: View {
     var body: some View {
         NavigationStack(path: $path) {
             VStack(alignment: .leading, spacing: 0) {
-                header
+                if usesWindowToolbar {
+                    if !selecting && typeSize > .xLarge {
+                        addReel.frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 18)
+                    }
+                } else { header }
                 if searching {
                     HStack {
                         RDSearchField(text: $query)
@@ -71,7 +75,15 @@ struct Home: View {
                 }
             }
             .background(canvas.ignoresSafeArea())
-            .toolbar(.hidden, for: .navigationBar)
+            .navigationTitle(usesWindowToolbar ? "Dubs" : "")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar(usesWindowToolbar ? .visible : .hidden, for: .navigationBar)
+            .toolbar {
+                if usesWindowToolbar {
+                    // iPadOS positions the system window controls within the navigation bar.
+                    ToolbarItemGroup(placement: .topBarTrailing) { headerActions }
+                }
+            }
             .navigationDestination(for: Job.self) { job in
                 JobView(studio: studio, initial: job, requestDeletion: { deletion = [$0] })
             }
@@ -166,29 +178,35 @@ struct Home: View {
         }
     }
 
+    private var usesWindowToolbar: Bool { UIDevice.current.userInterfaceIdiom == .pad }
+
     private var header: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Text("Dubs").font(.largeTitle.bold()).tracking(-1.5).accessibilityAddTraits(.isHeader)
                 Spacer()
-                if selecting {
-                    Button("Done") { selecting = false; selected = [] }.frame(minHeight: 44)
-                } else {
-                    Menu {
-                        if !eligible.isEmpty {
-                            Button("Select dubs", systemImage: "checkmark.circle") { selecting = true }
-                                .accessibilityIdentifier("select-dubs")
-                        }
-                        Button("Search library", systemImage: "magnifyingglass") { searching = true }
-                        Button("Account", systemImage: "person.crop.circle") { sheet = .account }.accessibilityIdentifier("account")
-                    } label: {
-                        Image(systemName: "ellipsis.circle").font(.title3).frame(width: 44, height: 44)
-                    }.accessibilityLabel("Library options").accessibilityIdentifier("library-options")
-                    if typeSize <= .xLarge { addReel }
-                }
+                headerActions
             }
             if !selecting && typeSize > .xLarge { addReel }
         }.padding(.horizontal, 18).padding(.bottom, 10).padding(.top, 4)
+    }
+
+    @ViewBuilder private var headerActions: some View {
+        if selecting {
+            Button("Done") { selecting = false; selected = [] }.frame(minHeight: 44)
+        } else {
+            Menu {
+                if !eligible.isEmpty {
+                    Button("Select dubs", systemImage: "checkmark.circle") { selecting = true }
+                        .accessibilityIdentifier("select-dubs")
+                }
+                Button("Search library", systemImage: "magnifyingglass") { searching = true }
+                Button("Account", systemImage: "person.crop.circle") { sheet = .account }.accessibilityIdentifier("account")
+            } label: {
+                Image(systemName: "ellipsis.circle").font(.title3).frame(width: 44, height: 44)
+            }.accessibilityLabel("Library options").accessibilityIdentifier("library-options")
+            if typeSize <= .xLarge { addReel }
+        }
     }
 
     private var addReel: some View {

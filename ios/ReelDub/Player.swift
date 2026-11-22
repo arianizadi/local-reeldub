@@ -31,10 +31,49 @@ struct JobView: View {
     private var expired: Bool { studio.isExpired(job) }
 
     var body: some View {
+        GeometryReader { viewport in
+            details(in: viewport.size)
+        }
+        .background(Palette.canvas).navigationTitle("Reel details").navigationBarTitleDisplayMode(.inline)
+            .sheet(item: $project, onDismiss: {
+                if let importedFile { try? FileManager.default.removeItem(at: importedFile); self.importedFile = nil }
+            }) { input in
+                if let api=studio.api { QuoteSheet(api:api,input:input,languages:studio.account?.output_languages ?? ["en"],target:job.target,trim:job.trimmed ?? false,liveOffers:studio.account?.purchase_preflight == true,plans:AnyView(CloudPlanSheet(studio:studio))) { _ in Task { await studio.refresh() } } }
+            }
+            .confirmationDialog("Join the end of the priority line?", isPresented: $confirmSkip, titleVisibility: .visible) {
+                Button("Use 1 queue pass") {
+                    Task {
+                        guard let api = studio.api else { return }
+                        do { _ = try await api.data("v1/jobs/" + job.id + "/skip", method: "POST"); await studio.refresh() }
+                        catch { problem = error.localizedDescription }
+                    }
+                }
+            } message: { Text("Earlier priority dubs keep their places. A job already processing will finish its turn.") }
+            .sheet(isPresented: $reporting) { ReportView(studio: studio, job: job) }
+            .sheet(item: $sharing) { file in ExportSheet(url: file.url) }
+            .task(id: job.state) {
+                if job.state == "done", !expired, !didStart, !UIAccessibility.isVoiceOverRunning { await play() }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: AVPlayerItem.mediaSelectionDidChangeNotification)) { change in
+                guard let subtitles, let item = change.object as? AVPlayerItem,
+                      item === subtitles.item, item === player?.currentItem else { return }
+                if let pendingCaptionChoice {
+                    guard subtitles.isEnabled == pendingCaptionChoice else { return }
+                    self.pendingCaptionChoice = nil
+                }
+                // Keep an explicit change from the native fullscreen menu, once selection has settled.
+                wantsSubtitles = subtitles.isEnabled
+            }
+            .onChange(of: job.recoveryCue) { _, cue in
+                if let cue { AccessibilityNotification.Announcement(cue).post() }
+            }
+            .onDisappear { stopPlayback() }
+    }
+    private func details(in viewport: CGSize) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 if job.state == "done", !expired {
-                    Color.black.aspectRatio(0.83, contentMode: .fit)
+                    DubVideoFrame(viewport: viewport)
                         .overlay {
                             if let player { VideoPlayer(player: player) }
                             else if preparingPlayback {
@@ -145,42 +184,10 @@ struct JobView: View {
                         Label("Delete dub", systemImage: "trash")
                     }.accessibilityIdentifier("delete-dub")
                 }
-            }.padding(20).frame(maxWidth: 650).frame(maxWidth: .infinity)
-        }.background(Palette.canvas).navigationTitle("Reel details").navigationBarTitleDisplayMode(.inline)
-            .sheet(item: $project, onDismiss: {
-                if let importedFile { try? FileManager.default.removeItem(at: importedFile); self.importedFile = nil }
-            }) { input in
-                if let api=studio.api { QuoteSheet(api:api,input:input,languages:studio.account?.output_languages ?? ["en"],target:job.target,trim:job.trimmed ?? false,liveOffers:studio.account?.purchase_preflight == true,plans:AnyView(CloudPlanSheet(studio:studio))) { _ in Task { await studio.refresh() } } }
-            }
-            .confirmationDialog("Join the end of the priority line?", isPresented: $confirmSkip, titleVisibility: .visible) {
-                Button("Use 1 queue pass") {
-                    Task {
-                        guard let api = studio.api else { return }
-                        do { _ = try await api.data("v1/jobs/" + job.id + "/skip", method: "POST"); await studio.refresh() }
-                        catch { problem = error.localizedDescription }
-                    }
-                }
-            } message: { Text("Earlier priority dubs keep their places. A job already processing will finish its turn.") }
-            .sheet(isPresented: $reporting) { ReportView(studio: studio, job: job) }
-            .sheet(item: $sharing) { file in ExportSheet(url: file.url) }
-            .task(id: job.state) {
-                if job.state == "done", !expired, !didStart, !UIAccessibility.isVoiceOverRunning { await play() }
-            }
-            .onReceive(NotificationCenter.default.publisher(for: AVPlayerItem.mediaSelectionDidChangeNotification)) { change in
-                guard let subtitles, let item = change.object as? AVPlayerItem,
-                      item === subtitles.item, item === player?.currentItem else { return }
-                if let pendingCaptionChoice {
-                    guard subtitles.isEnabled == pendingCaptionChoice else { return }
-                    self.pendingCaptionChoice = nil
-                }
-                // Keep an explicit change from the native fullscreen menu, once selection has settled.
-                wantsSubtitles = subtitles.isEnabled
-            }
-            .onChange(of: job.recoveryCue) { _, cue in
-                if let cue { AccessibilityNotification.Announcement(cue).post() }
-            }
-            .onDisappear { stopPlayback() }
+            }.padding(DubVideoFrame.inset).frame(maxWidth: DubVideoFrame.contentWidth).frame(maxWidth: .infinity)
+        }
     }
+
     private func retry() async {
         guard !retrying else { return }
         if studio.account?.creator_minutes == true || !Job.isReel(job.url) {
@@ -315,6 +322,20 @@ struct JobView: View {
         defer { preparingShare = false }
         do { sharing = ShareFile(url: try await studio.shareMovie(job.id)) }
         catch { problem = error.localizedDescription }
+    }
+}
+
+/// The inline video shares its viewport with sound, captions and the share button.
+struct DubVideoFrame: View {
+    static let contentWidth: CGFloat = 650
+    static let inset: CGFloat = 20
+    let viewport: CGSize
+
+    var body: some View {
+        let width = max(0, min(Self.contentWidth, viewport.width) - 2 * Self.inset)
+        let controls: CGFloat = Self.inset + 2 * 18 + 44 + 50
+        let height = min(width / 0.83, max(0, viewport.height - controls))
+        Color.black.frame(height: height)
     }
 }
 

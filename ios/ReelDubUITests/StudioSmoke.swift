@@ -19,10 +19,55 @@ final class StudioSmoke: XCTestCase {
         let connectButton = app.buttons["self-host-connect"]
         XCTAssertTrue(connectButton.waitForExistence(timeout: 12), app.debugDescription)
         connectButton.tap()
-        // iOS may offer to save the local fixture key in its system password sheet.
-        let passwords = XCUIApplication(bundleIdentifier: "com.apple.SafariViewService")
-        let dismiss = passwords.buttons["Not Now"]
-        if dismiss.waitForExistence(timeout: 3) { dismiss.tap() }
+        // The fixture key can trigger an asynchronous system prompt as the library appears.
+        // Its controls are hosted by different processes across iOS releases.
+        let hosts = [app, XCUIApplication(bundleIdentifier: "com.apple.springboard"),
+                     XCUIApplication(bundleIdentifier: "com.apple.SafariViewService")]
+        let candidates = hosts.map { $0.buttons["Not Now"].firstMatch }
+        let deadline = Date().addingTimeInterval(14)
+        var tappedVisiblePrompt = false
+        repeat {
+            if let target = visiblePasswordDismissal(in: app) {
+                app.coordinate(withNormalizedOffset: target).tap()
+                tappedVisiblePrompt = true
+            } else if tappedVisiblePrompt {
+                return
+            } else if let dismiss = candidates.first(where: { $0.exists && $0.isHittable }) {
+                dismiss.tap()
+                if dismiss.waitForNonExistence(timeout: 1), visiblePasswordDismissal(in: app) == nil {
+                    return
+                }
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.4))
+        } while Date() < deadline
+    }
+
+    /// Some runtimes draw the system password prompt above the app but expose only the library in XCTest.
+    /// In the simulator fixture, require both labels and full-screen coordinates before tapping.
+    private func visiblePasswordDismissal(in app: XCUIApplication) -> CGVector? {
+        #if targetEnvironment(simulator)
+        let screen = XCUIScreen.main.screenshot().image
+        let bounds = app.frame
+        guard bounds.width > 0, bounds.height > 0, bounds.minX == 0, bounds.minY == 0,
+              abs(screen.size.width / screen.size.height - bounds.width / bounds.height) < 0.02 else { return nil }
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let upright = UIGraphicsImageRenderer(size: screen.size, format: format).image { _ in
+            screen.draw(in: CGRect(origin: .zero, size: screen.size))
+        }
+        guard let frame = upright.cgImage else { return nil }
+        let scan = VNRecognizeTextRequest()
+        scan.recognitionLevel = .fast
+        scan.recognitionLanguages = ["en-US"]
+        guard (try? VNImageRequestHandler(cgImage: frame).perform([scan])) != nil else { return nil }
+        let items = (scan.results ?? []).compactMap { $0.topCandidates(1).first }
+        guard items.contains(where: { $0.string.localizedCaseInsensitiveContains("Save Password?") }),
+              let dismiss = items.first(where: { $0.string.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "not now" }),
+              let box = try? dismiss.boundingBox(for: dismiss.string.startIndex..<dismiss.string.endIndex) else { return nil }
+        return CGVector(dx: box.boundingBox.midX, dy: 1 - box.boundingBox.midY)
+        #else
+        return nil
+        #endif
     }
 
     func testFreeSelfHostConnection() throws {
@@ -84,15 +129,13 @@ final class StudioSmoke: XCTestCase {
         XCTAssertFalse(app.buttons["self-host-connect"].exists, "The new device must still test its server.")
     }
 
-    func testRangeSelectionAndConfirmedDeletion() throws {
-        #if targetEnvironment(simulator)
+    private func prepareRangeSelection(_ app: XCUIApplication, signOutAfterTest: Bool) throws -> (Int) -> XCUIElement {
         let environment = ProcessInfo.processInfo.environment
         guard let port = environment["REELDUB_DRAG_FIXTURE_PORT"].flatMap(UInt16.init),
               let key = environment["REELDUB_DRAG_FIXTURE_KEY"], !key.isEmpty else {
             throw XCTSkip("Run python3 deploy/qa/test_drag_selection.py with a signed-out simulator UUID.")
         }
         continueAfterFailure = false
-        let app = XCUIApplication()
         app.launch()
         let selfHost = app.buttons["Use my own server"]
         XCTAssertTrue(selfHost.waitForExistence(timeout: 8), "Use a signed-out QA simulator.")
@@ -110,26 +153,21 @@ final class StudioSmoke: XCTestCase {
                 forDuration: 0.1, thenDragTo: row(to).coordinate(withNormalizedOffset: center),
                 withVelocity: .slow, thenHoldForDuration: 0.1)
         }
-        func capture(_ name: String) {
-            let image = XCTAttachment(screenshot: app.screenshot())
-            image.name = name
-            image.lifetime = .keepAlways
-            add(image)
-        }
-
         // A unique title proves this is our synthetic library before any selection or deletion.
         XCTAssertTrue(row(0).waitForExistence(timeout: 12), app.debugDescription)
-        addTeardownBlock {
-            app.terminate()
-            app.launch()
-            let options = app.buttons["library-options"]
-            XCTAssertTrue(options.waitForExistence(timeout: 5))
-            options.tap()
-            app.buttons["Account"].tap()
-            let signOut = app.buttons["Sign out"]
-            if !signOut.isHittable { app.swipeUp() }
-            signOut.tap()
-            XCTAssertTrue(selfHost.waitForExistence(timeout: 5))
+        if signOutAfterTest {
+            addTeardownBlock {
+                app.terminate()
+                app.launch()
+                let options = app.buttons["library-options"]
+                XCTAssertTrue(options.waitForExistence(timeout: 5))
+                options.tap()
+                app.buttons["Account"].tap()
+                let signOut = app.buttons["Sign out"]
+                if !signOut.isHittable { app.swipeUp() }
+                signOut.tap()
+                XCTAssertTrue(selfHost.waitForExistence(timeout: 5))
+            }
         }
         app.terminate()
         app.launch()
@@ -148,8 +186,39 @@ final class StudioSmoke: XCTestCase {
         XCTAssertFalse(row(1).isSelected)
         XCTAssertFalse(row(2).isSelected)
         XCTAssertTrue(row(3).isSelected)
-        capture("Drag selection before confirmation")
+        capture(app, "Drag selection before confirmation")
 
+        return row
+    }
+
+    private func capture(_ app: XCUIApplication, _ name: String) {
+        let image = XCTAttachment(screenshot: app.screenshot())
+        image.name = name
+        image.lifetime = .keepAlways
+        add(image)
+    }
+
+    func testLibrarySelectionSurvivesUnfolding() async throws {
+        guard let hinge = DuoHingeFixture() else {
+            throw XCTSkip("Run the disposable Duo fixture.")
+        }
+        let closed = try await hinge.move(to: "closed")
+        let app = XCUIApplication()
+        defer { app.terminate() }
+        let row = try prepareRangeSelection(app, signOutAfterTest: false)
+        let inner = try await hinge.move(to: "open")
+        XCTAssertGreaterThan(min(inner.width, inner.height), min(closed.width, closed.height))
+        XCTAssertEqual(app.buttons["delete-selected"].label, "Delete (2)")
+        XCTAssertTrue(row(0).isSelected)
+        XCTAssertTrue(row(3).isSelected)
+        add(try await hinge.screenshot(named: "Duo unfolded library keeps selection"))
+    }
+
+    func testRangeSelectionAndConfirmedDeletion() throws {
+        #if targetEnvironment(simulator)
+        let app = XCUIApplication()
+        let row = try prepareRangeSelection(app, signOutAfterTest: true)
+        let delete = app.buttons["delete-selected"]
         delete.tap()
         let confirm = app.buttons["Delete 2 dubs from library"]
         XCTAssertTrue(confirm.waitForExistence(timeout: 4))
@@ -167,7 +236,7 @@ final class StudioSmoke: XCTestCase {
         XCTAssertTrue(row(0).waitForNonExistence(timeout: 6))
         XCTAssertTrue(row(3).waitForNonExistence(timeout: 6))
         for index in [1, 2, 4] { XCTAssertTrue(row(index).exists) }
-        capture("Library after confirmed deletion")
+        capture(app, "Library after confirmed deletion")
 
         #else
         throw XCTSkip("The loopback library fixture runs only on a simulator.")
@@ -315,6 +384,24 @@ final class StudioSmoke: XCTestCase {
         playing.name = "Dub playing with sound and caption controls"
         playing.lifetime = .keepAlways
         add(playing)
+
+        let device = XCUIDevice.shared
+        let startingPose = device.orientation
+        defer { device.orientation = startingPose }
+        device.orientation = .landscapeLeft
+        let share = app.buttons["Share English video"]
+        let landscape = NSPredicate { _, _ in
+            app.frame.width > app.frame.height && share.isHittable && app.frame.contains(share.frame)
+        }
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: landscape, object: nil)], timeout: 6), .completed)
+        XCTAssertTrue(sound.isHittable)
+        XCTAssertTrue(subtitles.isHittable)
+        let wide = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        wide.name = "Landscape playback controls"
+        wide.lifetime = .keepAlways
+        add(wide)
+        device.orientation = .portrait
+
         sound.tap()
         subtitles.tap()
         XCTAssertNotEqual(subtitles.value as? String, previous)
