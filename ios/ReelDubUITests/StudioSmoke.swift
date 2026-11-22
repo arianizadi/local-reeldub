@@ -2,6 +2,102 @@ import XCTest
 import Vision
 
 final class StudioSmoke: XCTestCase {
+    func testRangeSelectionAndConfirmedDeletion() throws {
+        #if targetEnvironment(simulator)
+        let environment = ProcessInfo.processInfo.environment
+        guard let port = environment["REELDUB_DRAG_FIXTURE_PORT"].flatMap(UInt16.init),
+              let key = environment["REELDUB_DRAG_FIXTURE_KEY"], !key.isEmpty else {
+            throw XCTSkip("Run python3 deploy/qa/test_drag_selection.py with a signed-out simulator UUID.")
+        }
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launch()
+        let selfHost = app.buttons["Use my own server"]
+        XCTAssertTrue(selfHost.waitForExistence(timeout: 8), "Use a signed-out QA simulator.")
+        selfHost.tap()
+        let address = app.textFields["Server address"]
+        XCTAssertTrue(address.waitForExistence(timeout: 5))
+        address.tap()
+        address.typeText("http://127.0.0.1:\(port)")
+        let secret = app.secureTextFields["Connection key"]
+        secret.tap()
+        secret.typeText(key)
+        app.buttons["Connect with key"].tap()
+
+        func row(_ index: Int) -> XCUIElement {
+            let title = "Drag \(key) " + String(format: "%02d", index)
+            return app.buttons.matching(NSPredicate(format: "identifier == %@ AND label CONTAINS %@", "job-failed", title)).firstMatch
+        }
+        func drag(_ from: Int, through to: Int) {
+            let center = CGVector(dx: 0.5, dy: 0.5)
+            row(from).coordinate(withNormalizedOffset: center).press(
+                forDuration: 0.1, thenDragTo: row(to).coordinate(withNormalizedOffset: center),
+                withVelocity: .slow, thenHoldForDuration: 0.1)
+        }
+        func capture(_ name: String) {
+            let image = XCTAttachment(screenshot: app.screenshot())
+            image.name = name
+            image.lifetime = .keepAlways
+            add(image)
+        }
+
+        // A unique title proves this is our synthetic library before any selection or deletion.
+        XCTAssertTrue(row(0).waitForExistence(timeout: 12), app.debugDescription)
+        addTeardownBlock {
+            app.terminate()
+            app.launch()
+            let options = app.buttons["library-options"]
+            XCTAssertTrue(options.waitForExistence(timeout: 5))
+            options.tap()
+            app.buttons["Account"].tap()
+            let signOut = app.buttons["Sign out"]
+            if !signOut.isHittable { app.swipeUp() }
+            signOut.tap()
+            XCTAssertTrue(selfHost.waitForExistence(timeout: 5))
+        }
+        app.terminate()
+        app.launch()
+        XCTAssertTrue(row(0).waitForExistence(timeout: 8))
+        app.buttons["library-options"].tap()
+        app.buttons["Select dubs"].tap()
+        let delete = app.buttons["delete-selected"]
+        XCTAssertTrue(delete.waitForExistence(timeout: 4), app.debugDescription)
+        row(0).tap()
+        drag(1, through: 3)
+        XCTAssertEqual(delete.label, "Delete (4)")
+        for index in 0...3 { XCTAssertTrue(row(index).isSelected) }
+        drag(2, through: 1)
+        XCTAssertEqual(delete.label, "Delete (2)")
+        XCTAssertTrue(row(0).isSelected)
+        XCTAssertFalse(row(1).isSelected)
+        XCTAssertFalse(row(2).isSelected)
+        XCTAssertTrue(row(3).isSelected)
+        capture("Drag selection before confirmation")
+
+        delete.tap()
+        let confirm = app.buttons["Delete 2 dubs from library"]
+        XCTAssertTrue(confirm.waitForExistence(timeout: 4))
+        let cancel = app.buttons["Cancel"]
+        if cancel.exists && cancel.isHittable {
+            cancel.tap()
+        } else {
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.25, dy: 0.12)).tap()
+        }
+        XCTAssertTrue(confirm.waitForNonExistence(timeout: 3))
+        XCTAssertEqual(delete.label, "Delete (2)")
+        XCTAssertTrue(row(0).exists)
+        delete.tap()
+        confirm.tap()
+        XCTAssertTrue(row(0).waitForNonExistence(timeout: 6))
+        XCTAssertTrue(row(3).waitForNonExistence(timeout: 6))
+        for index in [1, 2, 4] { XCTAssertTrue(row(index).exists) }
+        capture("Library after confirmed deletion")
+
+        #else
+        throw XCTSkip("The loopback library fixture runs only on a simulator.")
+        #endif
+    }
+
     private func welcome(_ app: XCUIApplication) {
         app.launch()
         if app.buttons["library-options"].waitForExistence(timeout: 2) {

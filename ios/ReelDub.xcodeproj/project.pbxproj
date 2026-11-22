@@ -33,6 +33,7 @@
 		B5D33D1EE6B3D06F835C980C /* ReportView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E562891A2A6B21798745625 /* ReportView.swift */; };
 		B61A901591152FC2F4D65272 /* StudioSmoke.swift in Sources */ = {isa = PBXBuildFile; fileRef = D844C8909280CCFB7E3D07EF /* StudioSmoke.swift */; };
 		B70E7BF1D75E02F7521DB48D /* CloudStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69B0AEF679C982E1261D3F4D /* CloudStore.swift */; };
+		B7EC9CB63C3003D0DC0BDF3B /* LibraryDragSelection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C49EF130F25A4EC252FE562 /* LibraryDragSelection.swift */; };
 		C2738F45B7E4966A9BDBB60D /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = FB74316CA58B05D52430B6D2 /* Assets.xcassets */; };
 		C61CDDE95B6BC5E80D12403C /* ReelDubApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B3FB6960C8146A94CA0E243 /* ReelDubApp.swift */; };
 		CAA0B292C34EBF8FE061EEBF /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = B27411E2E57CC46FC63EDDFF /* PrivacyInfo.xcprivacy */; };
@@ -83,6 +84,7 @@
 		02A95A5C21A3387E878D6140 /* InstrumentSerif-License.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "InstrumentSerif-License.txt"; sourceTree = "<group>"; };
 		18B84EF9C9C03E47301D7648 /* ReelDub.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = ReelDub.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		1BF612E32DE612654653080D /* ShareController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareController.swift; sourceTree = "<group>"; };
+		1C49EF130F25A4EC252FE562 /* LibraryDragSelection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryDragSelection.swift; sourceTree = "<group>"; };
 		1D6C343B8A8D7B1FD031A148 /* InstrumentSerif-Italic.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "InstrumentSerif-Italic.ttf"; sourceTree = "<group>"; };
 		2F744C06BC48A6A48728BEEE /* OutputLanguage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OutputLanguage.swift; sourceTree = "<group>"; };
 		3FF8974CE7AC121FAD569F2C /* TransportPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TransportPolicyTests.swift; sourceTree = "<group>"; };
@@ -212,6 +214,7 @@
 				69B0AEF679C982E1261D3F4D /* CloudStore.swift */,
 				E92049E5BD652058AAE3905E /* DeviceLibrary.swift */,
 				9A360E5C178187669B008D52 /* Home.swift */,
+				1C49EF130F25A4EC252FE562 /* LibraryDragSelection.swift */,
 				C42F82996F8624A12042E38D /* Player.swift */,
 				B27411E2E57CC46FC63EDDFF /* PrivacyInfo.xcprivacy */,
 				6B3FB6960C8146A94CA0E243 /* ReelDubApp.swift */,
@@ -378,6 +381,7 @@
 				B70E7BF1D75E02F7521DB48D /* CloudStore.swift in Sources */,
 				668F34419ECB618A32D75CA2 /* DeviceLibrary.swift in Sources */,
 				941CC53E938330E42D40BB66 /* Home.swift in Sources */,
+				B7EC9CB63C3003D0DC0BDF3B /* LibraryDragSelection.swift in Sources */,
 				B35A96E38B1ED63895FFD07B /* OutputLanguage.swift in Sources */,
 				2466B64CEE3DF1BB83D795C9 /* Palette.swift in Sources */,
 				991E4F3B8F8915B7E9259209 /* Player.swift in Sources */,
@@ -567,7 +571,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 9;
+				CURRENT_PROJECT_VERSION = 10;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
@@ -670,7 +674,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 9;
+				CURRENT_PROJECT_VERSION = 10;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;

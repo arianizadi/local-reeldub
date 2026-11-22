@@ -19,7 +19,8 @@ struct Home: View {
     @State private var selected: Set<String> = []
     @State private var deletion: [Job] = []
     @State private var removing = false
-    private var eligible: [String] { visible.filter { !$0.rdPhase.isActive }.map(\.id) }
+    @State private var rangeSelection = LibraryDragSelection()
+    private var eligible: [String] { sections.flatMap { $0.jobs }.filter { !$0.rdPhase.isActive }.map(\.id) }
     @State private var deletionError: String?
 
     private enum LibrarySheet: String, Identifiable {
@@ -102,6 +103,8 @@ struct Home: View {
         }
         .preferredColorScheme(.dark).tint(leaf)
         .disabled(removing)
+        .onChange(of: selecting) { _, active in if !active { rangeSelection.detach() } }
+        .onDisappear { rangeSelection.detach() }
         .onChange(of: eligible) { _, ids in selected.formIntersection(ids) }
         .confirmationDialog("Remove dubs", isPresented: Binding(get: { !deletion.isEmpty }, set: { if !$0 { deletion = [] } }),
                             titleVisibility: .visible, presenting: deletion.isEmpty ? nil : deletion) { items in
@@ -194,6 +197,29 @@ struct Home: View {
         }.accessibilityIdentifier("add-reel")
     }
 
+    private var sections: [(title: String, jobs: [Job])] {
+        let items = visible
+        return [
+            ("Processing", items.filter { $0.rdPhase == .running }),
+            ("Queued", items.filter { $0.rdPhase == .queued }.sorted { ($0.ahead ?? Int.max) < ($1.ahead ?? Int.max) }),
+            ("Ready", items.filter { $0.rdPhase == .done && !studio.isExpired($0) }),
+            ("Expired", items.filter { studio.isExpired($0) }),
+            ("Failed", items.filter { $0.rdPhase == .failed })
+        ]
+    }
+
+    private func beginRange(at id: String) -> LibraryDragSelection.Update? {
+        let order = eligible
+        guard let start = order.firstIndex(of: id) else { return nil }
+        let original = selected
+        let adding = !original.contains(id)
+        return { last in
+            guard let end = order.firstIndex(of: last) else { return }
+            let range = order[min(start, end)...max(start, end)]
+            selected = (adding ? original.union(range) : original.subtracting(range)).intersection(eligible)
+        }
+    }
+
     private var transfers: some View {
         let items = visible
         return List {
@@ -215,11 +241,7 @@ struct Home: View {
                     }
                 }.listRowBackground(Color.clear).listRowSeparator(.hidden)
             }
-            section("Processing", items.filter { $0.rdPhase == .running })
-            section("Queued", items.filter { $0.rdPhase == .queued }.sorted { ($0.ahead ?? Int.max) < ($1.ahead ?? Int.max) })
-            section("Ready", items.filter { $0.rdPhase == .done && !studio.isExpired($0) })
-            section("Expired", items.filter { studio.isExpired($0) })
-            section("Failed", items.filter { $0.rdPhase == .failed })
+            ForEach(sections, id: \.title) { group in section(group.title, group.jobs) }
         }
         .listStyle(.plain).scrollContentBackground(.hidden)
         .scrollDismissesKeyboard(.interactively)
@@ -256,6 +278,11 @@ struct Home: View {
                                 Image(systemName: "ellipsis").frame(width: 44, height: 44)
                                     .contentShape(Rectangle())
                             }.accessibilityLabel("Actions for " + job.displayTitle)
+                        }
+                    }
+                    .background {
+                        if selecting && !job.rdPhase.isActive {
+                            LibrarySelectionRow(id: job.id, selection: rangeSelection, begin: beginRange)
                         }
                     }
                     .contextMenu { if !selecting { actions(job) } }
