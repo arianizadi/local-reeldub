@@ -31,6 +31,8 @@ The hosted beta runs on one RTX 4070 Ti Super with two render slots. Proxmox hos
 3. On the management side, run `enroll-node.sh NODE SLOTS` and deliver the node credential directory privately. The worker presents its certificate and bearer. The coordinator proxy checks the certificate subject against the claimed node name. The node receives only its assigned media under a current lease. Keep database and Apple credentials on the control guest. [Certificate renewal and removal](deploy/fleet/README.md)
 4. Verify readiness in the admin console. Render two test jobs, check which node handled each, then disconnect one mid-render and verify one reservation, one published result, recovery status and playback. Drain by disabling new assignments in the registry. Check queue wait, completed source minutes per GPU-hour, peak memory and transfer time before raising the slot count.
 
+To rehearse the queue behavior locally, prepare the Docker images listed in the [burst-worker drill](deploy/qa/test_fleet_burst.py), then run `python3 deploy/qa/test_fleet_burst.py` from the repository root. The drill adds a simulated worker while jobs are running, drops the first worker and checks that the original client can retrieve the result with a single allowance charge per submission. Use an actual rental to measure provisioning, media transfer and render time.
+
 ## Measured on the first GPU
 
 On November 21, 2026, the RTX 4070 Ti Super rendered a 13.42-second Persian clip and a 13.03-second Russian clip to English with the Best preset, Index 9B translation, and matched Qwen 1.7B voices.

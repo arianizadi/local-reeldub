@@ -1,12 +1,15 @@
 """Private coordinator HTTP integration checks in disposable PostgreSQL + GridFS."""
 import base64
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import timedelta
 from hashlib import sha256
 import json
 import os
+from pathlib import Path
 import secrets
 import socket
+from tempfile import TemporaryDirectory
 import threading
 import time
 from unittest import TestCase, skipUnless
@@ -19,10 +22,31 @@ from psycopg import OperationalError
 import requests
 import uvicorn
 
-from . import console, fleet, fleet_health, worker
+from . import api, console, fleet, fleet_health, worker
 from .db import db, media_db, now, uses_postgres
 from .postgres import install
 from .wakeup import notify
+
+
+@contextmanager
+def http_fixture(app, *, lifespan="auto"):
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        address = "http://127.0.0.1:" + str(sock.getsockname()[1])
+        server = uvicorn.Server(uvicorn.Config(app, lifespan=lifespan, access_log=False, log_level="error"))
+        thread = threading.Thread(target=server.run, kwargs={"sockets": [sock]}, daemon=True)
+        thread.start()
+        try:
+            for _ in range(200):
+                if server.started:
+                    break
+                time.sleep(.01)
+            else:
+                raise RuntimeError("Fixture HTTP service did not start")
+            yield address
+        finally:
+            server.should_exit = True
+            thread.join(timeout=10)
 
 
 @skipUnless(os.getenv("REELDUB_TEST_DATABASE") == "1" and uses_postgres(), "Requires disposable PostgreSQL and GridFS")
@@ -32,24 +56,7 @@ class FleetIntegration(TestCase):
         cls.enterClassContext(patch.dict(os.environ, {"REELDUB_FLEET_REGISTRY": '{"nodes":{}}'}))
         with db().connection() as conn:
             install(conn)
-        sock = socket.socket()
-        sock.bind(("127.0.0.1", 0))
-        cls.base = "http://127.0.0.1:" + str(sock.getsockname()[1])
-        server = uvicorn.Server(uvicorn.Config(fleet.app, access_log=False, log_level="error"))
-        thread = threading.Thread(target=server.run, kwargs={"sockets": [sock]}, daemon=True)
-        thread.start()
-
-        def close():
-            server.should_exit = True
-            thread.join(timeout=10)
-            sock.close()
-        cls.addClassCleanup(close)
-        for _ in range(200):
-            if server.started:
-                break
-            time.sleep(.01)
-        else:
-            raise RuntimeError("Fixture coordinator did not start")
+        cls.base = cls.enterClassContext(http_fixture(fleet.app))
 
     def setUp(self):
         self.assertEqual(db().jobs.count_documents({"state": {"$in": ["queued", "running"]}}), 0,
@@ -112,6 +119,90 @@ class FleetIntegration(TestCase):
         self.assertEqual(self.claim("alpha").status_code, 204)
         self.assertEqual(self.claim(slot=1).status_code, 403)
         self.assertEqual(db().jobs.find_one({"_id": untouched["_id"]})["state"], "queued")
+
+    def test_burst_worker_joins_and_recovers_existing_customers_job(self):
+        owner = "apple:" + uuid4().hex
+        self.users.append(owner)
+        bearer = secrets.token_urlsafe(36)
+        db().sessions.insert_one({"_id": api.hash_value(bearer), "owner": owner,
+                                  "expires": now() + timedelta(minutes=5)})
+        self.addCleanup(db().sessions.delete_one, {"_id": api.hash_value(bearer)})
+        registry = {"nodes": {"alpha": fleet_health.registry()["alpha"]}}
+        registry_file = Path(self.enterContext(TemporaryDirectory())) / "fleet-registry.json"
+        registry_file.write_text(json.dumps(registry))
+        self.enterContext(patch.dict(os.environ, {"REELDUB_FLEET_REGISTRY": str(registry_file),
+                               "REELDUB_ACCESS_MODE": "hosted", "REELDUB_CREATOR_MINUTES": "0",
+                               "REELDUB_OUTPUT_PROFILE": "studio"}))
+        base = self.enterContext(http_fixture(api.app, lifespan="off"))
+        client = self.enterContext(requests.Session())
+        client.headers["Authorization"] = "Bearer " + bearer
+
+        def submit():
+            key = str(uuid4())
+            url = f"https://www.instagram.com/reel/{uuid4().hex}/"
+            # Stand in for a previously downloaded, private source. No external fetch.
+            source_id = ObjectId()
+            self.bucket.put(b"fixture source", _id=source_id)
+            db().sources.insert_one({"_id": source_id, "owner": owner, "identity": url, "ready": True,
+                                     "expires": now() + timedelta(hours=1), "seconds": 1, "title": "QA"})
+            response = client.post(base + "/v1/jobs", json={"url": url, "request_id": key}, timeout=5)
+            response.raise_for_status()
+            return response.json()["id"]
+
+        def progress(job_id):
+            response = client.post(base + "/v1/library/progress", json={"ids": [job_id]}, timeout=5)
+            response.raise_for_status()
+            item, = response.json()
+            self.assertEqual(item["id"], job_id)
+            return item
+
+        video = b"\x00\x00\x00\x18ftypisom" + b"synthetic fixture bytes"
+        def complete(job):
+            path = "/v1/jobs/" + job["_id"]
+            source = self.req("GET", path + "/source", "rental", job["lease"])
+            self.assertEqual((source.status_code, source.content), (200, b"fixture source"))
+            details = base64.b64encode(b'{"media_seconds":1,"source_language":"en"}').decode()
+            result = self.req("PUT", path + "/result", "rental", job["lease"], headers={
+                "Content-Type": "application/octet-stream", "X-ReelDub-Details": details},
+                data=bytes(4) + video)
+            self.assertEqual(result.status_code, 204, result.text)
+
+        first = submit()
+        home = self.claim("alpha").json()
+        self.assertEqual(home["_id"], first)
+        second, third = submit(), submit()
+        self.assertEqual(progress(second)["state"], "queued")
+        self.tokens["rental"] = secrets.token_urlsafe(36)
+        self.assertEqual(self.claim("rental").status_code, 401)
+        registry["nodes"]["rental"] = {"slots": 1, "studio": True,
+                                        "token_sha256": sha256(self.tokens["rental"].encode()).hexdigest()}
+        next_registry = registry_file.with_suffix(".next")
+        next_registry.write_text(json.dumps(registry))
+        next_registry.replace(registry_file)
+        self.addCleanup(media_db().fleet_nodes.delete_one, {"_id": "rental"})
+        self.assertEqual(self.pulse("rental", check=True)["status"], "online")
+        burst = self.claim("rental").json()
+        self.assertEqual(burst["_id"], second)
+        self.assertEqual([progress(key)["state"] for key in (first, second, third)], ["running", "running", "queued"])
+
+        # Advance the home's heartbeat age; run the same watchdog as the coordinator.
+        media_db().fleet_nodes.update_one({"_id": "alpha"}, {"$set": {"last_seen": now() - timedelta(seconds=85)}})
+        self.scan()
+        self.assertEqual(progress(first)["stage"], "Recovering render")
+        complete(burst)
+        takeover = self.claim("rental").json()
+        self.assertEqual(takeover["_id"], first)
+        self.assertTrue(progress(first)["recovery_switched_server"])
+        self.assertEqual(progress(third)["state"], "queued")
+        stale = self.req("POST", f"/v1/jobs/{first}/heartbeat", "alpha", home["lease"], json={})
+        self.assertEqual(stale.status_code, 409)
+        complete(takeover)
+        self.assertEqual(progress(first)["state"], "done")
+        delivered = client.get(f"{base}/v1/jobs/{first}/video", timeout=5)
+        self.assertEqual((delivered.status_code, delivered.content), (200, video))
+        allowance = client.get(base + "/v1/me", timeout=5)
+        allowance.raise_for_status()
+        self.assertEqual((allowance.json()["used"], allowance.json()["limit"]), (3, 5))
 
     def test_job_transfer_heartbeat_and_result_respect_owner_lease_trim_and_metadata(self):
         source = ObjectId()
