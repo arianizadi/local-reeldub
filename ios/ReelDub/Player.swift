@@ -35,7 +35,10 @@ struct JobView: View {
                     Color.black.aspectRatio(0.83, contentMode: .fit)
                         .overlay {
                             if let player { VideoPlayer(player: player) }
-                            else if preparingPlayback { ProgressView("Loading dub…").foregroundStyle(.white) }
+                            else if preparingPlayback {
+                                DubLoadingIndicator("Loading dub…")
+                                    .environment(\.colorScheme, .dark)
+                            }
                             else {
                                 Poster(job: job, api: studio.api)
                                 Button { Task { await play() } } label: {

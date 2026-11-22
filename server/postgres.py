@@ -520,6 +520,37 @@ class Postgres:
                     coalesce(sum(extract(epoch FROM started-created)),0),count(started)
                 FROM sample GROUP BY state,source,target,mode""").fetchall()
 
+    def launch_summary(self, start, stamp):
+        # One on-demand aggregate. No per-account round trips or historical plan guessing.
+        with self.connection() as conn:
+            return conn.execute("""
+                WITH marked AS MATERIALIZED (
+                    SELECT doc->>'owner' AS owner, doc->>'day' AS day, doc->>'launch_free_slot' AS slot,
+                           doc#>>'{launch_priority_at,$date}' AS entered, doc#>>'{started,$date}' AS started,
+                           doc->'launch_busy'='true'::jsonb AS busy
+                    FROM reeldub.jobs
+                    WHERE (doc ? 'launch_free_slot' AND doc->>'day' BETWEEN %s AND %s)
+                       OR (doc->'launch_priority_at' BETWEEN %s::jsonb AND %s::jsonb)
+                ), free_days AS (
+                    SELECT owner, day, bool_or(slot='4') AS hit FROM marked
+                    WHERE slot IS NOT NULL AND day BETWEEN %s AND %s GROUP BY owner, day
+                ), waits AS (
+                    SELECT extract(epoch FROM started::timestamptz - entered::timestamptz)::float8 AS wait, busy
+                    FROM marked WHERE entered::timestamptz BETWEEN %s AND %s
+                              AND started::timestamptz BETWEEN entered::timestamptz AND %s
+                )
+                SELECT * FROM (
+                    SELECT count(DISTINCT owner), count(DISTINCT owner) FILTER (WHERE hit),
+                           count(*), count(*) FILTER (WHERE hit) FROM free_days
+                ) f CROSS JOIN (
+                    SELECT count(*), percentile_cont(0.5) WITHIN GROUP (ORDER BY wait),
+                           percentile_cont(0.95) WITHIN GROUP (ORDER BY wait), count(*) FILTER (WHERE busy),
+                           percentile_cont(0.5) WITHIN GROUP (ORDER BY wait) FILTER (WHERE busy),
+                           percentile_cont(0.95) WITHIN GROUP (ORDER BY wait) FILTER (WHERE busy), count(busy)
+                    FROM waits
+                ) w""", (start.date().isoformat(), stamp.date().isoformat(), Jsonb(encode(start)), Jsonb(encode(stamp)),
+                         start.date().isoformat(), stamp.date().isoformat(), start, stamp, stamp)).fetchone()
+
     def library(self, user, ids=None):
         scope = sql.SQL("")
         params = [Jsonb(user)]

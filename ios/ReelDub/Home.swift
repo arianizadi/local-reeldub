@@ -720,40 +720,38 @@ struct RDActivityBar: View {
     var progress: Double? = nil
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    @Environment(\.scenePhase) private var scenePhase
+
     var body: some View {
-        if let progress {
-            ProgressView(value: min(1, max(0, progress)))
+        if let progress, progress.isFinite {
+            let fraction = min(1, max(0, progress))
+            ProgressView(value: fraction)
                 .tint(tint)
                 .accessibilityLabel("Render progress")
-                .accessibilityValue(progress.formatted(.percent.precision(.fractionLength(0))))
+                .accessibilityValue(fraction.formatted(.percent.precision(.fractionLength(0))))
         } else {
-        GeometryReader { geo in
-            let width = geo.size.width
-            ZStack(alignment: .leading) {
-                Capsule().fill(Color.primary.opacity(0.08))
-                if moving {
-                    if reduceMotion {
-                        Capsule().fill(tint.opacity(0.5))
-                    } else {
-                        TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { context in
-                            let t = context.date.timeIntervalSinceReferenceDate
-                            let phase = t.truncatingRemainder(dividingBy: 1.6) / 1.6
-                            let eased = CGFloat((1 - cos(phase * .pi)) / 2)
-                            let segment = max(width * 0.36, 24)
-                            Capsule()
-                                .fill(LinearGradient(
-                                    colors: [tint.opacity(0), tint, tint.opacity(0)],
-                                    startPoint: .leading, endPoint: .trailing))
-                                .frame(width: segment)
-                                .offset(x: -segment + (width + segment) * eased)
+            GeometryReader { geometry in
+                let width = geometry.size.width
+                ZStack {
+                    Capsule().fill(Color.primary.opacity(0.08))
+                    if moving {
+                        if reduceMotion || scenePhase != .active {
+                            HStack(spacing: 3) {
+                                ForEach(0..<3) { _ in Circle().fill(tint).frame(width: 3, height: 3) }
+                            }
+                        } else {
+                            let segment = min(width, max(width * 0.3, 16))
+                            Capsule().fill(tint.opacity(0.7)).frame(width: segment)
+                                .phaseAnimator([false, true]) { view, forward in
+                                    view.offset(x: (forward ? 1 : -1) * (width - segment) / 2)
+                                } animation: { _ in .easeInOut(duration: 1.6) }
                         }
                     }
                 }
+                .clipShape(Capsule())
             }
-            .clipShape(Capsule())
-        }
-        .frame(height: 4)
-        .accessibilityHidden(true)
+            .frame(height: 4)
+            .accessibilityHidden(true)
         }
     }
 }
@@ -930,14 +928,9 @@ struct RDFallbackArt: View {
 
 struct RDLoading: View {
     var body: some View {
-        VStack(spacing: 12) {
-            ProgressView().controlSize(.large)
-            Text("Loading your library")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.top, 120)
+        DubLoadingIndicator("Loading your library")
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 72)
     }
 }
 

@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 from pymongo.errors import DuplicateKeyError, PyMongoError
 
 from .db import db, media_db, now, uses_postgres
+from . import launch_metrics
 from .source import reel_url
 from .languages import LANGUAGES, outputs
 
@@ -267,6 +268,7 @@ def metrics():
         "cache_hits": hits,
         "reports": reports,
         "avg_wait": wait / starts if starts else None,
+        "launch_metrics": launch_metrics.overview(now()),
         "languages": [
             {"source": s, "target": t, "count": n} for (s, t), n in pairs.most_common()
         ],

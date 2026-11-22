@@ -209,10 +209,10 @@ struct QuoteSheet: View {
               .disabled(busy)
             }
           } else if message == nil {
-            ProgressView("Calculating cost…")
+            DubLoadingIndicator("Calculating cost…", compact: true)
           }
         } else if message == nil {
-          ProgressView(preparationTitle)
+          DubLoadingIndicator(preparationTitle, compact: true)
         }
         if let message {
           Text(message).foregroundStyle(.secondary)

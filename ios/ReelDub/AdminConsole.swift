@@ -19,8 +19,80 @@ private struct Overview: Decodable {
   }
   let gpu: GPU?
   let nodes: [FleetNode]?
+  let launch_metrics: LaunchMetrics?
   let accounts, banned, signed_in_30d: Int?
   let languages: [Pair], speeds: [Speed]
+}
+
+private struct LaunchMetrics: Decodable {
+  let window_days: Int
+  let free_active_users, free_limit_users, free_active_user_days, free_limit_user_days: Int
+  let priority_started, busy_priority_started: Int
+  let priority_occupancy_known: Int?
+  let priority_median_seconds, priority_p95_seconds: Double?
+  let busy_priority_median_seconds, busy_priority_p95_seconds: Double?
+}
+
+private struct LaunchMetricsSections: View {
+  let metrics: LaunchMetrics
+
+  var body: some View {
+    Section {
+      if metrics.free_active_users == 0 {
+        Text("No free accounts have used a daily dub in this period.").foregroundStyle(.secondary)
+      } else {
+        let share = Double(metrics.free_limit_users) / Double(metrics.free_active_users)
+        VStack(alignment: .leading, spacing: 4) {
+          Text(share, format: .percent.precision(.fractionLength(0...1)))
+            .font(.title2.weight(.semibold)).monospacedDigit()
+          Text("\(metrics.free_limit_users) of \(metrics.free_active_users) active free accounts filled all five daily slots.")
+            .font(.subheadline)
+        }.accessibilityElement(children: .combine)
+        LabeledContent("Days at the limit", value: "\(metrics.free_limit_user_days) of \(metrics.free_active_user_days) active account-days")
+      }
+    } header: {
+      Text("Free daily allowance")
+    } footer: {
+      Text("Last \(metrics.window_days) UTC days, including today. Each day an account reserves a free slot counts once, even if a render later fails. Tracking covers new requests.")
+    }
+    Section {
+      if metrics.priority_started == 0 {
+        Text("No measured priority jobs have started in this period.").foregroundStyle(.secondary)
+      } else {
+        waits("All priority starts", count: metrics.priority_started,
+              median: metrics.priority_median_seconds, p95: metrics.priority_p95_seconds)
+        if metrics.priority_occupancy_known == 0 {
+          Text("GPU occupancy was unavailable for these starts.").foregroundStyle(.secondary)
+        } else {
+          waits("All GPU slots busy at entry", count: metrics.busy_priority_started,
+                median: metrics.busy_priority_median_seconds, p95: metrics.busy_priority_p95_seconds)
+          if let known = metrics.priority_occupancy_known, known < metrics.priority_started {
+            Text("GPU occupancy was recorded for \(known) of \(metrics.priority_started) starts.")
+              .font(.footnote).foregroundStyle(.secondary)
+          }
+        }
+      }
+    } header: {
+      Text("Priority queue wait")
+    } footer: {
+      Text("Time from entering priority to the first worker start. The busy group includes jobs that entered when every compatible GPU slot was occupied. Last \(metrics.window_days) UTC days.")
+    }
+  }
+
+  private func waits(_ title: String, count: Int, median: Double?, p95: Double?) -> some View {
+    VStack(alignment: .leading, spacing: 5) {
+      Text(title).font(.headline)
+      if count > 0 {
+        Text(count == 1 ? "1 measured start" : "\(count) measured starts")
+          .font(.caption).foregroundStyle(.secondary)
+        if let median { LabeledContent("Median", value: Job.duration(Int(median.rounded()))) }
+        if let p95 { LabeledContent("95th percentile", value: Job.duration(Int(p95.rounded()))) }
+      } else {
+        Text("No measured starts").font(.subheadline).foregroundStyle(.secondary)
+      }
+    }
+    .monospacedDigit().padding(.vertical, 2)
+  }
 }
 
 struct FleetNode: Decodable, Identifiable {
@@ -217,6 +289,7 @@ private struct ConsoleContent: View {
           switch tab {
           case .overview:
             if let summary {
+              if let metrics = summary.launch_metrics { LaunchMetricsSections(metrics: metrics) }
               if let nodes = summary.nodes { FleetSection(nodes: nodes) }
               if let total = summary.accounts {
                 Section("Accounts") {

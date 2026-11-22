@@ -26,7 +26,7 @@ from starlette.concurrency import run_in_threadpool
 
 from .wakeup import next_hour, notify
 from .db import uses_postgres, media_db, db, now, setup_indexes
-from . import console, checkout, erasure, store, store_history, minutes, sources
+from . import console, checkout, erasure, store, store_history, minutes, sources, launch_metrics
 from .source import reel_url
 from .languages import default_render_quality, outputs
 
@@ -160,7 +160,8 @@ def resume_deletions():
     db().jobs.update_many({"deleted": True, "cache_retained": True, "media_expired": True,
                            "artifact": {"$exists": False}}, [{"$project": {
         "owner": 1, "request_id": 1, "request_keys": 1, "state": 1, "day": 1, "slot": 1,
-        "extra_ticket": 1, "skip_ticket": 1, "minute_grants": 1, "minute_units": 1, "deleted": 1}}])
+        "extra_ticket": 1, "skip_ticket": 1, "minute_grants": 1, "minute_units": 1, "deleted": 1,
+        **launch_metrics.TOMBSTONE_FIELDS}}])
 
 
 def purge_orphaned_uploads():
@@ -586,6 +587,12 @@ def enqueue_render(job, plan, limit):
     ticket = notify(preparing=True)
     if not ticket:
         raise HTTPException(503, "The render queue is temporarily unavailable. Try again shortly.")
+    job = dict(job)  # A rejected slot may be retried with different funding.
+    if job["owner"].startswith("apple:") and plan != "admin":
+        if plan == "free" and limit == LIMITS["free"] and "slot" in job:
+            job["launch_free_slot"] = job["slot"]
+        if job.get("priority"):
+            job.update(launch_metrics.priority_entry(job, now()))
     if uses_postgres():
         if not db().admit_job(job):
             raise HTTPException(403,"This account is suspended.")
@@ -689,9 +696,10 @@ def skip(job_id: str, user=Depends(owner)):
         raise HTTPException(409, "You are already first in the standard line. Your skip was saved.")
     for ticket in store.tickets(user, "skip_ticket"):
         try:
+            entry = launch_metrics.priority_entry(job, now()) if user.startswith("apple:") and not console.permitted(user) else {}
             promoted = db().jobs.find_one_and_update(
                 {"_id": job_id, "owner": user, "state": "queued", "priority": 0, "recovery_rank": {"$ne": 1}},
-                {"$set": {"priority": 1, "queue_seq": next_position(), "skip_ticket": ticket}},
+                {"$set": {"priority": 1, "queue_seq": next_position(), "skip_ticket": ticket, **entry}},
                 projection={"poster": 0}, return_document=ReturnDocument.AFTER)
         except DuplicateKeyError:
             continue
@@ -774,7 +782,7 @@ def delete_dub(job_id: str, user=Depends(owner)):
         {**key, "deleted": {"$ne": True}, "state": {"$in": ["done", "failed"]},
          "$or": [{"artifact": {"$exists": False}}, {"media_expired": True}, {"media_expires": {"$lte": stamp}}]},
         [{"$project": {"owner": 1, "request_id": 1, "request_keys": 1, "state": 1, "day": 1, "slot": 1, "extra_ticket": 1, "skip_ticket": 1, "minute_grants": 1, "minute_units": 1,
-                       "artifact": 1, "deleted": {"$literal": True}}}],
+                       "artifact": 1, "deleted": {"$literal": True}, **launch_metrics.TOMBSTONE_FIELDS}}],
         return_document=ReturnDocument.AFTER)
     if not job:
         owned(job_id, user)
