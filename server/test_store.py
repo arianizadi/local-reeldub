@@ -205,8 +205,12 @@ class CommerceTests(unittest.TestCase):
             # Simulate a pre-language render in the original user's library.
             db().jobs.update_one({"_id":english["id"]}, {"$set":{"artifact":"legacy","state":"done"}, "$unset":{"target_language":""}})
             db().jobs.update_one({"_id":spanish["id"]}, {"$set":{"artifact":"spanish","state":"done"}})
-            self.assertEqual(submit("en")["id"], english["id"])
-            self.assertEqual(submit("es")["id"], spanish["id"])
+            with patch.object(api.sources, "prepare_reel", return_value={"seconds": 30}) as inspect_source:
+                self.assertEqual(submit("en")["id"], english["id"])
+                self.assertEqual(submit("es")["id"], spanish["id"])
+                self.assertEqual(inspect_source.call_count, 2)
+                self.assertEqual(submit("en")["id"], english["id"])
+                self.assertEqual(inspect_source.call_count, 2)
             german_key = uuid4()
             german = submit("de", german_key)
             self.assertEqual(german["target_language"], "de")

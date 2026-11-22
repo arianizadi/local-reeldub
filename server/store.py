@@ -14,6 +14,7 @@ PREFIX = "com.arianizadi.reeldub."
 MONTHLY = PREFIX + "premium.monthly"
 CREATOR = PREFIX + "creator.monthly"
 MINUTE_PACK = PREFIX + "minutes15"
+SELF_HOST = PREFIX + "selfhost.lifetime"
 SUBSCRIPTIONS = (MONTHLY, CREATOR)
 # Additional translations, priority passes per purchased unit.
 PACKS = {PREFIX + "skip1": (0, 1), PREFIX + "mini": (5, 1), PREFIX + "studio": (30, 4)}
@@ -25,14 +26,65 @@ def enabled():
 
 @lru_cache
 def verifier():
-    from appstoreserverlibrary.models.Environment import Environment
-    from appstoreserverlibrary.signed_data_verifier import SignedDataVerifier
     if not enabled():
         raise HTTPException(503, "The store is unavailable on this server.")
-    env = Environment(os.environ["STORE_ENVIRONMENT"])
+    return apple_verifier(os.environ["STORE_ENVIRONMENT"])
+
+
+@lru_cache
+def apple_verifier(environment):
+    from appstoreserverlibrary.models.Environment import Environment
+    from appstoreserverlibrary.signed_data_verifier import SignedDataVerifier
     root = Path(__file__).with_name("certs") / "AppleRootCA-G3.cer"
-    return SignedDataVerifier([root.read_bytes()], True, env, os.environ["APPLE_CLIENT_ID"],
+    return SignedDataVerifier([root.read_bytes()], True, Environment(environment), os.environ["APPLE_CLIENT_ID"],
                               int(os.environ["STORE_APP_ID"]))
+
+
+def verify_self_host(signed, *, app=False, notification=False):
+    from appstoreserverlibrary.signed_data_verifier import VerificationException, VerificationStatus
+    if os.getenv("REELDUB_ACCESS_MODE") != "hosted":
+        raise HTTPException(404, "This purchase is managed by ReelDub Cloud.")
+    configured = {item.strip() for item in os.getenv("REELDUB_SELF_HOST_STORE_ENVIRONMENTS", "").split(",")}
+    environments = ("Sandbox", "Production")
+    if not configured.issubset(environments):
+        raise HTTPException(503, "Self-host purchases are temporarily unavailable.")
+    # A sandbox notification may omit the numeric app ID required by Apple's production verifier.
+    for env in (environment for environment in environments if environment in configured):
+        try:
+            decoder = apple_verifier(env)
+            if notification:
+                return decoder.verify_and_decode_notification(signed)
+            return decoder.verify_and_decode_app_transaction(signed) if app else decoder.verify_and_decode_signed_transaction(signed)
+        except VerificationException as exc:
+            if exc.status == VerificationStatus.RETRYABLE_VERIFICATION_FAILURE:
+                raise HTTPException(503, "Apple verification is temporarily unavailable.") from exc
+            if exc.status != VerificationStatus.INVALID_ENVIRONMENT:
+                break
+    raise HTTPException(400, "Apple could not verify this purchase.")
+
+
+def record_self_host(tx):
+    # Apple is authoritative for this non-consumable. Keep the signed sale/refund
+    # even when a delayed Ask to Buy approval arrives after the checkout intent expired.
+    if (tx.productId != SELF_HOST or tx.rawType != "Non-Consumable"
+            or tx.rawInAppOwnershipType != "PURCHASED" or tx.quantity != 1
+            or not tx.transactionId or not tx.signedDate):
+        raise HTTPException(400, "This transaction is not a self-host unlock.")
+    key = f"{tx.rawEnvironment}:{tx.transactionId}"
+    data = dict(product=SELF_HOST, environment=tx.rawEnvironment, signed=tx.signedDate,
+                original=str(tx.originalTransactionId or tx.transactionId), revoked=tx.revocationDate is not None)
+    # This ledger has no Cloud entitlements, GPU credits, server address, or connection key.
+    try:
+        db().purchases.update_one({"_id": key, "product": SELF_HOST, "signed": {"$lt": tx.signedDate}},
+                                  {"$set": data}, upsert=True)
+    except DuplicateKeyError:
+        if not db().purchases.find_one({"_id": key, "product": SELF_HOST}, {"_id": 1}):
+            raise HTTPException(409, "Transaction does not match this product.")
+    if tx.appAccountToken:
+        db().purchase_intents.update_one(
+            {"_id": str(tx.appAccountToken).lower(), "product": SELF_HOST, "environment": tx.rawEnvironment,
+             "$or": [{"transaction": None}, {"transaction": key}]},
+            {"$set": {"transaction": key}})
 
 
 def verify(signed, notification=False, *, renewal=False):
@@ -131,11 +183,23 @@ def update_grace(series, purchase, signed, until):
 
 
 def handle_notification(signed):
-    event = verify(signed, notification=True)
+    decode = verify
+    try:
+        event = decode(signed, notification=True)
+    except HTTPException as exc:
+        if not os.getenv("REELDUB_SELF_HOST_STORE_ENVIRONMENTS") or (enabled() and exc.status_code != 400):
+            raise
+        decode = verify_self_host
+        event = decode(signed, notification=True)
     # We do not collect consent for consumption-data sharing. A refund request alone changes no access.
     if event.rawNotificationType in ("CONSUMPTION_REQUEST", "TEST") or not event.data or not event.data.signedTransactionInfo:
         return
-    tx = verify(event.data.signedTransactionInfo)
+    tx = decode(event.data.signedTransactionInfo)
+    if tx.productId == SELF_HOST:
+        record_self_host(tx)
+        return
+    if decode is verify_self_host:
+        return
     if (tx.productId not in PACKS and tx.productId not in (*SUBSCRIPTIONS, MINUTE_PACK)):
         return
     key = record(tx)

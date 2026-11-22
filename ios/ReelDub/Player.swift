@@ -205,7 +205,7 @@ struct JobView: View {
     }
 
     private func play() async {
-        guard !preparingPlayback, player == nil, let api = studio.api else { return }
+        guard !preparingPlayback, player == nil else { return }
         let request = UUID()
         playbackRequest = request
         preparingPlayback = true
@@ -216,6 +216,9 @@ struct JobView: View {
             let url: URL
             if let local = studio.localMovie(job.id) { url = local }
             else {
+                guard let api = studio.api else {
+                    throw Problem("Restore your self-host unlock in Account to play the server copy.")
+                }
                 url = try await api.playback(job.id)
                 if url.isFileURL {
                     guard playbackRequest == request, !Task.isCancelled else {

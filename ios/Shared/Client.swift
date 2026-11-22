@@ -14,7 +14,12 @@ struct Connection: Codable {
         }
         return url
     }
-    var isHosted: Bool { base.scheme?.lowercased() == "https" && base.host()?.lowercased() == Self.hosted.host()?.lowercased() && base.port == Self.hosted.port }
+    var isHosted: Bool {
+        let cloud = Self.hosted
+        guard base.scheme?.lowercased() == "https", (base.port ?? 443) == (cloud.port ?? 443),
+              let hostname = base.host()?.lowercased(), let cloudName = cloud.host()?.lowercased() else { return false }
+        return hostname == cloudName || hostname == cloudName + "."
+    }
     static func server(_ text: String) throws -> URL {
         guard let parts = URLComponents(string: text.trimmingCharacters(in: .whitespacesAndNewlines)),
               let host = parts.host, !host.isEmpty, parts.user == nil, parts.password == nil, parts.query == nil,
@@ -213,12 +218,14 @@ struct API {
     let transport: URLSession
     let adminGrant: String?
     let adminExpired: (@MainActor @Sendable () -> Void)?
-    init(connection: Connection, transport: URLSession = API.session, adminGrant: String? = nil,
+    let selfHostAuthorized: () -> Bool
+    init(connection: Connection, transport: URLSession = API.session, selfHostAuthorized: @escaping () -> Bool = { SelfHostEntitlement.isCached }, adminGrant: String? = nil,
          adminExpired: (@MainActor @Sendable () -> Void)? = nil) {
         self.adminExpired = adminExpired
         self.adminGrant = adminGrant
         self.connection = connection
         self.transport = transport
+        self.selfHostAuthorized = selfHostAuthorized
     }
     static let session: URLSession = {
         let config = URLSessionConfiguration.ephemeral
@@ -232,6 +239,11 @@ struct API {
     func request(_ path: String, method: String = "GET", body: [String: String]? = nil) throws -> URLRequest {
         // Restored Keychain connections also pass this check before sending credentials.
         let base = try Connection.server(connection.base.absoluteString)
+        // A free compatibility test can only read the profile. Every other private
+        // server request, including job submission from the extension, needs the unlock.
+        if !connection.isHosted && !(path == "v1/me" && method == "GET" && body == nil) && !selfHostAuthorized() {
+            throw Problem("Open ReelDub to unlock or restore your self-hosted connection.")
+        }
         var req = URLRequest(url: base.appending(path: path))
         req.httpMethod = method
         if path.hasPrefix("v1/admin/") {

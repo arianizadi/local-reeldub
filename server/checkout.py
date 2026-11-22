@@ -16,29 +16,34 @@ from .db import db, now, uses_postgres
 from .postgres import encode
 
 logger = logging.getLogger(__name__)
+UNAVAILABLE = "Purchases are temporarily paused. No payment was started."
 
 
 def prepare(user, product):
-    unavailable = "Purchases are temporarily paused. No payment was started."
     if (
         not minutes.enabled()
         or not uses_postgres()
         or not store.enabled()
         or product not in (store.CREATOR, store.MINUTE_PACK)
     ):
-        raise HTTPException(503, unavailable)
+        raise HTTPException(503, UNAVAILABLE)
+    return commit_intent(user, product, os.environ["STORE_ENVIRONMENT"])
+
+
+def commit_intent(user, product, environment):
     try:
-        token = store.store_token(user)
+        intent = str(uuid4())
+        token = intent if product == store.SELF_HOST else store.store_token(user)
         limit = int(os.environ["REELDUB_STORE_STORAGE_LIMIT_BYTES"])
         if limit <= 0:
             raise ValueError("Missing storage budget")
         stamp = now()
         record = {
-            "_id": str(uuid4()),
+            "_id": intent,
             "owner": user,
             "product": product,
             "account": token,
-            "environment": os.environ["STORE_ENVIRONMENT"],
+            "environment": environment,
             "created": stamp,
             "expires": stamp + timedelta(days=30),
         }
@@ -53,7 +58,7 @@ def prepare(user, product):
                 limit = min(limit, provider_limit)
             if size >= limit * 4 // 5:
                 logger.warning("Checkout paused at database storage watermark")
-                raise HTTPException(503, unavailable)
+                raise HTTPException(503, UNAVAILABLE)
             # Proves we can commit to the authoritative store. Payment deliveries never use this gate.
             conn.execute(
                 "INSERT INTO reeldub.purchase_intents(doc) VALUES (%s)",
@@ -68,4 +73,4 @@ def prepare(user, product):
         KeyError,
     ) as error:
         logger.warning("Checkout admission unavailable (%s)", type(error).__name__)
-        raise HTTPException(503, unavailable) from None
+        raise HTTPException(503, UNAVAILABLE) from None

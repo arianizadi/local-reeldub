@@ -13,7 +13,7 @@ The Creator review build accepts private MP4/MOV uploads from **Dubs → + → P
 
 ## Use ReelDub on iPhone
 
-On first launch, tap **Continue with Apple** to create an account or sign in to the preconfigured ReelDub Cloud service. The same button handles returning users. For your own installation, choose **Use my own server**.
+On first launch, tap **Continue with Apple** to create an account or sign in to the preconfigured ReelDub Cloud service. The same button handles returning users. In **Use my own server**, you can test your address and connection key for free. The official iOS app unlocks private-server connections for a one-time purchase ($4.99 in the U.S.). On a new phone, sign in to the same App Store account, tap **Restore Purchases**, and enter your server details. The server and CLI are open source.
 
 ReelDub Cloud uses **Best** for new dubs from the app and share sheet. Best translates dialogue in context and matches each speaker’s voice when the output language supports it. Hindi uses a preset voice.
 

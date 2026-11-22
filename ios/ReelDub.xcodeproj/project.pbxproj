@@ -18,6 +18,7 @@
 		68A51F2FF6A4C77D14F5D7F1 /* StoreCatalogTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49B7B3A64BF9F489B3E50E23 /* StoreCatalogTests.swift */; };
 		6A92C21700939D9B784A2B84 /* TransportPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3FF8974CE7AC121FAD569F2C /* TransportPolicyTests.swift */; };
 		706640E8CE8DF92D55FF6C45 /* ReelDubShare.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 5B1D4417B7F3B25C34A902A4 /* ReelDubShare.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		83E0D24459F6DB1BB373952A /* SelfHostEntitlement.swift in Sources */ = {isa = PBXBuildFile; fileRef = 61D27E79630E0125C93FF7F7 /* SelfHostEntitlement.swift */; };
 		87FD08F428A85C200A1DA26F /* SharePanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB96B230C4B53009974D6BDD /* SharePanel.swift */; };
 		8C8DEFFB89195ADB7E1FA354 /* OutputLanguage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F744C06BC48A6A48728BEEE /* OutputLanguage.swift */; };
 		8EDFED545097599993FB93EF /* InstrumentSerif-Italic.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 1D6C343B8A8D7B1FD031A148 /* InstrumentSerif-Italic.ttf */; };
@@ -37,7 +38,9 @@
 		C2738F45B7E4966A9BDBB60D /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = FB74316CA58B05D52430B6D2 /* Assets.xcassets */; };
 		C61CDDE95B6BC5E80D12403C /* ReelDubApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B3FB6960C8146A94CA0E243 /* ReelDubApp.swift */; };
 		CAA0B292C34EBF8FE061EEBF /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = B27411E2E57CC46FC63EDDFF /* PrivacyInfo.xcprivacy */; };
+		D3EB9C55D74E63991926A7CE /* SelfHostStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9389960DC8A8F9509130466C /* SelfHostStore.swift */; };
 		D86B833390C7DEFB1BBE23F6 /* OfflineRemovalTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 48AEB550E3BE07777FF7AB5A /* OfflineRemovalTests.swift */; };
+		DF8188B0493DD6CA69E8A3CE /* SelfHostEntitlement.swift in Sources */ = {isa = PBXBuildFile; fileRef = 61D27E79630E0125C93FF7F7 /* SelfHostEntitlement.swift */; };
 		E5CD5541F98AA3E478DFD001 /* AdminConsole.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E00C4E65D8618D94922BB95 /* AdminConsole.swift */; };
 		FE9615081EFA68F9F24F1C01 /* QuoteSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE343891330017A0F05F9F8B /* QuoteSheet.swift */; };
 /* End PBXBuildFile section */
@@ -94,12 +97,14 @@
 		49B7B3A64BF9F489B3E50E23 /* StoreCatalogTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StoreCatalogTests.swift; sourceTree = "<group>"; };
 		55BD43B10BECFEEAC241D3DE /* ReelDub.storekit */ = {isa = PBXFileReference; path = ReelDub.storekit; sourceTree = "<group>"; };
 		5B1D4417B7F3B25C34A902A4 /* ReelDubShare.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = ReelDubShare.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		61D27E79630E0125C93FF7F7 /* SelfHostEntitlement.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelfHostEntitlement.swift; sourceTree = "<group>"; };
 		69B0AEF679C982E1261D3F4D /* CloudStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudStore.swift; sourceTree = "<group>"; };
 		6B3FB6960C8146A94CA0E243 /* ReelDubApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReelDubApp.swift; sourceTree = "<group>"; };
 		6E00C4E65D8618D94922BB95 /* AdminConsole.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdminConsole.swift; sourceTree = "<group>"; };
 		7D14F892F6DBFC685C356355 /* Palette.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Palette.swift; sourceTree = "<group>"; };
 		8E562891A2A6B21798745625 /* ReportView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReportView.swift; sourceTree = "<group>"; };
 		92D9542904E859E6EB12DAD1 /* ReelDubTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = ReelDubTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		9389960DC8A8F9509130466C /* SelfHostStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelfHostStore.swift; sourceTree = "<group>"; };
 		9A360E5C178187669B008D52 /* Home.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Home.swift; sourceTree = "<group>"; };
 		AE343891330017A0F05F9F8B /* QuoteSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuoteSheet.swift; sourceTree = "<group>"; };
 		B27411E2E57CC46FC63EDDFF /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
@@ -149,6 +154,7 @@
 				2F744C06BC48A6A48728BEEE /* OutputLanguage.swift */,
 				7D14F892F6DBFC685C356355 /* Palette.swift */,
 				AE343891330017A0F05F9F8B /* QuoteSheet.swift */,
+				61D27E79630E0125C93FF7F7 /* SelfHostEntitlement.swift */,
 				D9AFCA869A58D3086F964E62 /* VideoImport.swift */,
 			);
 			path = Shared;
@@ -219,6 +225,7 @@
 				B27411E2E57CC46FC63EDDFF /* PrivacyInfo.xcprivacy */,
 				6B3FB6960C8146A94CA0E243 /* ReelDubApp.swift */,
 				8E562891A2A6B21798745625 /* ReportView.swift */,
+				9389960DC8A8F9509130466C /* SelfHostStore.swift */,
 				E478752859957286A715793F /* SettingsView.swift */,
 				DAF4E4FCE1B66213458B5B10 /* Welcome.swift */,
 				3166E99F9783D6693E73D555 /* Fonts */,
@@ -388,6 +395,8 @@
 				903739ED96104C46DCD01B7E /* QuoteSheet.swift in Sources */,
 				C61CDDE95B6BC5E80D12403C /* ReelDubApp.swift in Sources */,
 				B5D33D1EE6B3D06F835C980C /* ReportView.swift in Sources */,
+				DF8188B0493DD6CA69E8A3CE /* SelfHostEntitlement.swift in Sources */,
+				D3EB9C55D74E63991926A7CE /* SelfHostStore.swift in Sources */,
 				5F451703B7CE01CA61521BF7 /* SettingsView.swift in Sources */,
 				201D517F9F5327C41DA629EF /* VideoImport.swift in Sources */,
 				A5F4BC12D4C242BCD2CC054F /* Welcome.swift in Sources */,
@@ -402,6 +411,7 @@
 				8C8DEFFB89195ADB7E1FA354 /* OutputLanguage.swift in Sources */,
 				90B11E7A6ADD3E7045AC56A8 /* Palette.swift in Sources */,
 				FE9615081EFA68F9F24F1C01 /* QuoteSheet.swift in Sources */,
+				83E0D24459F6DB1BB373952A /* SelfHostEntitlement.swift in Sources */,
 				A818723737ED39690D591829 /* ShareController.swift in Sources */,
 				87FD08F428A85C200A1DA26F /* SharePanel.swift in Sources */,
 				B144F565BB5243256BE638BD /* VideoImport.swift in Sources */,
@@ -571,7 +581,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 12;
+				CURRENT_PROJECT_VERSION = 13;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
@@ -674,7 +684,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 12;
+				CURRENT_PROJECT_VERSION = 13;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;

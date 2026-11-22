@@ -66,7 +66,7 @@ final class OfflineRemovalTests: XCTestCase {
         config.protocolClasses = [ExpiredReceiptServer.self]
         let session = URLSession(configuration: config)
         defer { session.invalidateAndCancel() }
-        let api = API(connection: connection, transport: session)
+        let api = API(connection: connection, transport: session, selfHostAuthorized: { true })
         let key = RDPosterStore.key(for: job.id, api: api)
         for _ in 0..<2 {
             let image = await RDPosterStore().image(for: job.id, key: key, api: api)
@@ -94,7 +94,7 @@ final class OfflineRemovalTests: XCTestCase {
         config.protocolClasses = [ExpiredReceiptServer.self]
         let session = URLSession(configuration: config)
         defer { session.invalidateAndCancel() }
-        let studio = Studio(connection: connection, transport: session)
+        let studio = Studio(connection: connection, transport: session, selfHostAuthorized: { true })
         await studio.refresh()
         for _ in 0..<100 where studio.transferring != nil { try await Task.sleep(for: .milliseconds(20)) }
         XCTAssertNil(studio.transferring)
@@ -152,7 +152,7 @@ final class OfflineRemovalTests: XCTestCase {
         config.protocolClasses = [ExpiredReceiptServer.self]
         let session = URLSession(configuration: config)
         defer { session.invalidateAndCancel() }
-        let studio = Studio(connection: connection, transport: session)
+        let studio = Studio(connection: connection, transport: session, selfHostAuthorized: { true })
         await studio.refresh()
         XCTAssertNil(studio.failure)
         XCTAssertEqual(studio.account?.tier, "free")
@@ -178,7 +178,7 @@ final class OfflineRemovalTests: XCTestCase {
             try library.save(temp, job: job)
             ids.append(id)
         }
-        let studio = Studio(connection: connection)
+        let studio = Studio(connection: connection, selfHostAuthorized: { true })
         await studio.refresh()
         XCTAssertNotNil(studio.failure)
         XCTAssertEqual(studio.saved.count, 3)
@@ -187,7 +187,7 @@ final class OfflineRemovalTests: XCTestCase {
             XCTAssertNil(studio.localMovie(id))
             XCTAssertFalse(FileManager.default.fileExists(atPath: library.movie(id).path))
         }
-        let reopened = Studio(connection: connection)
+        let reopened = Studio(connection: connection, selfHostAuthorized: { true })
         XCTAssertEqual(Set(reopened.saved.keys), [ids[2]])
         XCTAssertEqual(Set(reopened.jobs.map(\.id)), Set(ids))
         XCTAssertTrue(reopened.canDownloadAgain(ids[0]))

@@ -5,6 +5,21 @@
     {
       "displayPrice": "4.99",
       "familyShareable": false,
+      "internalID": "4B31283E-8D7C-4740-BCE3-C0449581006E",
+      "localizations": [
+        {
+          "description": "Connect ReelDub to your own server. Your hardware processes your dubs.",
+          "displayName": "Self-host unlock",
+          "locale": "en_US"
+        }
+      ],
+      "productID": "com.arianizadi.reeldub.selfhost.lifetime",
+      "referenceName": "Self-host unlock",
+      "type": "NonConsumable"
+    },
+    {
+      "displayPrice": "4.99",
+      "familyShareable": false,
       "internalID": "11B77809-0BDE-5FC8-AF7F-9CABEE8411B2",
       "localizations": [
         {

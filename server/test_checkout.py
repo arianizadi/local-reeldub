@@ -48,6 +48,45 @@ class CheckoutTests(TestCase):
         self.assertEqual(caught.exception.status_code, 503)
         self.assertEqual(db().purchase_intents.count_documents({"owner": self.user}), 1)
 
+    def test_self_host_intent_without_cloud_account_is_separate_and_fails_closed(self):
+        app_proof = SimpleNamespace(appTransactionId=str(uuid4()), rawReceiptType="Sandbox")
+        body = api.SelfHostAppProof(signed_app="fixture")
+        with patch.object(store, "verify_self_host", return_value=app_proof), patch.dict(os.environ, {"REELDUB_CREATOR_MINUTES":"0", "STORE_ENVIRONMENT":""}):
+            intent = api.prepare_self_host(body)
+            self.assertEqual(intent, {"id":intent["id"], "account":intent["id"], "product":store.SELF_HOST})
+            row = db().purchase_intents.find_one({"_id":intent["id"]})
+            self.assertEqual(row["environment"], "Sandbox")
+            self.assertTrue(row["owner"].startswith("selfhost:"))
+            self.assertIsNone(db().accounts.find_one({"_id":row["owner"]}))
+            with patch.dict(os.environ, {"REELDUB_STORE_STORAGE_LIMIT_BYTES":"1"}), self.assertRaises(HTTPException) as paused:
+                api.prepare_self_host(body)
+            self.assertEqual(paused.exception.status_code, 503)
+            self.assertEqual(db().purchase_intents.count_documents({"owner":row["owner"]}), 1)
+
+    def test_self_host_sale_replay_and_refund_never_grant_cloud_balance(self):
+        intent = checkout.commit_intent("selfhost:test", store.SELF_HOST, "Sandbox")
+        tx = SimpleNamespace(productId=store.SELF_HOST, rawEnvironment="Sandbox", rawType="Non-Consumable",
+                             rawInAppOwnershipType="PURCHASED", quantity=1, transactionId=str(uuid4()), originalTransactionId=None,
+                             signedDate=100, revocationDate=None, appAccountToken=intent["id"])
+        key = "Sandbox:" + tx.transactionId
+        with patch.object(store, "verify_self_host", return_value=tx), patch.dict(os.environ, {"REELDUB_STORE_STORAGE_LIMIT_BYTES":"1"}):
+            body = api.SignedTransaction(signed_transaction="fixture")
+            api.deliver_self_host(body)
+            api.deliver_self_host(body)
+            self.assertEqual(db().purchase_intents.find_one({"_id":intent["id"]})["transaction"], key)
+            tx.signedDate, tx.revocationDate = 102, 102
+            api.deliver_self_host(body)
+            tx.signedDate, tx.revocationDate = 100, None
+            api.deliver_self_host(body)
+            record = db().purchases.find_one({"_id":key})
+            self.assertTrue(record["revoked"])
+            self.assertNotIn("seconds", record)
+            self.assertNotIn("credits", record)
+            self.assertNotIn("owner", record)
+            tx.productId = store.MINUTE_PACK
+            with self.assertRaises(HTTPException):
+                api.deliver_self_host(body)
+
     def test_no_new_sales_when_creator_minutes_are_paused(self):
         with patch.dict(os.environ, {"REELDUB_CREATOR_MINUTES": "0"}):
             with self.assertRaises(HTTPException) as caught:

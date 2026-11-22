@@ -174,11 +174,12 @@ struct ReelDubHelp: View {
                     answer("Where is my finished video?", "Open Dubs to play it. Once it says Saved on this device, you can watch offline or use Share to export a copy.")
                     DisclosureGroup("Can I host ReelDub myself?") {
                         VStack(alignment: .leading, spacing: 10) {
-                            Text("Yes. ReelDub is open source. Run the server on your own hardware, then choose Use my own server and enter its HTTPS address and connection key. Your server downloads and renders your dubs.")
+                            Text("Yes. ReelDub is open source, and you can run the server on your own hardware. In the official iPhone app, choose Use my own server to test your HTTPS address and connection key for free. A one-time purchase unlocks dubbing on your own servers.")
                             Link("Open-source setup guide", destination: URL(string: "https://github.com/arianizadi/local-reeldub#readme")!)
                         }.padding(.vertical, 4)
                     }
-                    answer("Where can I manage purchases?", "Open Account → Plans & minutes to see what’s available, restore eligible purchases or manage an Apple subscription.")
+                    answer("How do I restore self-hosting on a new iPhone?", "Use the same Apple Account for Media & Purchases. On the welcome screen, tap Use my own server, then Restore Purchases. Enter your server address and key to reconnect.")
+                    answer("Where can I manage Cloud purchases?", "Open Account → Plans & minutes to see what’s available, restore eligible Cloud purchases or manage an Apple subscription. Cloud rendering uses a separate allowance.")
                 }
                 if let suggestionAPI {
                     Section {

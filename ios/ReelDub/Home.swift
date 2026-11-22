@@ -24,7 +24,7 @@ struct Home: View {
     @State private var deletionError: String?
 
     private enum LibrarySheet: String, Identifiable {
-        case composer, account
+        case composer, account, selfHost
         var id: Self { self }
     }
 
@@ -78,6 +78,7 @@ struct Home: View {
             .sheet(item: $sheet) { item in
                 switch item {
                 case .account: SettingsView(studio: studio).presentationDragIndicator(.visible)
+                case .selfHost: SelfHost(studio: studio).presentationDragIndicator(.visible)
                 case .composer:
                     VStack(alignment: .leading, spacing: 0) {
                         HStack(alignment: .center, spacing: 12) {
@@ -136,9 +137,11 @@ struct Home: View {
         }
         .alert("Couldn’t finish deleting", isPresented: Binding(get: { deletionError != nil },
                set: { if !$0 { deletionError = nil } })) { Button("OK") {} } message: { Text(deletionError ?? "") }
-        .task(id: scenePhase) {
+        .task(id: scenePhase == .active && (studio.connection?.isHosted == true || studio.selfHostAccess.owned)) {
             guard scenePhase == .active else { return }
-            await studio.refresh()
+            if studio.connection?.isHosted == true || studio.selfHostAccess.owned {
+                await studio.refresh()
+            }
             hasLoaded = true
         }
         .task(id: scenePhase == .active && studio.jobs.contains { $0.rdPhase.isActive }) {
@@ -189,7 +192,7 @@ struct Home: View {
     }
 
     private var addReel: some View {
-        Button { sheet = .composer } label: {
+        Button { sheet = studio.needsSelfHostUnlock ? .selfHost : .composer } label: {
             Label("Add Reel", systemImage: "plus").font(.headline)
                 .padding(.horizontal, 14).padding(.vertical, 7)
                 .foregroundStyle(.black).background(leaf, in: Capsule())
@@ -223,6 +226,10 @@ struct Home: View {
     private var transfers: some View {
         let items = visible
         return List {
+            if studio.needsSelfHostUnlock {
+                Button("Unlock or restore self-hosting") { sheet = .selfHost }
+                    .accessibilityIdentifier("self-host-library-unlock")
+            }
             if let failure = studio.failure {
                 RDNotice(message: failure) { Task { await studio.refresh() } }
                     .listRowBackground(Color.clear)
@@ -234,7 +241,7 @@ struct Home: View {
                         ContentUnavailableView {
                             Label("Your first dub", systemImage: "film.stack")
                         } description: { Text("Share a Reel from Instagram or add its link here.") }
-                        actions: { Button("Add Reel") { sheet = .composer } }
+                        actions: { Button("Add Reel") { sheet = studio.needsSelfHostUnlock ? .selfHost : .composer } }
                     } else {
                         ContentUnavailableView(query.isEmpty ? filter.emptyTitle : "No matching dubs",
                                                systemImage: query.isEmpty ? "tray" : "magnifyingglass")

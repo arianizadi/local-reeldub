@@ -1,7 +1,85 @@
 import XCTest
 import Vision
 
+@MainActor
 final class StudioSmoke: XCTestCase {
+    private func enterServer(_ app: XCUIApplication, url: String, key: String) {
+        let address = app.textFields["Server address"]
+        XCTAssertTrue(address.waitForExistence(timeout: 5))
+        address.tap()
+        address.typeText(url)
+        let secret = app.secureTextFields["Connection key"]
+        secret.tap()
+        secret.typeText(key)
+    }
+
+    private func testAndConnect(_ app: XCUIApplication) {
+        let testButton = app.buttons["self-host-test"]
+        testButton.tap()
+        let connectButton = app.buttons["self-host-connect"]
+        XCTAssertTrue(connectButton.waitForExistence(timeout: 12), app.debugDescription)
+        connectButton.tap()
+    }
+
+    func testFreeSelfHostConnection() throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let url = env["REELDUB_SELFHOST_PROBE_URL"], let key = env["REELDUB_SELFHOST_PROBE_KEY"] else {
+            throw XCTSkip("Run the disposable self-host connection fixture.")
+        }
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        welcome(app)
+        let entry = app.buttons["Use my own server"]
+        entry.tap()
+        let restore = app.buttons["self-host-restore"]
+        XCTAssertTrue(restore.waitForExistence(timeout: 5))
+        let buy = app.buttons["self-host-buy"]
+        XCTAssertTrue(buy.waitForExistence(timeout: 12), app.debugDescription)
+        XCTAssertTrue(buy.label.contains("4.99"), buy.label)
+        XCTAssertFalse(buy.isEnabled)
+        restore.tap()
+        let noPurchase = app.staticTexts.containing(NSPredicate(format: "label BEGINSWITH %@", "No self-host purchase was found")).firstMatch
+        XCTAssertTrue(noPurchase.waitForExistence(timeout: 10), app.debugDescription)
+
+        enterServer(app, url: url, key: key)
+        app.buttons["self-host-test"].tap()
+        XCTAssertTrue(app.descendants(matching: .any)["self-host-verified"].waitForExistence(timeout: 10))
+        XCTAssertTrue(buy.isEnabled)
+        XCTAssertFalse(app.buttons["library-options"].exists)
+        let image = XCTAttachment(screenshot: app.screenshot())
+        image.name = "Self-host unlock review"
+        image.lifetime = .keepAlways
+        add(image)
+
+        let secret = app.secureTextFields["Connection key"]
+        secret.tap()
+        secret.typeText("x")
+        XCTAssertFalse(buy.isEnabled, "Changing the tested credentials must invalidate checkout.")
+        app.buttons["self-host-test"].tap()
+        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label BEGINSWITH %@", "Your server did not recognize")).firstMatch.waitForExistence(timeout: 5))
+        XCTAssertFalse(buy.isEnabled)
+        app.terminate()
+        app.launch()
+        XCTAssertTrue(entry.waitForExistence(timeout: 8), "A free probe must not save the tested credentials.")
+    }
+
+    func testRestoreSelfHostOnFreshDevice() throws {
+        guard ProcessInfo.processInfo.environment["REELDUB_UI_STORE"] == "owned" else {
+            throw XCTSkip("Run with a locally verified StoreKit purchase.")
+        }
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        let entry = app.buttons["Use my own server"]
+        let restore = app.buttons["self-host-restore"]
+        app.launch()
+        XCTAssertTrue(entry.waitForExistence(timeout: 8), "Restore must be reachable on a signed-out device.")
+        entry.tap()
+        restore.tap()
+        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label BEGINSWITH %@", "Purchase restored")).firstMatch.waitForExistence(timeout: 12), app.debugDescription)
+        XCTAssertTrue(app.secureTextFields["Connection key"].exists)
+        XCTAssertFalse(app.buttons["self-host-connect"].exists, "The new device must still test its server.")
+    }
+
     func testRangeSelectionAndConfirmedDeletion() throws {
         #if targetEnvironment(simulator)
         let environment = ProcessInfo.processInfo.environment
@@ -15,14 +93,8 @@ final class StudioSmoke: XCTestCase {
         let selfHost = app.buttons["Use my own server"]
         XCTAssertTrue(selfHost.waitForExistence(timeout: 8), "Use a signed-out QA simulator.")
         selfHost.tap()
-        let address = app.textFields["Server address"]
-        XCTAssertTrue(address.waitForExistence(timeout: 5))
-        address.tap()
-        address.typeText("http://127.0.0.1:\(port)")
-        let secret = app.secureTextFields["Connection key"]
-        secret.tap()
-        secret.typeText(key)
-        app.buttons["Connect with key"].tap()
+        enterServer(app, url: "http://127.0.0.1:\(port)", key: key)
+        testAndConnect(app)
 
         func row(_ index: Int) -> XCUIElement {
             let title = "Drag \(key) " + String(format: "%02d", index)
@@ -193,15 +265,9 @@ final class StudioSmoke: XCTestCase {
         welcomeImage.lifetime = .keepAlways
         add(welcomeImage)
         app.buttons["Use my own server"].tap()
-        let address = app.textFields["Server address"]
-        XCTAssertTrue(address.waitForExistence(timeout: 5))
-        address.tap()
         let port = ProcessInfo.processInfo.environment["REELDUB_TEST_PORT"].flatMap(UInt16.init) ?? 8300
-        address.typeText("http://127.0.0.1:\(port)")
-        let secret = app.secureTextFields["Connection key"]
-        secret.tap()
-        secret.typeText(key)
-        app.buttons["Connect with key"].tap()
+        enterServer(app, url: "http://127.0.0.1:\(port)", key: key)
+        testAndConnect(app)
         let prompt = app.buttons["Not Now"]
         if prompt.waitForExistence(timeout: 2) { prompt.tap() }
         let job = app.buttons.matching(identifier: "job-done").firstMatch

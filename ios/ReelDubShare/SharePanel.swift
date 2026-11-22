@@ -10,6 +10,7 @@ struct SharePanel: View {
     @State private var account: Account?
     @State private var profileAttempt = 0
     @State private var showBalance = false
+    @State private var selfHostLocked = false
     private var creator: Bool { account?.creator_minutes == true }
     @State private var project: ProjectInput?
     private var languages: [String] { account?.output_languages ?? connection?.outputLanguages ?? ["en"] }
@@ -30,6 +31,10 @@ struct SharePanel: View {
             }
             if success {
                 ShareConfirmation(jobs: results, close: close, balanceAPI: connection.map { API(connection: $0) })
+            } else if selfHostLocked {
+                Text("Self-host unlock needed").font(.title.bold())
+                Text("Open ReelDub, choose Use my own server, and unlock or restore your purchase. Then share this Reel again.").foregroundStyle(.secondary)
+                Button("Done", action: close)
             } else if let validLink, let connection {
                 Text("Translate this Reel?").font(.system(.largeTitle, design: .serif, weight: .semibold))
                 Text(validLink).font(.subheadline).foregroundStyle(.secondary).lineLimit(2)
@@ -80,6 +85,10 @@ struct SharePanel: View {
             .onChange(of: target) { _, _ in requestID = UUID() }
             .task(id: profileAttempt) {
                 guard let connection else { return }
+                if !connection.isHosted, !(await SelfHostEntitlement.current()) {
+                    selfHostLocked = true
+                    return
+                }
                 message = nil
                 do {
                     let data = try await API(connection: connection).data("v1/me")

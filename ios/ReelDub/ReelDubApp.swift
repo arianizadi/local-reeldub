@@ -1,15 +1,30 @@
 import SwiftUI
+import StoreKit
 
 @main
 struct ReelDubApp: App {
     @State private var studio = Studio()
+    @Environment(\.scenePhase) private var phase
+    private var runsStoreListeners: Bool {
+        #if DEBUG && targetEnvironment(simulator)
+        // In-process unit tests install SKTestSession before accessing StoreKit.
+        // Starting a listener sooner selects the external sandbox on a fresh simulator.
+        return NSClassFromString("XCTestCase") == nil
+        #else
+        return true
+        #endif
+    }
     var body: some Scene {
         WindowGroup {
             Group {
                 if studio.connection == nil { Welcome(studio: studio) }
                 else { Home(studio: studio) }
             }.tint(Palette.action)
-                .task(id: studio.account?.store_token) { await studio.observePurchases() }
+                .task(id: studio.account?.store_token) { if runsStoreListeners { await studio.observePurchases() } }
+                .task { if runsStoreListeners { await studio.selfHostAccess.observe() } }
+                .task(id: phase) {
+                    if phase == .active && runsStoreListeners { await studio.selfHostAccess.reconcile() }
+                }
         }
     }
 }
@@ -56,10 +71,15 @@ final class Studio {
     private var fullRefreshes = 0
     @ObservationIgnored var unfinishedPurchases: AsyncStream<Void>.Continuation?
     private let transport: URLSession
+    let selfHostAccess = SelfHostStore()
+    @ObservationIgnored private var testedServer: Connection?
+    private let selfHostAuthorized: () -> Bool
 
-    init(connection: Connection? = Connection.read(), transport: URLSession = API.session) {
+    init(connection: Connection? = Connection.read(), transport: URLSession = API.session,
+         selfHostAuthorized: @escaping () -> Bool = { SelfHostEntitlement.isCached }) {
         self.connection = connection
         self.transport = transport
+        self.selfHostAuthorized = selfHostAuthorized
         restoreLibrary()
     }
 
@@ -70,8 +90,11 @@ final class Studio {
         unrecordedMarkers = library?.unrecordedDownloadMarkers() ?? []
         mergeJobs([])
     }
-    private func matches(_ api: API) -> Bool {
+    private func sameConnection(_ api: API) -> Bool {
         connection?.base == api.connection.base && connection?.token == api.connection.token
+    }
+    private func matches(_ api: API) -> Bool {
+        sameConnection(api) && (api.connection.isHosted || selfHostAuthorized())
     }
     func localMovie(_ id: String) -> URL? { saved[id] == nil ? nil : library?.movie(id) }
 
@@ -102,7 +125,13 @@ final class Studio {
     var sending = false
     private var libraryRevision = 0
     private var pending: (url: String, target: String, id: UUID)?
-    var api: API? { connection.map { API(connection: $0, transport: transport) } }
+    var api: API? {
+        guard let connection, connection.isHosted || selfHostAuthorized() else { return nil }
+        return API(connection: connection, transport: transport, selfHostAuthorized: selfHostAuthorized)
+    }
+    var needsSelfHostUnlock: Bool {
+        connection?.isHosted == false && selfHostAccess.checked && !selfHostAccess.owned
+    }
 
     func progressDelay(failures: Int) -> Int? {
         guard jobs.contains(where: { $0.rdPhase.isActive }) else { return nil }
@@ -234,13 +263,47 @@ final class Studio {
     func retryTransfers() {
         startTransfer()
     }
+    func testSelfHost(_ candidate: Connection) async throws {
+        testedServer = nil
+        guard !candidate.isHosted, !candidate.token.isEmpty else {
+            throw Problem("Enter the address and connection key for your own ReelDub server.")
+        }
+        let data = try await API(connection: candidate, transport: transport).data("v1/me")
+        _ = try JSONDecoder().decode(Account.self, from: data)
+        try Task.checkCancellation()
+        testedServer = candidate
+    }
+
+    func purchaseSelfHost(for candidate: Connection) async throws -> Bool {
+        guard !candidate.isHosted, testedServer?.base == candidate.base, testedServer?.token == candidate.token else {
+            throw Problem("Test this server connection before purchasing.")
+        }
+        return try await selfHostAccess.purchase {
+            let proof = try await AppTransaction.shared
+            _ = try proof.payloadValue
+            let billing = API(connection: Connection(base: Connection.hosted, token: ""), transport: self.transport)
+            let data = try await billing.data("v1/store/self-host/intents", method: "POST", body: ["signed_app": proof.jwsRepresentation])
+            let intent = try JSONDecoder().decode(PurchaseIntent.self, from: data)
+            guard intent.product == SelfHostEntitlement.productID, intent.account == intent.id else {
+                throw Problem("Purchases are temporarily unavailable. Try again later.")
+            }
+            return intent.id
+        }
+    }
+
     func connect(_ new: Connection) async throws {
+        if !new.isHosted {
+            await selfHostAccess.refresh()
+            guard selfHostAccess.owned, selfHostAuthorized() else { throw Problem("Unlock or restore self-hosting to use this server.") }
+        }
         let me = try await API(connection: new, transport: transport).data("v1/me")
         let profile = try JSONDecoder().decode(Account.self, from: me)
         var verified = new
         verified.libraryID = profile.library_id
         verified.outputLanguages = profile.output_languages
+        guard new.isHosted || selfHostAuthorized() else { throw Problem("Restore self-hosting to use this server.") }
         try verified.save()
+        testedServer = nil
         resetTransfers()
         pending = nil; connection = verified; restoreLibrary(); account = profile; welcomeMessage = nil
         await refresh()
@@ -274,6 +337,7 @@ final class Studio {
 
     private func clearSession() {
         resetTransfers()
+        testedServer = nil
         unfinishedPurchases = nil
         Connection.clear(); connection = nil; jobs = []; account = nil; failure = nil; pending = nil
     }
@@ -287,7 +351,7 @@ final class Studio {
         transferring = job.id
         transferTask = Task {
             defer {
-                if !Task.isCancelled, matches(api) {
+                if !Task.isCancelled, sameConnection(api) {
                     transferTask = nil; transferring = nil
                     startTransfer()
                 }
@@ -365,7 +429,7 @@ final class Studio {
     func deleteDub(_ id: String) async throws {
         guard let api else { throw Problem("Connect to a server first.") }
         deleting.insert(id)
-        defer { if matches(api) { deleting.remove(id) } }
+        defer { if sameConnection(api) { deleting.remove(id) } }
         _ = try await api.data("v1/jobs/" + id, method: "DELETE")
         guard matches(api) else { throw Problem("Your connection changed.") }
         libraryRevision += 1

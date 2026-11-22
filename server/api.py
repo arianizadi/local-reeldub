@@ -261,6 +261,8 @@ When uploads are enabled, ReelDub stores private source files temporarily, norma
 
 Apple processes App Store payments. ReelDub stores verified transaction identifiers, products, subscription expiration or revocation, and credit usage to deliver purchases across devices. ReelDub does not receive your payment card details. Job deletion preserves the minimum purchase and quota records needed to prevent duplicate spending.
 
+For the optional self-host unlock, the app sends Apple-signed app and purchase records to ReelDub Cloud for checkout and accounting. Your private server address, connection key and videos stay out of those requests. The App Store supplies your entitlement on devices using the same Apple Account.
+
 If you send a video suggestion, ReelDub Cloud saves your latest answer and optional note with your account. The administrator can read them to plan features. Deleting your account erases your suggestion.
 
 Deleting your Cloud account erases your profile, sessions, dubs and reports. A short-lived deletion marker prevents reuse during the daily quota period. Minimal pseudonymous purchase and spent-credit records allow the same Apple account to recover its balance. Active Apple subscriptions continue until canceled through Apple. Other devices and destinations may retain downloaded or exported copies.
@@ -406,6 +408,30 @@ def prepare_purchase(body: PurchaseIntent, user=Depends(owner)):
 class SignedTransaction(BaseModel):
     signed_transaction: str = Field(min_length=1, max_length=24000)
     intent: UUID | None = None
+
+
+class SelfHostAppProof(BaseModel):
+    signed_app: str = Field(min_length=1, max_length=24000)
+
+
+@app.post("/v1/store/self-host/intents")
+def prepare_self_host(body: SelfHostAppProof):
+    if not uses_postgres():
+        raise HTTPException(503, checkout.UNAVAILABLE)
+    proof = store.verify_self_host(body.signed_app, app=True)
+    identifier = proof.appTransactionId or proof.deviceVerification
+    if not identifier:
+        raise HTTPException(400, "Apple could not verify this installation.")
+    subject = "selfhost:" + hash_value(identifier)
+    limit_writes(subject, "selfhost-checkout", 6)
+    return checkout.commit_intent(subject, store.SELF_HOST, proof.rawReceiptType)
+
+
+@app.post("/v1/store/self-host/transactions", status_code=204)
+def deliver_self_host(body: SignedTransaction):
+    if not uses_postgres():
+        raise HTTPException(503, "Purchase recording is temporarily unavailable.")
+    store.record_self_host(store.verify_self_host(body.signed_transaction))
 
 
 @app.post("/v1/store/transactions", status_code=204)

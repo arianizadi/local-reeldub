@@ -25,6 +25,10 @@ Hosted purchases and public uploads are feature-gated. Enabling either requires 
 
 ## Self-hosted Compose and legacy native deployment
 
+The official iOS app offers a free authenticated connection test and a one-time App Store unlock for self-hosting. Your server URL and key go directly to your server. The hosted billing API receives an Apple-signed app proof before purchase and a signed transaction afterward. It commits a checkout intent to PostgreSQL before StoreKit opens the payment sheet. Previously purchased access can be restored through the App Store while the hosted API is offline.
+
+The hosted billing service uses `REELDUB_SELF_HOST_STORE_ENVIRONMENTS=Sandbox` for beta checkout. Production checkout requires enabling `Production` on the billing service and an approved App Store product. This setting is independent of hosted Creator billing. Both use the configured storage budget to pause new purchases when the ledger reaches 80% of the limit. Private server operators do not need Apple billing credentials.
+
 A new self-hosted installation can use Compose with its bundled MongoDB. For PostgreSQL metadata, apply `compose.neon.yaml` after the hosted and TLS overlays. Supply `REELDUB_API_DSN_FILE` to the API and `REELDUB_WORKER_DSN_FILE` to the optional direct worker in the `local-worker` profile. Mount only each service's credential. The direct worker needs schema usage, SELECT and UPDATE(doc) on `reeldub.jobs`, plus access to the local media store. The fleet deployment above provides the alternative for remote GPUs.
 
 For an existing native all-in-one Ubuntu 24.04 x86-64 installation, `deploy/devbox/prepare-runtime.sh` prepares the service and sandbox binaries and `deploy/devbox/install-services.sh` generates user systemd units. The legacy encrypted media vault uses gocryptfs and a TPM-sealed credential bound to PCR 7. Keep a separate recovery key offline, especially before changing Secure Boot or replacing the motherboard. User lingering starts the units after boot. Retain encrypted backups independently of the GPU host.

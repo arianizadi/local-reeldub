@@ -48,6 +48,47 @@ final class TransportPolicyTests: XCTestCase {
         XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer test-only")
     }
 
+    func testOnlyTheAuthenticatedProfileProbeIsFreeOnAPrivateServer() throws {
+        let host = try Connection.server("https://studio.example")
+        let connection = Connection(base: host, token: "private-fixture")
+        let locked = API(connection: connection, selfHostAuthorized: { false })
+        let probe = try locked.request("v1/me")
+        XCTAssertEqual(probe.httpMethod, "GET")
+        XCTAssertEqual(probe.url?.host, "studio.example")
+        XCTAssertEqual(probe.value(forHTTPHeaderField: "Authorization"), "Bearer private-fixture")
+        XCTAssertThrowsError(try locked.request("v1/me", method: "POST"))
+        for (path, method) in [("v1/jobs", "POST"), ("v1/quotes", "POST"), ("v1/sources", "POST"),
+                                ("v1/jobs", "GET"), ("v1/jobs/example/video", "GET")] {
+            XCTAssertThrowsError(try locked.request(path, method: method))
+        }
+        let unlocked = API(connection: connection, selfHostAuthorized: { true })
+        XCTAssertNoThrow(try unlocked.request("v1/jobs", method: "POST"))
+        let cloud = API(connection: Connection(base: Connection.hosted, token: "cloud-fixture"),
+                        selfHostAuthorized: { false })
+        XCTAssertNoThrow(try cloud.request("v1/jobs", method: "POST"))
+    }
+
+    @MainActor
+    func testPurchaseRequiresAProbedPrivateConnection() async throws {
+        let studio = Studio(connection: nil, selfHostAuthorized: { false })
+        let connection = Connection(base: try Connection.server("https://studio.example"), token: "fixture")
+        do {
+            _ = try await studio.purchaseSelfHost(for: connection)
+            XCTFail("Opening checkout requires a successful connection test")
+        } catch {
+            XCTAssertEqual(error.localizedDescription, "Test this server connection before purchasing.")
+        }
+        XCTAssertNil(studio.connection)
+    }
+
+    func testEquivalentCloudOriginsNeverQualifyForSelfHostCheckout() throws {
+        let host = try XCTUnwrap(Connection.hosted.host())
+        for origin in ["https://" + host + ":443", "https://" + host.uppercased() + "./"] {
+            XCTAssertTrue(Connection(base: try Connection.server(origin), token: "").isHosted)
+        }
+        XCTAssertFalse(Connection(base: try Connection.server("https://" + host + ":8443"), token: "").isHosted)
+    }
+
     func testConsoleProofAndGrantAreConfinedToTheHostedAdminAPI() throws {
         let cloud = API(connection: Connection(base: Connection.hosted, token: "fixture"), adminGrant: "grant")
         XCTAssertEqual(try cloud.request("v1/admin/overview").value(forHTTPHeaderField: "X-ReelDub-Admin"), "grant")

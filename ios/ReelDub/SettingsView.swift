@@ -1,3 +1,4 @@
+import StoreKit
 import SwiftUI
 
 struct VideoSuggestion: Decodable, Equatable {
@@ -183,43 +184,168 @@ private struct DeleteCloudAccount: View {
 struct SelfHost: View {
     let studio: Studio
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.colorScheme) private var scheme
     @State private var server = ""
     @State private var key = ""
+    @State private var tested: Connection?
     @State private var issue: String?
-    @State private var busy = false
+    @State private var notice: String?
+    @State private var operation: Operation?
+    @State private var loadingPrice = false
+    @FocusState private var field: Field?
+
+    private enum Operation { case test, connect, purchase, restore }
+    private enum Field { case address, key }
+    private var busy: Bool { operation != nil }
+    private var access: SelfHostStore { studio.selfHostAccess }
+
     var body: some View {
         NavigationStack {
             Form {
                 Section {
                     TextField("https://your-server.example", text: $server)
                         .keyboardType(.URL).textContentType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
-                        .accessibilityLabel("Server address")
-                } header: { Text("Server address") } footer: { Text("Enter the address of your own ReelDub installation.") }
-                Section("Connection key") {
+                        .focused($field, equals: .address).submitLabel(.next)
+                        .onSubmit { field = .key }.accessibilityLabel("Server address")
                     SecureField("Connection key", text: $key).textInputAutocapitalization(.never).autocorrectionDisabled()
-                    Button("Connect with key") { Task { await connect() } }.disabled(busy)
+                        .focused($field, equals: .key)
+                    if let tested {
+                        Label("Connection verified" + (tested.base.host().map { " · " + $0 } ?? ""), systemImage: "checkmark.circle")
+                            .accessibilityIdentifier("self-host-verified")
+                    } else {
+                        Button("Test connection") { Task { await testConnection() } }
+                            .accessibilityIdentifier("self-host-test")
+                            .disabled(server.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+                } header: { Text("Your ReelDub server") }
+                footer: { Text("Test your server address and key for free. Your server handles the video and audio.") }
+
+                Section {
+                    if access.owned {
+                        Label("Self-hosting unlocked", systemImage: "checkmark.seal")
+                        if let tested {
+                            Button("Connect with key") { Task { await connect(tested) } }
+                                .accessibilityIdentifier("self-host-connect")
+                        }
+                    } else {
+                        if let product = access.product {
+                            Button("Unlock for " + product.displayPrice) { Task { await purchase() } }
+                                .accessibilityIdentifier("self-host-buy")
+                                .disabled(tested == nil || !access.checked)
+                        } else if loadingPrice || !access.checked {
+                            ProgressView("Loading App Store price…")
+                        } else {
+                            Text("The App Store price is unavailable.").foregroundStyle(.secondary)
+                            Button("Retry price") { Task { await loadPrice() } }
+                        }
+                    }
+                    Button("Restore Purchases") { Task { await restore() } }
+                        .accessibilityIdentifier("self-host-restore")
+                } header: { Text("One-time app unlock") }
+                footer: { Text("Connect your own servers with one purchase. On a new iPhone, restore with the same Apple Account you use for App Store purchases. ReelDub Cloud uses a separate allowance.") }
+
+                if let operation {
+                    switch operation {
+                    case .test: ProgressView("Testing connection…")
+                    case .connect: ProgressView("Connecting…")
+                    case .purchase: ProgressView("Completing purchase…")
+                    case .restore: ProgressView("Restoring purchase…")
+                    }
                 }
-                if busy { ProgressView("Connecting…") }
                 if let issue { Text(issue).foregroundStyle(.red) }
+                if let notice { Text(notice).foregroundStyle(.secondary) }
             }.navigationTitle("Your server").navigationBarTitleDisplayMode(.inline)
-                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
-                .onChange(of: studio.connection?.token) { _, token in if token != nil { dismiss() } }
-                .onAppear {
-                    if let current = studio.connection, !current.isHosted { server = current.base.absoluteString }
+                .disabled(busy)
+                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() }.disabled(busy) } }
+                .interactiveDismissDisabled(busy)
+                .onChange(of: server) { _, _ in clearTest() }
+                .onChange(of: key) { _, _ in clearTest() }
+                .task {
+                    if let current = studio.connection, !current.isHosted {
+                        server = current.base.absoluteString
+                        key = current.token
+                    }
+                    await access.refresh()
+                    if !access.owned { await loadPrice() }
                 }
         }
     }
-    private func connect() async {
+
+    private func clearTest() {
+        tested = nil
         issue = nil
-        busy = true
-        defer { busy = false }
+        notice = nil
+    }
+
+    private func loadPrice() async {
+        guard !loadingPrice else { return }
+        loadingPrice = true
+        defer { loadingPrice = false }
+        // A missing storefront product cannot prevent a connection test or restoration.
+        try? await access.loadOffer()
+    }
+
+    private func testConnection() async {
+        guard !busy else { return }
+        field = nil
+        clearTest()
+        operation = .test
+        defer { operation = nil }
         do {
             let url = try Connection.server(server)
             let secret = key.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !secret.isEmpty else { throw Problem("Enter the connection key from your server.") }
-            try await studio.connect(Connection(base: url, token: secret))
+            let candidate = Connection(base: url, token: secret)
+            try await studio.testSelfHost(candidate)
+            tested = candidate
+        } catch is SessionError {
+            issue = "Your server did not recognize that connection key. Check the key and try again."
+        } catch is DecodingError {
+            issue = "That address responded, but it did not return a ReelDub account. Check the server address."
+        } catch { issue = error.localizedDescription }
+    }
+
+    private func connect(_ candidate: Connection) async {
+        guard !busy else { return }
+        issue = nil
+        notice = nil
+        operation = .connect
+        defer { operation = nil }
+        do {
+            try await studio.connect(candidate)
             dismiss()
+        } catch { issue = error.localizedDescription }
+    }
+
+    private func purchase() async {
+        guard !busy, let tested, access.product != nil, access.checked, !access.owned else { return }
+        issue = nil
+        notice = nil
+        operation = .purchase
+        defer { operation = nil }
+        do {
+            guard try await studio.purchaseSelfHost(for: tested) else {
+                notice = "Purchase canceled. Your server connection is verified."
+                return
+            }
+            operation = .connect
+            try await studio.connect(tested)
+            dismiss()
+        } catch { issue = error.localizedDescription }
+    }
+
+    private func restore() async {
+        guard !busy else { return }
+        field = nil
+        issue = nil
+        notice = nil
+        operation = .restore
+        defer { operation = nil }
+        do {
+            if try await access.restore() {
+                notice = tested == nil ? "Purchase restored. Test your server connection to continue." : "Purchase restored. You can connect to your server."
+            } else {
+                notice = "No self-host purchase was found. Check the Apple Account used for Media & Purchases."
+            }
         } catch { issue = error.localizedDescription }
     }
 }
