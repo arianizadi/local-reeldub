@@ -108,6 +108,23 @@ final class StudioSmoke: XCTestCase {
         XCTAssertTrue(app.buttons["continue-apple"].waitForExistence(timeout: 6))
     }
 
+    func testFAQIsAvailableBeforeSignIn() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        welcome(app)
+        let help = app.buttons["Help & FAQ"]
+        if !help.isHittable { app.swipeUp() }
+        help.tap()
+        let length = app.buttons["How long can my video be?"]
+        XCTAssertTrue(length.waitForExistence(timeout: 4))
+        length.tap()
+        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label BEGINSWITH %@", "Choose a video up to 2 minutes")).firstMatch.exists)
+        let hosting = app.buttons["Can I host ReelDub myself?"]
+        if !hosting.isHittable { app.swipeUp() }
+        hosting.tap()
+        XCTAssertTrue(app.links["Open-source setup guide"].exists || app.buttons["Open-source setup guide"].exists)
+    }
+
     func testConsoleOnSignedInAdministratorDevice() throws {
         let app = XCUIApplication()
         app.launch()
@@ -165,12 +182,11 @@ final class StudioSmoke: XCTestCase {
         XCTAssertTrue(presented, "Expected the operating system's Apple authorization UI.")
     }
 
-    func testWelcomeAndSelfHostedPlayback() throws {
+    private func connectToPlaybackLibrary(_ app: XCUIApplication) throws -> XCUIElement {
         guard let key = ProcessInfo.processInfo.environment["REELDUB_TEST_KEY"], !key.isEmpty else {
             throw XCTSkip("Provide TEST_RUNNER_REELDUB_TEST_KEY and a completed job on the simulator's local server.")
         }
         continueAfterFailure = false
-        let app = XCUIApplication()
         welcome(app)
         let welcomeImage = XCTAttachment(screenshot: app.screenshot())
         welcomeImage.name = "Welcome"
@@ -180,7 +196,8 @@ final class StudioSmoke: XCTestCase {
         let address = app.textFields["Server address"]
         XCTAssertTrue(address.waitForExistence(timeout: 5))
         address.tap()
-        address.typeText("http://127.0.0.1:8300")
+        let port = ProcessInfo.processInfo.environment["REELDUB_TEST_PORT"].flatMap(UInt16.init) ?? 8300
+        address.typeText("http://127.0.0.1:\(port)")
         let secret = app.secureTextFields["Connection key"]
         secret.tap()
         secret.typeText(key)
@@ -193,9 +210,56 @@ final class StudioSmoke: XCTestCase {
         libraryImage.name = "Dubs library"
         libraryImage.lifetime = .keepAlways
         add(libraryImage)
+        return job
+    }
+
+    func testPlaybackPreferencesPersistAcrossRelaunch() throws {
+        let app = XCUIApplication()
+        let job = try connectToPlaybackLibrary(app)
+        job.tap()
+        XCTAssertTrue(app.buttons["Share English video"].waitForExistence(timeout: 15))
+        let subtitles = app.switches["english-subtitles"]
+        XCTAssertTrue(subtitles.waitForExistence(timeout: 12))
+        let sound = app.buttons["playback-sound"]
+        XCTAssertTrue(sound.exists)
+        let initialSound = sound.label
+        XCTAssertTrue(["Mute video", "Unmute video"].contains(initialSound))
+        let previous = subtitles.value as? String
+        XCTAssertNotNil(previous)
+        if ProcessInfo.processInfo.environment["REELDUB_TEST_FRESH_PLAYBACK_PREFS"] == "1" {
+            XCTAssertEqual(previous, "1")
+            XCTAssertEqual(initialSound, "Mute video")
+        }
+        let playing = XCTAttachment(screenshot: app.screenshot())
+        playing.name = "Dub playing with sound and caption controls"
+        playing.lifetime = .keepAlways
+        add(playing)
+        sound.tap()
+        subtitles.tap()
+        XCTAssertNotEqual(subtitles.value as? String, previous)
+        let changedSound = initialSound == "Mute video" ? "Unmute video" : "Mute video"
+        XCTAssertEqual(sound.label, changedSound)
+        app.terminate()
+        app.launch()
+        XCTAssertTrue(job.waitForExistence(timeout: 8))
+        job.tap()
+        XCTAssertTrue(subtitles.waitForExistence(timeout: 12))
+        XCTAssertNotEqual(subtitles.value as? String, previous)
+        XCTAssertEqual(sound.label, changedSound)
+        sound.tap()
+        subtitles.tap()
+        XCTAssertEqual(sound.label, initialSound)
+        XCTAssertEqual(subtitles.value as? String, previous)
+    }
+
+    func testWelcomeAndSelfHostedPlayback() throws {
+        let app = XCUIApplication()
+        let job = try connectToPlaybackLibrary(app)
         app.buttons["add-reel"].tap()
         let composer = app.textFields["new-dub"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 5))
         composer.tap()
+        if !app.keyboards.firstMatch.waitForExistence(timeout: 2) { composer.tap() }
         composer.typeText("example")
         app.buttons["confirm-dub"].tap()
         XCTAssertTrue(app.staticTexts["reel-link-error"].waitForExistence(timeout: 4))
@@ -204,14 +268,6 @@ final class StudioSmoke: XCTestCase {
         if !job.isHittable { app.swipeDown() }
         job.tap()
         XCTAssertTrue(app.buttons["Share English video"].waitForExistence(timeout: 15))
-        let subtitles = app.switches["english-subtitles"]
-        XCTAssertTrue(subtitles.waitForExistence(timeout: 12))
-        let previous = subtitles.value as? String
-        XCTAssertNotNil(previous)
-        subtitles.tap()
-        XCTAssertNotEqual(subtitles.value as? String, previous)
-        subtitles.tap()
-        XCTAssertEqual(subtitles.value as? String, previous)
         let report = app.buttons.matching(NSPredicate(format: "label CONTAINS[c] 'issue report' OR label == 'Report an issue'")).firstMatch
         if !report.isHittable { app.swipeUp() }
         report.tap()

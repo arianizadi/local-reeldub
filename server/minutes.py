@@ -231,6 +231,7 @@ def confirm(user, quote_id):
                 "title": source["title"],
                 "author": source.get("author"),
                 "trimmed": record["trimmed"],
+                "source_seconds": source["seconds"],
                 "quoted_seconds": record["seconds"],
                 "target_language": target,
                 "state": "queued",

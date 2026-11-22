@@ -27,7 +27,7 @@ from starlette.concurrency import run_in_threadpool
 from .wakeup import next_hour, notify
 from .db import uses_postgres, media_db, db, now, setup_indexes
 from . import console, checkout, erasure, store, store_history, minutes, sources, launch_metrics
-from .source import reel_url
+from .source import TOO_LONG, reel_url
 from .languages import default_render_quality, outputs
 
 MEDIA_WINDOW = timedelta(hours=24)
@@ -261,6 +261,8 @@ When uploads are enabled, ReelDub stores private source files temporarily, norma
 
 Apple processes App Store payments. ReelDub stores verified transaction identifiers, products, subscription expiration or revocation, and credit usage to deliver purchases across devices. ReelDub does not receive your payment card details. Job deletion preserves the minimum purchase and quota records needed to prevent duplicate spending.
 
+If you send a video suggestion, ReelDub Cloud saves your latest answer and optional note with your account. The administrator can read them to plan features. Deleting your account erases your suggestion.
+
 Deleting your Cloud account erases your profile, sessions, dubs and reports. A short-lived deletion marker prevents reuse during the daily quota period. Minimal pseudonymous purchase and spent-credit records allow the same Apple account to recover its balance. Active Apple subscriptions continue until canceled through Apple. Other devices and destinations may retain downloaded or exported copies.
 
 A self-hosted server is controlled by its operator. Its storage, network and retention settings may differ.
@@ -284,6 +286,7 @@ def me(user=Depends(restricted_owner), checkout_version: str = Header(default=""
         result.update(store.balances(user))
         result["creator_minutes"] = minutes.enabled()
         result["batch_progress"] = True
+        result["video_suggestions"] = user.startswith("apple:")
         if minutes.enabled():
             monthly, pack = minutes.funding(user,result["tier"],now())
             result.update(monthly_seconds=len(monthly), pack_seconds=len(pack))
@@ -292,6 +295,34 @@ def me(user=Depends(restricted_owner), checkout_version: str = Header(default=""
     if store_connected and user.startswith("apple:"):
         result["store_token"] = account.get("store_token") or store.store_token(user)
     return result
+
+
+class VideoSuggestion(BaseModel):
+    model_config = {"extra": "forbid"}
+    topic: Literal["longer", "other_apps", "my_videos", "other"]
+    note: str = Field(default="", max_length=400)
+
+
+@app.get("/v1/me/video-suggestion")
+def read_video_suggestion(user=Depends(owner)):
+    if not user.startswith("apple:"):
+        raise HTTPException(403, "Sign in to ReelDub Cloud to send a suggestion.")
+    account = db().accounts.find_one({"_id": user}, {"video_suggestion": 1}) or {}
+    return {"suggestion": account.get("video_suggestion")}
+
+
+@app.put("/v1/me/video-suggestion", status_code=204)
+def save_video_suggestion(body: VideoSuggestion, user=Depends(owner)):
+    if not user.startswith("apple:"):
+        raise HTTPException(403, "Sign in to ReelDub Cloud to send a suggestion.")
+    note = body.note.strip()
+    if body.topic == "other" and not note:
+        raise HTTPException(422, "Tell us what kind of video you have in mind.")
+    limit_writes(user, "video_suggestion", 6)
+    updated = db().accounts.update_one({"_id": user, "banned": {"$ne": True}}, {
+        "$set": {"video_suggestion": {"topic": body.topic, "note": note}}})
+    if not updated.matched_count:
+        raise HTTPException(403, "This account cannot send a suggestion.")
 
 
 class ReelSource(BaseModel):
@@ -569,12 +600,14 @@ def enqueue_render(job, plan, limit):
     """Admit new work only with server-allocated funding. Unique keys reserve it at insert."""
     if job["day"] != now().date().isoformat():
         raise HTTPException(409, "Your daily allowance reset. Review this dub again.")
+    if "quoted_seconds" in job:
+        sources.check_duration(job["quoted_seconds"])
     if plan != "admin":
         slot = job.get("slot")
         daily = type(slot) is int and 0 <= slot < limit
         if minutes.enabled():
             seconds = job.get("quoted_seconds")
-            if not job.get("source_file") or type(seconds) is not int or not 1 <= seconds <= 600:
+            if not job.get("source_file") or seconds is None:
                 raise HTTPException(428, "Review the duration and cost before starting a dub.")
             units = job.get("minute_units", [])
             funded = (daily and seconds <= 60 and not units) or (
@@ -629,19 +662,36 @@ def submit(body: Submission, user=Depends(owner)):
         return previous
     plan = tier(user)
     stamp = now()
-    try:
-        cached = db().jobs.find_one_and_update(
-            {"owner": user, "url": url, "lab_mode":{"$exists":False}, "render_quality": quality, "trimmed":{"$ne":True}, "target_language": target_filter, **live_media_query(stamp, include_cache=True),
-             "$and": [{"$or": [{"deleted": {"$ne": True}}, {"cache_retained": True}]}]},
-            [{"$unset": ["deleted", "cache_retained"]}, {"$set": {"last_requested": stamp, "cache_hits": cache_hit_count(request_id), "media_expires": renew_media(stamp), "request_keys": {
-                "$setUnion": [{"$ifNull": ["$request_keys", []]}, [request_id]]}}}],
-            projection={"poster": 0}, sort=[("created", -1)], return_document=ReturnDocument.AFTER)
-    except DuplicateKeyError:
-        if previous := prior_request():
-            return previous
-        raise
-    if cached:
-        return summary(cached)
+    cache_key = {"lab_mode": {"$exists": False}, "render_quality": quality,
+                 "trimmed": {"$ne": True}, "target_language": target_filter, **live_media_query(stamp, include_cache=True),
+                 "$and": [{"$or": [{"deleted": {"$ne": True}}, {"cache_retained": True}]}]}
+    # A measured overlength Reel stays ineligible in every language during the cache window.
+    # Reuse the existing cache lookup so a retry needs neither another queue slot nor another download.
+    recent_rejection = {"state": "failed", "error": TOO_LONG, "finished": {"$gt": stamp - MEDIA_WINDOW},
+                        "deleted": {"$ne": True}}
+    candidate = db().jobs.find_one({"owner": user, "url": url, "$or": [cache_key, recent_rejection]},
+                                   {"source_seconds": 1, "state": 1}, sort=[("created", -1)])
+    if candidate and candidate["state"] == "failed":
+        raise HTTPException(422, TOO_LONG)
+    if candidate:
+        duration = candidate.get("source_seconds")
+        if duration is None:
+            # Earlier builds stored only output length. Inspect the original once before admitting a new request.
+            duration = sources.prepare_reel(user, url, daily=True)["seconds"]
+        sources.check_duration(duration)
+        try:
+            cached = db().jobs.find_one_and_update(
+                {**cache_key, "_id": candidate["_id"], "owner": user, "url": url},
+                [{"$unset": ["deleted", "cache_retained"]}, {"$set": {"source_seconds": duration, "last_requested": stamp,
+                 "cache_hits": cache_hit_count(request_id), "media_expires": renew_media(stamp), "request_keys": {
+                    "$setUnion": [{"$ifNull": ["$request_keys", []]}, [request_id]]}}}],
+                projection={"poster": 0}, return_document=ReturnDocument.AFTER)
+        except DuplicateKeyError:
+            if previous := prior_request():
+                return previous
+            raise
+        if cached:
+            return summary(cached)
     if minutes.enabled() and plan != "admin":
         raise HTTPException(428,"Review the duration and cost in the latest ReelDub app before starting a new dub.")
     limit = daily_limit(user, plan)

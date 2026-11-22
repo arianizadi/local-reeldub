@@ -17,6 +17,7 @@ from unittest.mock import patch
 from uuid import uuid4
 
 from bson import ObjectId
+from fastapi import HTTPException
 import gridfs
 from psycopg import OperationalError
 import requests
@@ -26,6 +27,7 @@ from . import api, console, fleet, fleet_health, worker
 from .db import db, media_db, now, uses_postgres
 from .postgres import install
 from .wakeup import notify
+from .source import TOO_LONG
 
 
 @contextmanager
@@ -119,6 +121,23 @@ class FleetIntegration(TestCase):
         self.assertEqual(self.claim("alpha").status_code, 204)
         self.assertEqual(self.claim(slot=1).status_code, 403)
         self.assertEqual(db().jobs.find_one({"_id": untouched["_id"]})["state"], "queued")
+
+    def test_oversized_source_ends_job_before_render_and_releases_funding(self):
+        raw = ObjectId()
+        original = self.queue(slot=0, source_file=raw, quoted_seconds=60, trimmed=True)
+        db().sources.insert_one({"_id": raw, "owner": original["owner"], "identity": original["url"],
+                                 "ready": True, "seconds": 121, "title": "Long", "expires": now()+timedelta(hours=1)})
+        claimed = self.claim().json()
+        reply = self.req("GET", f"/v1/jobs/{claimed['_id']}/source", lease=claimed["lease"])
+        self.assertEqual(reply.status_code, 409)
+        failed = db().jobs.find_one({"_id": original["_id"]})
+        self.assertEqual((failed["state"], failed["error"]), ("failed", TOO_LONG))
+        self.assertFalse({"lease", "slot", "minute_units", "artifact"} & failed.keys())
+        with patch.dict(os.environ, {"REELDUB_OUTPUT_PROFILE": "studio"}), self.assertRaises(HTTPException) as retry:
+            api.submit(api.Submission(url=original["url"], target_language="es", request_id=uuid4()), original["owner"])
+        self.assertEqual((retry.exception.status_code, retry.exception.detail), (422, TOO_LONG))
+        self.assertEqual(db().jobs.count_documents({"owner": original["owner"]}), 1)
+        self.assertEqual(self.claim().status_code, 204)
 
     def test_burst_worker_joins_and_recovers_existing_customers_job(self):
         owner = "apple:" + uuid4().hex

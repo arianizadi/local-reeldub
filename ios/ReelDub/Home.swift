@@ -453,6 +453,8 @@ struct RDComposer: View {
                 BalanceOptions(live: studio.account?.purchase_preflight == true, plans: AnyView(CloudPlanSheet(studio: studio)))
             }
             field
+            Text("Up to 2 minutes. " + DubGuidance.accuracy)
+                .font(.footnote).foregroundStyle(.secondary)
             let layout = typeSize.isAccessibilitySize ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8)) : AnyLayout(HStackLayout(spacing: 12))
             layout {
                 if studio.account?.creator_minutes == true {
@@ -533,6 +535,7 @@ struct RDComposer: View {
         .background(Color(.tertiarySystemFill), in: Capsule())
         .overlay {
             Capsule().strokeBorder(problem == nil ? Color.clear : Color.red.opacity(0.7), lineWidth: 1.5)
+                .allowsHitTesting(false)
         }
     }
 

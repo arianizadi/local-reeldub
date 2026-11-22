@@ -17,6 +17,7 @@ from psycopg import OperationalError
 import requests
 
 from .gpu import lock_dir, pipeline_slot
+from .source import MAX_SOURCE_SECONDS, TOO_LONG
 from .worker import LeaseLost, process
 
 
@@ -131,8 +132,10 @@ class AssignedJob:
             duration = int(r.headers["X-Duration"])
             runtime = float(r.headers.get("X-Estimated-Runtime", 0))
             limit = 250 * 1024**2
-            if not 0 < duration <= 600:
-                raise ValueError("Source duration exceeds service limit")
+            if duration > MAX_SOURCE_SECONDS:
+                raise RuntimeError(TOO_LONG)
+            if duration <= 0:
+                raise ValueError("Invalid source duration")
             with path.open("wb") as f:
                 for chunk in r.iter_content(256 * 1024):
                     if f.tell() + len(chunk) > limit:
@@ -161,6 +164,8 @@ class AssignedJob:
             reason = "no_speech"
         if "produce an English translation" in message:
             reason = "translation"
+        if message == TOO_LONG:
+            reason = "duration"
         with self.coordinator.request("POST", self.path + "/failure", headers=self.headers,
                                       json={"stage": stage, "reason": reason}) as r:
             r.raise_for_status()

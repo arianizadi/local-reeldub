@@ -26,6 +26,7 @@ from starlette.concurrency import run_in_threadpool
 from . import fleet_health, sources, worker
 from .db import db, media_db, now, uses_postgres
 from .progress import STEPS, nearby_runtime
+from .source import MAX_SOURCE_SECONDS, TOO_LONG
 from .wakeup import Wake, notify
 
 
@@ -124,7 +125,7 @@ class Heartbeat(StrictModel):
 
 class Failure(StrictModel):
     stage: str = Field(max_length=40)
-    reason: Literal["generic", "no_speech", "download", "translation"]
+    reason: Literal["generic", "no_speech", "download", "translation", "duration"]
 
 
 class Infrastructure(StrictModel):
@@ -170,7 +171,7 @@ def telemetry(slot: int, body: Telemetry, node: Node = Depends(authenticated)):
 
 
 class Details(StrictModel):
-    media_seconds: float = Field(gt=0, le=601)
+    media_seconds: float = Field(gt=0, le=MAX_SOURCE_SECONDS + 1)
     source_language: str | None = Field(default=None, max_length=24)
     first_caption: str | None = Field(default=None, max_length=240)
     asr_model: str | None = Field(default=None, max_length=120)
@@ -338,10 +339,20 @@ def heartbeat(body: Heartbeat, scope=Depends(requested_fence), node: Node = Depe
 
 @app.get("/v1/jobs/{job_id}/source")
 def source(job=Depends(current_job)):
+    def resolve():
+        try:
+            return sources.for_job(job)
+        except HTTPException as exc:
+            if exc.status_code == 422 and exc.detail == TOO_LONG:
+                # Finalize on the coordinator so workers on an older release also release the reservation.
+                failure(Failure(stage="Downloading", reason="duration"), fence(job))
+                raise HTTPException(409, TOO_LONG) from exc
+            raise
+
     if job.get("stage") == "Starting":
         db().jobs.update_one({**fence(job), "stage": "Starting"},
                              {"$set": {"stage": "Downloading"}, "$max": {"progress": STEPS["Downloading"]}})
-    doc = sources.for_job(job)
+    doc = resolve()
     bucket = gridfs.GridFS(media_db())
     try:
         stream = bucket.get(doc["_id"])
@@ -351,7 +362,7 @@ def source(job=Depends(current_job)):
         # Daily Reels can be staged again when media is missing after a storage recovery.
         db().sources.update_one({"_id": doc["_id"], "owner": job["owner"], "ready": True},
                                 {"$set": {"ready": False, "retiring": True, "expires": now()}, "$unset": {"slot": ""}})
-        doc = sources.for_job(job)
+        doc = resolve()
         try:
             stream = bucket.get(doc["_id"])
         except gridfs.NoFile:
@@ -390,7 +401,7 @@ def failure(body: Failure, scope=Depends(requested_fence)):
     if body.stage not in STAGES:
         raise HTTPException(422, "Invalid render stage.")
     diagnostic = {"generic": "", "download": "", "no_speech": "no translatable speech detected",
-                  "translation": "neither translator produced an english dub"}[body.reason]
+                  "translation": "neither translator produced an english dub", "duration": TOO_LONG.lower()}[body.reason]
     message = worker.render_error("Downloading" if body.reason == "download" else body.stage, diagnostic)
     release = ("slot", "minute_grants", "minute_units", "render_key", "extra_ticket", "skip_ticket",
                "lease", "lease_end", "upload_lease", "upload_until", "upload_token")

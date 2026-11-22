@@ -1,4 +1,5 @@
 import json
+from math import ceil
 import multiprocessing
 import os
 from pathlib import Path
@@ -14,7 +15,7 @@ import gridfs
 from pymongo import ReturnDocument
 from pymongo.errors import ConnectionFailure, ExecutionTimeout, PyMongoError, WTimeoutError
 
-from .source import reel_url
+from .source import MAX_SOURCE_SECONDS, TOO_LONG, reel_url
 from .languages import outputs
 from .db import media_db, QUEUE_ORDER, db, now, uses_postgres
 from .gpu import pipeline_slot
@@ -34,6 +35,8 @@ STAGES = {"Waiting for GPU capacity": "Waiting for GPU", "GPU stage: ": "Process
           "Mixing soundtrack": "Mixing", "Encoding video": "Encoding"}
 
 def render_error(stage, diagnostic):
+    if TOO_LONG.lower() in diagnostic:
+        return TOO_LONG
     if stage == "Downloading":
         if "can't be seen by certain audiences" in diagnostic:
             return "Instagram restricts who can view this Reel. ReelDub could not download it."
@@ -228,7 +231,7 @@ def process(job, fleet=None):
                                 if not isinstance(event, dict):
                                     continue
                                 seconds = event.get("duration")
-                                if not fleet and type(seconds) in (int, float) and 0 < seconds <= 600 and seconds != sampled_duration:
+                                if not fleet and type(seconds) in (int, float) and 0 < seconds <= MAX_SOURCE_SECONDS and seconds != sampled_duration:
                                     sampled_duration = seconds
                                     try:
                                         rows = jobs.find({"state": "done", "lab_mode": job.get("lab_mode"),
@@ -260,6 +263,8 @@ def process(job, fleet=None):
                     trace.seek(max(0, log.stat().st_size - 16384))
                     diagnostic = trace.read().decode(errors="replace").lower()
                 print(f"Render {job['_id']} exited {proc.returncode} at {stage}", flush=True)
+                if TOO_LONG.lower() in diagnostic:
+                    raise RuntimeError(TOO_LONG)
                 if fleet:
                     if any(x in diagnostic for x in ("cuda out of memory", "cuda error", "cuda was explicitly requested", "driver version is insufficient")):
                         raise InfrastructureFailure("gpu_unavailable")
@@ -277,6 +282,8 @@ def process(job, fleet=None):
             details = {k: v for k, v in details.items() if k in
                        {"title", "author", "first_caption", "source_language", "asr_model",
                         "translation_model", "voice_model", "audio_mix_version"}}
+            if sampled_duration is not None:
+                details["source_seconds"] = ceil(sampled_duration)
             preview = subprocess.run(["ffmpeg", "-nostdin", "-loglevel", "error", "-ss", str(min(0.65, seconds / 3)),
                                       "-i", dest, "-frames:v", "1", "-vf", "scale=320:-2",
                                       "-f", "image2pipe", "-c:v", "mjpeg", "pipe:1"], capture_output=True, timeout=30)

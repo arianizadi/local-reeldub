@@ -53,6 +53,7 @@ class ConsoleTests(TestCase):
         cls.client = SimpleNamespace(
             get=lambda path, **kw: requests.get(base + path, timeout=5, **kw),
             post=lambda path, **kw: requests.post(base + path, timeout=5, **kw),
+            put=lambda path, **kw: requests.put(base + path, timeout=5, **kw),
         )
 
     def setUp(self):
@@ -135,6 +136,28 @@ class ConsoleTests(TestCase):
             }
         )
         return {"Authorization": "Bearer " + secret}
+
+    def test_video_suggestion_is_optional_private_editable_and_erased_with_account(self):
+        path = "/v1/me/video-suggestion"
+        first = {"topic": "longer", "note": "  Concerts  "}
+        revised = {"topic": "other_apps", "note": "Short documentaries"}
+        self.assertEqual(self.client.put(path, json=first).status_code, 401)
+        self.assertEqual(self.client.put(path, json=first, headers=self.reviewer).status_code, 403)
+        self.assertIsNone(self.client.get(path, headers=self.member).json()["suggestion"])
+        self.assertEqual(self.client.put(path, json={"topic":"other", "note":"  "}, headers=self.member).status_code, 422)
+        self.assertEqual(self.client.put(path, json={**first, "note":"a"*401}, headers=self.member).status_code, 422)
+        self.assertEqual(self.client.put(path, json={**first, "owner":"someone-else"}, headers=self.member).status_code, 422)
+        self.assertEqual(self.client.put(path, json=first, headers=self.member).status_code, 204)
+        self.assertEqual(self.client.get(path, headers=self.member).json()["suggestion"]["note"], "Concerts")
+        self.assertEqual(self.client.put(path, json=revised, headers=self.member).status_code, 204)
+        self.assertIsNone(self.client.get(path, headers=self.admin).json()["suggestion"])
+        rows = self.client.post("/v1/admin/accounts", json={}, headers=self.admin).json()["rows"]
+        self.assertEqual(next(row for row in rows if row["id"] == self.subject)["video_suggestion"], revised)
+        self.assertEqual(self.client.post("/v1/admin/accounts", json={}, headers=self.member).status_code, 403)
+        db().accounts.update_one({"_id":self.subject}, {"$set":{"banned":True}})
+        self.assertEqual(self.client.put(path, json=first, headers=self.member).status_code, 403)
+        erasure.erase(self.subject)
+        self.assertNotIn("video_suggestion", db().accounts.find_one({"_id":self.subject}))
 
     def test_console_bound_to_pinned_hosted_apple_session(self):
         for who, status in [

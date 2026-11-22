@@ -1,5 +1,99 @@
 import SwiftUI
 
+struct VideoSuggestion: Decodable, Equatable {
+    let topic: String
+    let note: String
+    static let choices = [
+        ("longer", "Longer videos"), ("other_apps", "Videos from other apps or websites"),
+        ("my_videos", "Videos I record"), ("other", "Something else")
+    ]
+    var topicName: String { Self.choices.first { $0.0 == topic }?.1 ?? topic }
+}
+
+struct VideoSuggestionForm: View {
+    let api: API
+    @State private var topic = ""
+    @State private var note = ""
+    @State private var previous: VideoSuggestion?
+    @State private var loaded = false
+    @State private var sending = false
+    @State private var received = false
+    @State private var issue: String?
+
+    private var draft: VideoSuggestion {
+        VideoSuggestion(topic: topic, note: note.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    var body: some View {
+        Form {
+            if loaded {
+                Section("What would you most like to translate?") {
+                    ForEach(VideoSuggestion.choices, id: \.0) { code, title in
+                        Button {
+                            topic = code
+                        } label: {
+                            HStack {
+                                Text(title).foregroundStyle(.primary)
+                                Spacer()
+                                if topic == code { Image(systemName: "checkmark").accessibilityHidden(true) }
+                            }
+                        }.accessibilityAddTraits(topic == code ? .isSelected : [])
+                    }
+                }
+                Section {
+                    TextField(topic == "other" ? "What kind of video?" : "An example (optional)", text: $note, axis: .vertical)
+                        .lineLimit(2...5)
+                    if note.unicodeScalars.count > 400 { Text("Please use 400 characters or fewer.").foregroundStyle(.red) }
+                } footer: {
+                    Text("Your answer goes to the ReelDub team with your Cloud account. You can update it here. Please leave out personal details.")
+                }
+                Button(sending ? "Sending…" : previous == nil ? "Send suggestion" : "Update suggestion") {
+                    Task { await send() }
+                }.disabled(sending || topic.isEmpty || (topic == "other" && draft.note.isEmpty) || note.unicodeScalars.count > 400 || draft == previous)
+                if received && draft == previous {
+                    Label("Thanks, your suggestion was saved.", systemImage: "checkmark.circle")
+                }
+            } else if issue == nil {
+                ProgressView("Loading suggestion…")
+            }
+            if let issue {
+                Text(issue).foregroundStyle(.red)
+                if !loaded { Button("Try again") { Task { await load() } } }
+            }
+        }
+        .disabled(sending)
+        .navigationTitle("Video suggestions").navigationBarTitleDisplayMode(.inline)
+        .task { await load() }
+    }
+
+    private func load() async {
+        guard !loaded else { return }
+        issue = nil
+        struct Response: Decodable { let suggestion: VideoSuggestion? }
+        do {
+            let data = try await api.data("v1/me/video-suggestion")
+            let saved = try JSONDecoder().decode(Response.self, from: data).suggestion
+            previous = saved
+            topic = saved?.topic ?? ""
+            note = saved?.note ?? ""
+            loaded = true
+        } catch { if !Task.isCancelled { issue = error.localizedDescription } }
+    }
+
+    private func send() async {
+        guard loaded, !sending else { return }
+        let suggestion = draft
+        sending = true
+        defer { sending = false }
+        issue = nil
+        do {
+            _ = try await api.data("v1/me/video-suggestion", method: "PUT", body: ["topic": suggestion.topic, "note": suggestion.note])
+            previous = suggestion
+            received = true
+        } catch { issue = error.localizedDescription }
+    }
+}
+
 struct SettingsView: View {
     let studio: Studio
     @Environment(\.dismiss) private var dismiss
@@ -33,7 +127,7 @@ struct SettingsView: View {
                     }
                 }
                 Section("Help and policies") {
-                    Button("ReelDub help") { help = true }
+                    Button("Help & FAQ") { help = true }
                     PolicyLinks()
                 }
                 Section {
@@ -45,7 +139,9 @@ struct SettingsView: View {
                 }
             }.navigationTitle("Account")
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
-                .sheet(isPresented: $help) { ReelDubHelp() }
+                .sheet(isPresented: $help) {
+                    ReelDubHelp(suggestionAPI: studio.connection?.isHosted == true && studio.account?.video_suggestions == true ? studio.api : nil)
+                }
                 .sheet(isPresented: $deletingAccount) { DeleteCloudAccount(studio: studio) }
                 .sheet(isPresented: $selfHost) { SelfHost(studio: studio) }
         }

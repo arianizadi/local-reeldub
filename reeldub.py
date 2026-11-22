@@ -15,7 +15,7 @@ from faster_whisper import WhisperModel
 from server.progress import report
 from server.gpu import transcription_device
 from server.languages import LANGUAGES
-from server.source import reel_url
+from server.source import inspect_video, reel_url
 from server.download import download_reel
 from clean_background import leakage_regions, matching_dialogue, merge_regions, suppress_unresolved
 from render import ff, mix, render, source_input_options, source_time_limit, RATE
@@ -113,11 +113,9 @@ def run(args):
         if dest.exists():
             raise FileExistsError(f"Output already exists: {dest}. Choose another path with -o.")
         if os.getenv("REELDUB_SERVICE_LIMITS"):
-            seconds = float(subprocess.check_output(["ffprobe", "-v", "error", *source_input_options(), "-show_entries", "format=duration",
-                                                    "-of", "csv=p=0", media], text=True).strip())
-            report(duration=seconds)
-            if not 0 < seconds <= 600 or media.stat().st_size > 250 * 1024 * 1024:
-                raise ValueError("The service accepts Reels up to 10 minutes and 250 MB.")
+            if media.stat().st_size > 250 * 1024 * 1024:
+                raise ValueError("Choose a video under 250 MiB.")
+            report(duration=float(inspect_video(media)))
         source = folder / "source.wav"
         ff(*source_input_options(), "-i", media, *source_time_limit(), "-map", "0:a:0", "-vn", "-ac", "2", "-ar", str(RATE),
            "-c:a", "pcm_s16le", "-rf64", "auto", source)

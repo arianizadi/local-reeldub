@@ -17,7 +17,7 @@ from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
 from .db import media_db, db, now
-from .source import reel_url
+from .source import MAX_SOURCE_SECONDS, TOO_LONG, reel_url
 
 MAX_BYTES = 80 * 1024 * 1024
 DAILY_REEL_BYTES = 250 * 1024 * 1024
@@ -50,6 +50,13 @@ def public(doc):
     return {"id": str(doc["_id"]), "seconds": doc["seconds"], "title": doc["title"]}
 
 
+def check_duration(seconds):
+    if type(seconds) is not int or seconds < 1:
+        raise HTTPException(422, "ReelDub could not verify this video's duration.")
+    if seconds > MAX_SOURCE_SECONDS:
+        raise HTTPException(422, TOO_LONG)
+
+
 def get(user, value, renew=True):
     if not ObjectId.is_valid(value):
         raise HTTPException(404, "Source unavailable. Import the video again.")
@@ -63,6 +70,7 @@ def get(user, value, renew=True):
     )
     if not doc:
         raise HTTPException(404, "Source unavailable. Import the video again.")
+    check_duration(doc.get("seconds"))
     if doc.get("bytes", 0) > MAX_BYTES:
         raise HTTPException(413, "Choose a video under 80 MiB.")
     return doc
@@ -106,7 +114,8 @@ def check(response):
 def save(stage, user, file, identity, seconds, title, author=None, *, max_bytes=MAX_BYTES, reel_slot=None):
     file.seek(0, 2)
     size = file.tell()
-    if not 0 < size <= max_bytes or not 1 <= seconds <= 600:
+    check_duration(seconds)
+    if not 0 < size <= max_bytes:
         raise HTTPException(422, "Choose a video within the import limits.")
     # A ready source already contains immutable bytes. Never trust a client-supplied identifier or duration.
     if not reel_slot:
@@ -156,8 +165,10 @@ def cached_source(user, identity, max_bytes):
         {"$max": {"expires": now() + WINDOW}},
         return_document=ReturnDocument.AFTER,
     )
-    if doc and doc.get("bytes", 0) > max_bytes:
-        raise HTTPException(413, f"Choose a video under {max_bytes // (1024 * 1024)} MiB.")
+    if doc:
+        check_duration(doc.get("seconds"))
+        if doc.get("bytes", 0) > max_bytes:
+            raise HTTPException(413, f"Choose a video under {max_bytes // (1024 * 1024)} MiB.")
     return doc
 
 
@@ -171,8 +182,7 @@ def fetch_reel(stage, user, url, slot, daily):
             ) as r:
                 check(r)
                 seconds = int(r.headers["X-Duration"])
-                if not 1 <= seconds <= 600:
-                    raise HTTPException(422, "Choose a video up to ten minutes long.")
+                check_duration(seconds)
                 declared = int(r.headers["Content-Length"]) if "Content-Length" in r.headers else None
                 if declared is not None and not 0 < declared <= max_bytes:
                     raise HTTPException(413, f"Choose a video under {max_bytes // (1024 * 1024)} MiB.")
@@ -269,8 +279,10 @@ def for_job(job):
         if current.get("source_file"):
             raise HTTPException(410, "The confirmed source is no longer available.")
         doc = prepare_reel(job["owner"], current["url"], daily=True, job_fence=fence)
+    check_duration(doc.get("seconds"))
     attached = db().jobs.update_one({**fence, "lease_end": {"$gt": now()}}, {"$set": {
-        "staged_source": doc["_id"], "staged_lease": job["lease"], "title": doc["title"], "author": doc.get("author")}})
+        "staged_source": doc["_id"], "staged_lease": job["lease"], "source_seconds": doc["seconds"],
+        "title": doc["title"], "author": doc.get("author")}})
     if not attached.matched_count:
         raise HTTPException(409, "This worker no longer owns the job.")
     return doc

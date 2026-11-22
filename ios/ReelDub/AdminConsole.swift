@@ -179,6 +179,7 @@ private struct OperatorAccount: Decodable, Identifiable {
     let ban: Bool
   }
   let moderation_history: [Event]?
+  let video_suggestion: VideoSuggestion?
   let protected: Bool?
   let banned: Bool?
   var label: String { email ?? String(id.suffix(12)) }
@@ -550,6 +551,12 @@ private struct AdminAccountView: View {
           if let extra = allowance.pack_seconds {
             LabeledContent("Extra time left", value: Job.duration(extra))
           }
+        }
+      }
+      if let suggestion = account.video_suggestion {
+        Section("Video suggestion") {
+          Text(suggestion.topicName)
+          if !suggestion.note.isEmpty { Text(suggestion.note).foregroundStyle(.secondary) }
         }
       }
       if account.protected != true {

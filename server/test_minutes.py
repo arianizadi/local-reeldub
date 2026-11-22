@@ -108,8 +108,37 @@ class CreatorTests(TestCase):
             self.assertEqual(best["render_quality"], "best")
             self.assertIsNone(best["lab_mode"])
             self.assertNotEqual(best["id"], original["id"])
-            db().jobs.update_one({"_id":best["id"]}, {"$set":{"state":"done", "artifact":ObjectId()}})
+            db().jobs.update_one({"_id":best["id"]}, {"$set":{"state":"done", "artifact":ObjectId(), "source_seconds":24}})
             self.assertEqual(api.submit(submission(), self.owner)["id"], best["id"])
+
+    def test_source_limit_check_covers_trim_legacy_quotes_and_cached_direct_requests(self):
+        from .source import TOO_LONG
+        from . import sources
+        source = self.source(120)
+        self.pay(store.MINUTE_PACK)
+        quote = self.quote(source, trim=True)
+        db().sources.update_one({"_id": ObjectId(source)}, {"$set": {"seconds": 121}})
+        for attempt in [lambda: self.confirm(quote), lambda: self.quote(source, trim=True)]:
+            with self.assertRaises(HTTPException) as rejected:
+                attempt()
+            self.assertEqual((rejected.exception.status_code, rejected.exception.detail), (422, TOO_LONG))
+        self.assertEqual(db().jobs.count_documents({"owner": self.owner}), 0)
+        self.assertEqual(api.me(self.owner)["pack_seconds"], 900)
+        with patch.dict(os.environ, {"REELDUB_CREATOR_MINUTES": "0"}):
+            def request():
+                return api.Submission(url="https://www.instagram.com/reel/OldDub/", request_id=uuid4())
+            original = request()
+            job = api.submit(original, self.owner)
+            key = {"_id": job["id"]}
+            db().jobs.update_one(key, {"$set": {"state": "done", "artifact": ObjectId(), "media_seconds": 60}})
+            with patch.object(sources, "prepare_reel", return_value={"seconds": 121}), self.assertRaises(HTTPException) as rejected:
+                api.submit(request(), self.owner)
+            self.assertEqual(rejected.exception.detail, TOO_LONG)
+            self.assertEqual(api.submit(original, self.owner)["id"], job["id"])
+            with patch.object(sources, "prepare_reel", return_value={"seconds": 120}) as prepare:
+                self.assertEqual(api.submit(request(), self.owner)["id"], job["id"])
+                self.assertEqual(api.submit(request(), self.owner)["id"], job["id"])
+            prepare.assert_called_once()
 
     def test_beta_quote_and_confirm_use_the_same_daily_cap(self):
         db().beta_allowances.insert_one({"_id": str(uuid4()), "owner": self.owner, "limit": 50})
@@ -211,14 +240,14 @@ class CreatorTests(TestCase):
     def test_monthly_rotation_paid_priority_and_shared_quote(self):
         self.pay(store.MINUTE_PACK)
         current = self.pay(store.CREATOR)
-        source = self.source(480)
+        source = self.source(120)
         q = self.quote(source, ("de", "es"))
-        self.assertEqual(q["monthly_left"], 6240)
+        self.assertEqual(q["monthly_left"], 6960)
         self.assertEqual(q["pack_left"], 900)
         with ThreadPoolExecutor(max_workers=4) as pool:
             ids = list(pool.map(lambda _: [j["id"] for j in self.confirm(q)], range(4)))
         self.assertTrue(all(x == ids[0] for x in ids))
-        self.assertEqual(api.me(self.owner)["monthly_seconds"], 6240)
+        self.assertEqual(api.me(self.owner)["monthly_seconds"], 6960)
         replay = self.quote(source, ("de", "es"))
         self.assertTrue(all(line["reused"] for line in replay["lines"]))
         current.signedDate = 250
@@ -231,7 +260,9 @@ class CreatorTests(TestCase):
 
     def test_competing_confirmations_and_erasure(self):
         self.pay(store.MINUTE_PACK)
-        quotes = [self.quote(self.source(600)), self.quote(self.source(600))]
+        for _ in range(7):
+            self.confirm(self.quote(self.source(100)))
+        quotes = [self.quote(self.source(120)), self.quote(self.source(120))]
 
         def attempt(q):
             try:
@@ -243,26 +274,28 @@ class CreatorTests(TestCase):
         with ThreadPoolExecutor(max_workers=2) as pool:
             ids = [i for i in pool.map(attempt, quotes) if i]
         self.assertEqual(len(ids), 1)
-        self.assertEqual(api.me(self.owner)["pack_seconds"], 300)
+        self.assertEqual(api.me(self.owner)["pack_seconds"], 80)
         from . import erasure
 
-        db().jobs.update_one({"_id": ids[0]}, {"$set": {"state": "done"}})
+        db().jobs.update_many({"owner": self.owner}, {"$set": {"state": "done"}})
         erasure.erase(self.owner)
         db().accounts.insert_one({"_id": self.owner})
         erasure.restore_billing(self.owner)
-        self.assertEqual(api.me(self.owner)["pack_seconds"], 300)
+        self.assertEqual(api.me(self.owner)["pack_seconds"], 80)
 
     def test_remaining_targets_are_reported_for_changed_balance(self):
         self.pay(store.MINUTE_PACK)
-        source = self.source(400)
+        for _ in range(7):
+            self.confirm(self.quote(self.source(100)))
+        source = self.source(80)
         quote = self.quote(source, ("en", "es"))
-        self.confirm(self.quote(self.source(200)))
+        self.confirm(self.quote(self.source(80)))
         from uuid import UUID
 
         response = api.confirm_quote(UUID(quote["id"]), self.owner)
         self.assertEqual([j["target_language"] for j in response["jobs"]], ["en"])
         self.assertEqual(response["remaining"], ["es"])
-        self.assertEqual(api.me(self.owner)["pack_seconds"], 300)
+        self.assertEqual(api.me(self.owner)["pack_seconds"], 40)
         again = api.confirm_quote(UUID(quote["id"]), self.owner)
         self.assertEqual(again["jobs"][0]["id"], response["jobs"][0]["id"])
 

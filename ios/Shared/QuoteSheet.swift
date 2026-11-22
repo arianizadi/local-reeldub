@@ -146,7 +146,7 @@ struct QuoteSheet: View {
             Text(source.title).font(.headline)
             DubValueRow("Source length", value: Job.duration(source.seconds))
             if source.seconds > 60 { Toggle("Use the first 60 seconds", isOn: $trim) }
-          }
+          } footer: { Text(DubGuidance.accuracy) }
           Section("Dub into") {
             Menu {
               ForEach(languages, id: \.self) { code in

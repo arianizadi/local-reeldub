@@ -194,6 +194,7 @@ struct Account: Codable {
     var admin_console: Bool? = nil
     var creator_minutes: Bool? = nil
     var batch_progress: Bool? = nil
+    var video_suggestions: Bool? = nil
     var monthly_seconds: Int? = nil
     var pack_seconds: Int? = nil
     let store_token: UUID?

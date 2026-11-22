@@ -17,7 +17,9 @@ On first launch, tap **Continue with Apple** to create an account or sign in to 
 
 ReelDub Cloud uses **Best** for new dubs from the app and share sheet. Best translates dialogue in context and matches each speaker’s voice when the output language supports it. Hindi uses a preset voice.
 
-Share an Instagram Reel to **ReelDub**, or paste its link in the library. Choose the output language and confirm. Follow its place in the queue, the current render stage and elapsed time. Use the subtitles switch underneath the player to switch captions on or off. ReelDub remembers the setting for future dubs. Share the MP4 with its selectable subtitle track, or report a translation, voice, timing or background issue with the original Reel and a note.
+Share an Instagram Reel up to two minutes long to **ReelDub**, or paste its link in the library. Choose the output language and confirm. Follow its place in the queue, the current render stage and elapsed time. Use the speaker button under the player to listen in Silent Mode or mute a dub. Captions start on when available, and ReelDub remembers both playback controls. Shared MP4 files include a selectable subtitle track. If a translation misses the meaning, open **Report an issue** on that dub and include a timestamp.
+
+**Help & FAQ** is available before sign-in and in Account. Signed-in Cloud users can suggest other types of videos from that screen. Their latest answer appears in the administrator’s account detail view.
 
 The library groups jobs under **Processing**, **Queued**, **Ready**, and **Failed**. Swipe left on a ready or failed dub, or use its **•••** menu, then choose **Delete dub** and confirm. This removes the library entry, hosted video, poster, and attached issue report. Copies exported to Photos or Files are separate.
 

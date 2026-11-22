@@ -2,7 +2,7 @@
 
 import json
 import subprocess
-from decimal import Decimal, InvalidOperation
+from math import ceil
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import BoundedSemaphore
@@ -13,7 +13,7 @@ from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
 from .download import download_reel
-from .source import reel_url
+from .source import inspect_video, reel_url
 
 MAX_BYTES = 80 * 1024 * 1024
 DAILY_REEL_BYTES = 250 * 1024 * 1024
@@ -25,48 +25,9 @@ def probe(path, max_bytes=MAX_BYTES):
     if not 0 < path.stat().st_size <= max_bytes:
         raise HTTPException(413, f"Choose a video under {max_bytes // (1024 * 1024)} MiB.")
     try:
-        raw = subprocess.check_output(
-            [
-                "ffprobe",
-                "-v",
-                "error",
-                "-protocol_whitelist",
-                "file",
-                "-f",
-                "mov",
-                "-enable_drefs",
-                "0",
-                "-use_absolute_path",
-                "0",
-                "-show_entries",
-                "format=duration:stream=codec_type,codec_name,width,height,duration",
-                "-of",
-                "json",
-                path,
-            ],
-            stderr=subprocess.DEVNULL,
-            timeout=15,
-        )
-        info = json.loads(raw)
-        streams = info["streams"]
-        video = next(x for x in streams if x["codec_type"] == "video")
-        audio = next(x for x in streams if x["codec_type"] == "audio")
-        durations = [
-            Decimal(x["duration"])
-            for x in [info["format"], video, audio]
-            if x.get("duration") not in (None, "N/A")
-        ]
-        seconds = max(durations)
-        if (
-            len(streams) > 16
-            or video["codec_name"] not in {"h264", "hevc", "av1", "mpeg4", "prores", "vp9"}
-            or not 0 < video["width"] * video["height"] <= 4096 * 2304
-            or not 0 < seconds <= 600
-        ):
-            raise ValueError
-        return int(seconds.to_integral_value(rounding="ROUND_CEILING"))
-    except (ValueError, KeyError, InvalidOperation, StopIteration, subprocess.SubprocessError):
-        raise HTTPException(422, "Choose a playable MP4 or MOV with audio, up to 10 minutes and 4K.")
+        return ceil(inspect_video(path))
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
 
 
 @app.post("/inspect")

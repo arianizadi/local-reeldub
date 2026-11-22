@@ -12,8 +12,10 @@ struct JobView: View {
     @State private var temporaryPlayback: URL?
     @State private var audioActive = false
     @State private var playerObservation: NSKeyValueObservation?
-    @AppStorage("ReelDub.EnglishSubtitles") private var wantsSubtitles = UIAccessibility.isClosedCaptioningEnabled
+    @AppStorage("ReelDub.EnglishSubtitles") private var wantsSubtitles = true
+    @AppStorage("ReelDub.PlaybackMuted") private var wantsMuted = false
     @State private var subtitles: DubSubtitles?
+    @State private var pendingCaptionChoice: Bool?
     @State private var reporting = false
     @State private var preparingShare = false
     @State private var sharing: ShareFile?
@@ -47,15 +49,35 @@ struct JobView: View {
                                 }
                             }
                         }.clipShape(RoundedRectangle(cornerRadius: 20))
-                    if let subtitles, subtitles.item === player?.currentItem {
-                        Toggle(isOn: Binding(get: { wantsSubtitles }, set: { enabled in
-                            wantsSubtitles = enabled
-                            subtitles.setEnabled(enabled)
-                        })) {
-                            Label("\(job.targetName) subtitles", systemImage: "captions.bubble")
+                    if let player {
+                        HStack(spacing: 16) {
+                            Button {
+                                setMuted(!player.isMuted, on: player)
+                            } label: {
+                                Label(wantsMuted ? "Unmute video" : "Mute video",
+                                      systemImage: wantsMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                                    .labelStyle(.iconOnly)
+                                    .frame(minWidth: 44, minHeight: 44)
+                                    .background(.quaternary, in: Circle())
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityIdentifier("playback-sound")
+                            if let subtitles, subtitles.item === player.currentItem {
+                                Toggle(isOn: Binding(get: { wantsSubtitles }, set: { enabled in
+                                    wantsSubtitles = enabled
+                                    applyCaptions(enabled, to: subtitles)
+                                })) {
+                                    Label("\(job.targetName) subtitles", systemImage: "captions.bubble")
+                                }
+                                .tint(Color(red: 0.40, green: 0.59, blue: 0.29))
+                                .accessibilityIdentifier("english-subtitles")
+                            }
                         }
-                        .tint(Color(red: 0.40, green: 0.59, blue: 0.29))
-                        .accessibilityIdentifier("english-subtitles")
+                        .onReceive(player.publisher(for: \.isMuted).receive(on: RunLoop.main)) { _ in
+                            // AVKit can also change sound when using its native playback controls.
+                            guard self.player === player, player.isMuted != wantsMuted else { return }
+                            setMuted(player.isMuted, on: player)
+                        }
                     }
                     Button { Task { await share() } } label: {
                         Label(preparingShare ? "Preparing video…" : "Share \(job.targetName) video", systemImage: "square.and.arrow.up")
@@ -144,18 +166,14 @@ struct JobView: View {
             .task(id: job.state) {
                 if job.state == "done", !expired, !didStart, !UIAccessibility.isVoiceOverRunning { await play() }
             }
-            .task(id: player) {
-                subtitles = nil
-                guard let item = player?.currentItem,
-                      let track = try? await DubSubtitles.load(from: item, language: job.target),
-                      !Task.isCancelled, item === player?.currentItem else { return }
-                track.setEnabled(wantsSubtitles)
-                subtitles = track
-            }
             .onReceive(NotificationCenter.default.publisher(for: AVPlayerItem.mediaSelectionDidChangeNotification)) { change in
                 guard let subtitles, let item = change.object as? AVPlayerItem,
                       item === subtitles.item, item === player?.currentItem else { return }
-                // The native fullscreen player also offers a subtitle menu.
+                if let pendingCaptionChoice {
+                    guard subtitles.isEnabled == pendingCaptionChoice else { return }
+                    self.pendingCaptionChoice = nil
+                }
+                // Keep an explicit change from the native fullscreen menu, once selection has settled.
                 wantsSubtitles = subtitles.isEnabled
             }
             .onChange(of: job.recoveryCue) { _, cue in
@@ -208,26 +226,62 @@ struct JobView: View {
                 }
             }
             guard playbackRequest == request, !Task.isCancelled else { return }
-            let audio = AVAudioSession.sharedInstance()
-            try audio.setCategory(.playback, mode: .moviePlayback)
-            try audio.setActive(true)
-            audioActive = true
             let item = AVPlayerItem(url: url)
+            let track = try? await DubSubtitles.load(from: item, language: job.target)
+            guard playbackRequest == request, !Task.isCancelled else { return }
+            let next = AVPlayer()
+            if track != nil { next.appliesMediaSelectionCriteriaAutomatically = false }
+            next.isMuted = wantsMuted
+            if !wantsMuted { try activatePlaybackAudio() }
+            player = next
             playerObservation = item.observe(\.status, options: [.new]) { item, _ in
-                guard item.status == .failed else { return }
                 Task { @MainActor in
-                    guard playbackRequest == request else { return }
-                    stopPlayback()
-                    problem = "Playback stopped. Tap Play to try again."
+                    guard playbackRequest == request, item === next.currentItem else { return }
+                    switch item.status {
+                    case .readyToPlay:
+                        if let track {
+                            applyCaptions(wantsSubtitles, to: track)
+                            subtitles = track
+                        }
+                        next.play()
+                    case .failed:
+                        stopPlayback()
+                        problem = "Playback stopped. Tap Play to try again."
+                    default:
+                        break
+                    }
                 }
             }
-            let next = AVPlayer(playerItem: item)
-            player = next
-            next.play()
+            next.replaceCurrentItem(with: item)
         } catch {
             guard playbackRequest == request else { return }
             stopPlayback()
             if !Task.isCancelled { problem = error.localizedDescription }
+        }
+    }
+
+    private func applyCaptions(_ enabled: Bool, to track: DubSubtitles) {
+        pendingCaptionChoice = track.isEnabled == enabled ? nil : enabled
+        track.setEnabled(enabled)
+    }
+
+    private func activatePlaybackAudio() throws {
+        guard !audioActive else { return }
+        let audio = AVAudioSession.sharedInstance()
+        try audio.setCategory(.playback, mode: .moviePlayback)
+        try audio.setActive(true)
+        audioActive = true
+    }
+
+    private func setMuted(_ muted: Bool, on player: AVPlayer) {
+        do {
+            if !muted { try activatePlaybackAudio() }
+            wantsMuted = muted
+            if player.isMuted != muted { player.isMuted = muted }
+        } catch {
+            wantsMuted = true
+            player.isMuted = true
+            problem = "Sound couldn’t start. Tap Unmute to try again."
         }
     }
 
@@ -237,6 +291,8 @@ struct JobView: View {
         playerObservation = nil
         player?.pause()
         player = nil
+        subtitles = nil
+        pendingCaptionChoice = nil
         if audioActive {
             try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
             audioActive = false

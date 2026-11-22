@@ -1,7 +1,17 @@
+import CoreMedia
 import XCTest
 @testable import ReelDub
 
 final class TransportPolicyTests: XCTestCase {
+    func testVideoImportChecksTheTwoMinuteBoundaryWithoutRounding() {
+        XCTAssertNoThrow(try DubGuidance.checkDuration(CMTime(value: 120_000, timescale: 1_000)))
+        XCTAssertThrowsError(try DubGuidance.checkDuration(CMTime(value: 120_001, timescale: 1_000))) { error in
+            XCTAssertEqual(error.localizedDescription, DubGuidance.lengthError)
+        }
+        // Files without readable duration metadata still go through the server's media inspection.
+        XCTAssertNoThrow(try DubGuidance.checkDuration(.indefinite))
+    }
+
     func testRecoveryMessagesDistinguishWaitingFromAConfirmedHandoff() throws {
         let row: [String: Any] = ["id": "demo", "url": "", "stage": "Recovering render", "state": "queued", "created": "now", "reported": false]
         func job(_ added: [String: Any]) throws -> Job {

@@ -43,7 +43,7 @@ struct Welcome: View {
                             HStack(spacing: 22) { PolicyLinks() }.fixedSize()
                             VStack(alignment: .leading, spacing: 8) { PolicyLinks() }
                         }.font(.footnote).tint(.white)
-                        Button("Help with ReelDub") { help = true }.font(.footnote).tint(.white).frame(minHeight: 44)
+                        Button("Help & FAQ") { help = true }.font(.footnote).tint(.white).frame(minHeight: 44)
                     }
                 }.padding(.horizontal, 26).padding(.vertical, 14)
                     .frame(maxWidth: 570).frame(minHeight: max(0, geo.size.height))
@@ -155,22 +155,43 @@ struct PolicyLinks: View {
 }
 
 struct ReelDubHelp: View {
+    var suggestionAPI: API? = nil
     @Environment(\.dismiss) private var dismiss
+
     var body: some View {
         NavigationStack {
             List {
-                Section("Report a problem with a dub") {
-                    Text("Open the video in Dubs, choose Report an issue, and describe the problem. Include the time in the video if you can.")
+                Section("Making a dub") {
+                    answer("How do I translate a Reel?", "In Instagram, tap Share, choose ReelDub, pick a language and confirm. You can also paste the Reel link in ReelDub. Open Dubs to follow its progress.")
+                    answer("How long can my video be?", "Choose a video up to 2 minutes long. If yours is longer, choose a shorter Reel or trim your own video before importing it.")
+                    answer("Which languages can I choose?", "ReelDub detects the spoken language. The Dub language menu lists the output languages your connected server supports.")
+                    answer("What if the translation sounds wrong?", DubGuidance.accuracy + " Open the dub, tap Report an issue and include the words you heard and the time they occurred.")
+                    answer("How do sound and captions work?", "Tap the speaker button under the video to mute or unmute it. You can listen in Silent Mode. Use your iPhone’s volume buttons to adjust the level. Captions start on when a track is available. The subtitle switch remembers your choice.")
                 }
-                Section("Sign in") {
-                    Text("Use Continue with Apple for ReelDub Cloud. For your own server, enter the HTTPS address and access key provided by its operator.")
+                Section("Account and hosting") {
+                    answer("How do I sign in?", "Choose Continue with Apple for ReelDub Cloud. In Account you can see how many daily dubs you have used.")
+                    answer("How many free dubs do I get?", "The Cloud free plan includes five dubs per day. " + Account.dailyResetNotice + " You can see your allowance in Account.")
+                    answer("Where is my finished video?", "Open Dubs to play it. Once it says Saved on this device, you can watch offline or use Share to export a copy.")
+                    DisclosureGroup("Can I host ReelDub myself?") {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("Yes. ReelDub is open source. Run the server on your own hardware, then choose Use my own server and enter its HTTPS address and connection key. Your server downloads and renders your dubs.")
+                            Link("Open-source setup guide", destination: URL(string: "https://github.com/arianizadi/local-reeldub#readme")!)
+                        }.padding(.vertical, 4)
+                    }
+                    answer("Where can I manage purchases?", "Open Account → Plans & minutes to see what’s available, restore eligible purchases or manage an Apple subscription.")
                 }
-                Section("Purchases") {
-                    Text("In Account, open Plans & minutes to restore purchases or manage an Apple subscription.")
+                if let suggestionAPI {
+                    Section {
+                        NavigationLink("What else would you like to translate?") { VideoSuggestionForm(api: suggestionAPI) }
+                    }
                 }
                 Section { PolicyLinks() }
-            }.navigationTitle("ReelDub help").navigationBarTitleDisplayMode(.inline)
+            }.navigationTitle("Help & FAQ").navigationBarTitleDisplayMode(.inline)
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
         }
+    }
+
+    private func answer(_ question: String, _ text: String) -> some View {
+        DisclosureGroup(question) { Text(text).padding(.vertical, 4) }
     }
 }

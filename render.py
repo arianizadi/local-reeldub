@@ -1,4 +1,5 @@
 from server.languages import LANGUAGES
+from server.source import MAX_SOURCE_SECONDS
 import os
 import subprocess
 
@@ -75,7 +76,7 @@ def clock(seconds):
 
 def source_time_limit():
     seconds = os.getenv("REELDUB_MAX_SECONDS")
-    return ["-t", str(max(1, min(600, int(seconds))))] if seconds else []
+    return ["-t", str(max(1, min(MAX_SOURCE_SECONDS, int(seconds))))] if seconds else []
 
 
 def source_input_options():
@@ -95,4 +96,4 @@ def render(media, lines, folder, target="en"):
        "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2", "-c:v", "libx264", "-crf", "19", "-preset", "fast",
        "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-c:s", "mov_text",
        "-metadata:s:a:0", tag, "-metadata:s:s:0", tag,
-       "-disposition:s:0", "0", "-movflags", "+faststart", folder / "finished.mp4")
+       "-disposition:s:0", "default", "-movflags", "+faststart", folder / "finished.mp4")

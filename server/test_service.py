@@ -174,7 +174,7 @@ class QueueIntegration(unittest.TestCase):
         path = "jobs/" + job
         video = b"disposable movie" * 30_000
         artifact = bucket.put(video, poster=b"image")
-        db().jobs.update_one(selector, {"$set": {"state": "done", "artifact": artifact, "has_poster": True}})
+        db().jobs.update_one(selector, {"$set": {"state": "done", "artifact": artifact, "has_poster": True, "source_seconds": 12}})
         self.assertEqual(call(path + "/video")[1], video)
         self.assertEqual(call(path + "/received", {"bytes": 1})[0], 409)
         self.assertEqual(call(path + "/received", {"bytes": len(video)}, key=other)[0], 404)

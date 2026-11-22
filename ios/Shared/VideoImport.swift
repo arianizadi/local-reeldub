@@ -1,18 +1,32 @@
+import AVFoundation
 import CoreTransferable
 import Foundation
 import PhotosUI
 import SwiftUI
 import UniformTypeIdentifiers
 
+enum DubGuidance {
+  static let durationLimit = CMTime(value: 120, timescale: 1)
+  static let lengthError = "This video is longer than 2 minutes. Choose a shorter video."
+  static let accuracy = "AI translations can miss words or change their meaning."
+  static func checkDuration(_ duration: CMTime) throws {
+    if duration.isNumeric && CMTimeCompare(duration, durationLimit) > 0 { throw Problem(lengthError) }
+  }
+}
+
 struct ImportedMovie: Transferable {
   let file: URL
   let title: String
   static var transferRepresentation: some TransferRepresentation {
-    FileRepresentation(importedContentType: .movie) { item in try copy(item.file) }
+    FileRepresentation(importedContentType: .movie) { item in try await copy(item.file) }
   }
-  static func copy(_ url: URL) throws -> ImportedMovie {
+  static func copy(_ url: URL) async throws -> ImportedMovie {
     let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
     guard size > 0 else { throw Problem("This video is empty.") }
+    if let duration = try? await AVURLAsset(url: url).load(.duration) {
+      try DubGuidance.checkDuration(duration)
+    }
+    try Task.checkCancellation()
     guard size <= 80 * 1024 * 1024 else { throw Problem("Choose a smaller video. The upload limit is about 84 MB.") }
     let dest = FileManager.default.temporaryDirectory.appending(
       path: "reeldub-import-" + UUID().uuidString)
@@ -78,7 +92,7 @@ struct VideoImportButton: View {
         let movie = try await Task.detached(priority: .userInitiated) {
           let access = file.startAccessingSecurityScopedResource()
           defer { if access { file.stopAccessingSecurityScopedResource() } }
-          return try ImportedMovie.copy(file)
+          return try await ImportedMovie.copy(file)
         }.value
         complete(movie)
       } catch { if !Task.isCancelled { failed(error.localizedDescription) } }

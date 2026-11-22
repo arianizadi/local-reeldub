@@ -33,6 +33,7 @@ struct SharePanel: View {
             } else if let validLink, let connection {
                 Text("Translate this Reel?").font(.system(.largeTitle, design: .serif, weight: .semibold))
                 Text(validLink).font(.subheadline).foregroundStyle(.secondary).lineLimit(2)
+                Text("Up to 2 minutes. " + DubGuidance.accuracy).font(.footnote).foregroundStyle(.secondary)
                 Label(connection.isHosted ? "ReelDub Cloud" : (connection.base.host() ?? "Your server"), systemImage: "cloud")
                     .font(.subheadline.weight(.medium))
                 if languages.count > 1 { OutputLanguagePicker(supported: languages, preference: $preferredLanguage).disabled(busy) }

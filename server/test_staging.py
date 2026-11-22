@@ -19,6 +19,7 @@ import gridfs
 from . import api, intake, sources
 from .db import db, media_db, now, setup_indexes, uses_postgres
 from .postgres import install
+from .source import TOO_LONG
 
 
 def _start_node(barrier):
@@ -47,6 +48,7 @@ class StagingTests(TestCase):
         self.users = ["apple:" + str(uuid4()) for _ in range(2)]
         self.url = "https://www.instagram.com/reel/StageTrial/"
         self.payload = b"private source fixture"
+        self.seconds = 17
         self.fetches = []
         self.enterContext(patch.dict(os.environ, {"REELDUB_OUTPUT_PROFILE": "studio", "REELDUB_CREATOR_MINUTES": "0"}))
         fixture = self
@@ -62,13 +64,13 @@ class StagingTests(TestCase):
                     self.send_response(200)
                     self.send_header("Content-Type", "application/json")
                     self.end_headers()
-                    self.wfile.write(b'{"seconds":17}')
+                    self.wfile.write(json.dumps({"seconds": fixture.seconds}).encode())
                     return
                 fixture.fetches.append(json.loads(data))
                 time.sleep(0.12)  # Leave the cold preparation in progress for a competing process.
                 self.send_response(200)
                 self.send_header("Content-Length", str(len(fixture.payload)))
-                self.send_header("X-Duration", "17")
+                self.send_header("X-Duration", str(fixture.seconds))
                 self.send_header("X-Title", "Fixture%20title")
                 self.send_header("X-Author", "Fixture%20author")
                 self.end_headers()
@@ -188,6 +190,20 @@ class StagingTests(TestCase):
         with self.assertRaises(HTTPException):
             sources.get(self.users[1], str(stage))
 
+    def test_old_intake_cannot_stage_an_oversized_upload_or_reel(self):
+        self.seconds = 121
+        owner = self.users[0]
+        with self.assertRaises(HTTPException) as upload:
+            with sources.admission(owner) as stage:
+                sources.upload(stage, owner, BytesIO(self.payload), "long", "Long clip")
+        with self.assertRaises(HTTPException) as reel:
+            sources.reel(owner, self.url)
+        for result in (upload, reel):
+            self.assertEqual((result.exception.status_code, result.exception.detail), (422, TOO_LONG))
+        self.assertEqual(db().sources.count_documents({"owner": owner}), 0)
+        self.assertEqual(db().jobs.count_documents({"owner": owner}), 0)
+        self.assertFalse(self.bucket.exists(stage))
+
     def test_account_closing_during_staging_leaves_no_new_private_source(self):
         owner = self.users[0]
         job = self.admitted(owner)
@@ -201,6 +217,28 @@ class StagingTests(TestCase):
 
 
 class IntakeTransportTests(TestCase):
+    def test_inspects_track_and_container_durations_before_rounding(self):
+        path = Mock()
+        path.stat.return_value.st_size = 1000
+        for video, audio, container, expected in [
+            ("119.999", "120.000", "120.000", 120),
+            ("120.001", "119", "120.000", TOO_LONG),
+            ("119", "120.001", "120", TOO_LONG),
+            ("119", "120", "120.001", TOO_LONG),
+            ("N/A", "N/A", "N/A", "Choose a playable MP4 or MOV with audio, up to 4K."),
+        ]:
+            media = {"format": {"duration": container}, "streams": [
+                {"codec_type": "video", "codec_name": "h264", "width": 16, "height": 16, "duration": video},
+                {"codec_type": "audio", "duration": audio}]}
+            with self.subTest(video=video, audio=audio, container=container), patch(
+                    "server.source.subprocess.check_output", return_value=json.dumps(media)):
+                if expected == 120:
+                    self.assertEqual(intake.probe(path), expected)
+                else:
+                    with self.assertRaises(HTTPException) as rejected:
+                        intake.probe(path)
+                    self.assertEqual((rejected.exception.status_code, rejected.exception.detail), (422, expected))
+
     def test_intake_always_releases_its_permit_on_disk_failure(self):
         slot = BoundedSemaphore(1)
         body = intake.Reel(url="https://www.instagram.com/reel/StageTrial/")

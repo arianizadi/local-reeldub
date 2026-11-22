@@ -424,6 +424,7 @@ def router(owner):
                     "moderated_at": 1,
                     "moderation_reason": 1,
                     "moderation_history": 1,
+                    "video_suggestion": 1,
                     "last_sign_in": 1,
                     "created": 1,
                 },
