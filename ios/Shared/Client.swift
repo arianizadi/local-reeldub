@@ -85,6 +85,32 @@ struct Job: Codable, Identifiable, Hashable {
     let id, url, state, stage, created: String
     let started, finished, error: String?
     let ahead: Int?
+    var recovery_count: Int? = nil
+    var recovery_switched_server: Bool? = nil
+    var recoveryCue: String? {
+        if state == "queued", stage.caseInsensitiveCompare("Waiting for a render server") == .orderedSame {
+            return "Waiting for a render server"
+        }
+        guard (recovery_count ?? 0) > 0 else {
+            return state == "queued" && stage.caseInsensitiveCompare("Recovering render") == .orderedSame ? "Recovering render" : nil
+        }
+        switch state {
+        case "queued": return "Recovering render"
+        case "running": return recovery_switched_server == true ? "Continuing on another server" : "Rendering again"
+        default: return nil
+        }
+    }
+    var recoveryNotice: String? {
+        if state == "queued", (recovery_count ?? 0) > 0 {
+            let priority = ahead == 0 ? "Your dub is at the front of the recovery queue." : "Your dub has priority over new requests."
+            return "Sorry, your render was interrupted. " + priority + " We’ll retry when a render server is available."
+        }
+        if state == "running", (recovery_count ?? 0) > 0 {
+            return recovery_switched_server == true ? "Your dub is continuing on another server after an interruption." : "Your dub is rendering again after an interruption."
+        }
+        if state == "done", (recovery_count ?? 0) > 0 { return "Your dub finished after recovering from an interruption." }
+        return nil
+    }
     var progress: Double? = nil
     var estimated_finish: String? = nil
     func remaining(at date: Date) -> String {
@@ -133,7 +159,11 @@ struct Job: Codable, Identifiable, Hashable {
         let end = Self.date(finished)
         let elapsed = max(0, Int((end ?? now).timeIntervalSince(start ?? created)))
         let time = Self.duration(elapsed)
-        if state == "queued" { return (lane == "premium" ? "Priority · " : "") + "\(ahead ?? 0) ahead · \(time) waiting" }
+        if state == "queued" {
+            let priority = (recovery_count ?? 0) > 0 ? "Recovery priority · " : (lane == "premium" ? "Priority · " : "")
+            let position = ahead.map { "\($0) ahead · " } ?? ""
+            return priority + position + time + " waiting"
+        }
         if state == "running" { return "\(stage) · \(time) elapsed" }
         return "\(time) processing · \(Self.duration(max(0, Int((start ?? created).timeIntervalSince(created))))) queued"
     }
@@ -142,6 +172,19 @@ struct Job: Codable, Identifiable, Hashable {
     }
 }
 struct Account: Codable {
+    var dailyRemaining: String { limit.map { String(max(0, $0 - used)) } ?? "Unlimited" }
+    static func minuteBalance(_ seconds: Int?) -> String {
+        let seconds = max(0, seconds ?? 0)
+        if seconds % 60 == 0 { return "\(seconds / 60) min" }
+        return Duration.seconds(seconds).formatted(.units(allowed: [.minutes, .seconds], width: .abbreviated))
+    }
+    static var dailyResetNotice: String {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let reset = calendar.startOfDay(for: Date()).addingTimeInterval(86_400)
+        return "Daily dubs reset at " + reset.formatted(date: .omitted, time: .shortened) + " local time."
+    }
+
     let tier: String
     let used: Int
     let limit: Int?
@@ -257,5 +300,19 @@ struct API {
         #endif
         try FileManager.default.moveItem(at: tmp, to: path)
         return path
+    }
+}
+
+enum RDLink {
+    /// Accepts a bare Reel URL or text containing one (e.g. a share caption).
+    static func reel(in text: String) -> String? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if Job.isReel(trimmed) { return trimmed }
+        guard let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue) else { return nil }
+        let range = NSRange(trimmed.startIndex..., in: trimmed)
+        for match in detector.matches(in: trimmed, range: range) {
+            if let url = match.url?.absoluteString, Job.isReel(url) { return url }
+        }
+        return nil
     }
 }

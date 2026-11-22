@@ -2,6 +2,30 @@ import XCTest
 @testable import ReelDub
 
 final class TransportPolicyTests: XCTestCase {
+    func testRecoveryMessagesDistinguishWaitingFromAConfirmedHandoff() throws {
+        let row: [String: Any] = ["id": "demo", "url": "", "stage": "Recovering render", "state": "queued", "created": "now", "reported": false]
+        func job(_ added: [String: Any]) throws -> Job {
+            try JSONDecoder().decode(Job.self, from: JSONSerialization.data(withJSONObject: row.merging(added) { _, new in new }))
+        }
+        XCTAssertNil(try job(["stage": "Queued"]).recoveryNotice)
+        XCTAssertEqual(try job(["stage": "Waiting for a render server"]).recoveryCue, "Waiting for a render server")
+        XCTAssertTrue(try XCTUnwrap(job(["recovery_count": 1, "ahead": 0]).recoveryNotice).contains("front"))
+        XCTAssertFalse(try XCTUnwrap(job(["recovery_count": 1, "ahead": 2]).recoveryNotice).contains("front"))
+        XCTAssertFalse(try XCTUnwrap(job(["state": "running", "recovery_count": 1]).recoveryNotice).contains("another server"))
+        XCTAssertTrue(try XCTUnwrap(job(["state": "running", "recovery_count": 1, "recovery_switched_server": true]).recoveryNotice).contains("another server"))
+        let created = "2026-11-21T00:00:00Z"
+        let waiting = try job(["created": created, "recovery_count": 1]).timing(at: XCTUnwrap(Job.date(created)))
+        XCTAssertEqual(waiting, "Recovery priority · 0s waiting")
+    }
+
+    func testCaptionsFromPasteAndShareUseTheSameInstagramValidation() {
+        XCTAssertEqual(RDLink.reel(in: "A clip: https://m.instagram.com/reel/ABCDE/"), "https://m.instagram.com/reel/ABCDE/")
+        XCTAssertNotNil(RDLink.reel(in: "Watch HTTPS://WWW.INSTAGRAM.COM/reels/ABcd1/ today"))
+        XCTAssertEqual(RDLink.reel(in: "https://example.com/ then https://www.instagram.com/reel/abc12/"), "https://www.instagram.com/reel/abc12/")
+        XCTAssertNil(RDLink.reel(in: "https://instagram.com.example.invalid/reel/abc12/"))
+        XCTAssertNil(RDLink.reel(in: "https://instagram.com/p/abc12/"))
+    }
+
     func testStoredConnectionsAreValidatedBeforeAttachingTheSessionToken() throws {
         for origin in ["http://reeldub.arianizadi.com", "http://my-server.local", "http://192.168.1.2",
                        "https://user@example.org", "https://example.org/other"] {

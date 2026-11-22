@@ -7,6 +7,7 @@ import UIKit
 @MainActor
 struct Home: View {
     let studio: Studio
+    @Environment(\.dynamicTypeSize) private var typeSize
     @Environment(\.scenePhase) private var scenePhase
     @State private var path: [Job] = []
     @State private var sheet: LibrarySheet?
@@ -27,7 +28,7 @@ struct Home: View {
     }
 
     private let canvas = Color(red: 0.064, green: 0.074, blue: 0.070)
-    private let leaf = Color(red: 0.75, green: 0.87, blue: 0.64)
+    private let leaf = Palette.leaf
     private var visible: [Job] {
         let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
         return studio.jobs.filter { job in
@@ -46,9 +47,11 @@ struct Home: View {
                         Button("Cancel") { searching = false; query = "" }
                     }.padding(.horizontal, 18).padding(.bottom, 12)
                 }
-                Picker("Show dubs", selection: $filter) {
-                    ForEach(RDShelfFilter.allCases) { Text($0.title).tag($0) }
-                }.pickerStyle(.segmented).padding(.horizontal, 18).padding(.bottom, 12)
+                if typeSize.isAccessibilitySize {
+                    filterPicker.pickerStyle(.menu).padding(.horizontal, 18)
+                } else {
+                    filterPicker.pickerStyle(.segmented).padding(.horizontal, 18).padding(.bottom, 12)
+                }
                 Divider()
                 transfers
                 if selecting {
@@ -75,14 +78,25 @@ struct Home: View {
                 switch item {
                 case .account: SettingsView(studio: studio).presentationDragIndicator(.visible)
                 case .composer:
-                    NavigationStack {
-                        VStack {
+                    VStack(alignment: .leading, spacing: 0) {
+                        HStack(alignment: .center, spacing: 12) {
+                            Text("New dub").font(.title2.bold())
+                                .fixedSize(horizontal: false, vertical: true)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .accessibilityAddTraits(.isHeader)
+                            Button { sheet = nil } label: {
+                                Image(systemName: "xmark").font(.system(size: 18, weight: .semibold))
+                                    .frame(width: 48, height: 48).background(Color(.secondarySystemFill), in: Circle())
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain).foregroundStyle(.primary).accessibilityLabel("Close")
+                        }.padding(.horizontal, 18).padding(.top, 18).padding(.bottom, 6)
+                        ScrollView {
                             RDComposer(studio: studio) { query = ""; filter = .all; sheet = nil }
-                            Spacer(minLength: 0)
                         }
-                        .navigationTitle("Translate a Reel").navigationBarTitleDisplayMode(.inline)
-                        .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { sheet = nil } } }
-                    }.presentationDetents([.height(190), .medium]).presentationDragIndicator(.visible)
+                    }
+                    .presentationDetents(typeSize.isAccessibilitySize ? [.large] : [.medium, .large])
+                    .presentationDragIndicator(.visible)
                 }
             }
         }
@@ -140,29 +154,44 @@ struct Home: View {
         }
     }
 
+    private var filterPicker: some View {
+        Picker("Show dubs", selection: $filter) {
+            ForEach(RDShelfFilter.allCases) { Text($0.title).tag($0) }
+        }
+    }
+
     private var header: some View {
-        HStack(spacing: 10) {
-            Text("Dubs").font(.largeTitle.bold()).tracking(-1.5).accessibilityAddTraits(.isHeader)
-            Spacer()
-            if selecting {
-                Button("Done") { selecting = false; selected = [] }.frame(minHeight: 44)
-            } else {
-                if !eligible.isEmpty {
-                    Button("Select") { selecting = true }.frame(minHeight: 44).accessibilityIdentifier("select-dubs")
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Dubs").font(.largeTitle.bold()).tracking(-1.5).accessibilityAddTraits(.isHeader)
+                Spacer()
+                if selecting {
+                    Button("Done") { selecting = false; selected = [] }.frame(minHeight: 44)
+                } else {
+                    Menu {
+                        if !eligible.isEmpty {
+                            Button("Select dubs", systemImage: "checkmark.circle") { selecting = true }
+                                .accessibilityIdentifier("select-dubs")
+                        }
+                        Button("Search library", systemImage: "magnifyingglass") { searching = true }
+                        Button("Account", systemImage: "person.crop.circle") { sheet = .account }.accessibilityIdentifier("account")
+                    } label: {
+                        Image(systemName: "ellipsis.circle").font(.title3).frame(width: 44, height: 44)
+                    }.accessibilityLabel("Library options").accessibilityIdentifier("library-options")
+                    if typeSize <= .xLarge { addReel }
                 }
-                Menu {
-                    Button("Search library", systemImage: "magnifyingglass") { searching = true }
-                    Button("Account", systemImage: "person.crop.circle") { sheet = .account }.accessibilityIdentifier("account")
-                } label: {
-                    Image(systemName: "ellipsis.circle").font(.title3).frame(width: 44, height: 44)
-                }.accessibilityLabel("Library options").accessibilityIdentifier("library-options")
-                Button { sheet = .composer } label: {
-                    Label("Add Reel", systemImage: "plus").font(.subheadline.weight(.semibold))
-                        .padding(.horizontal, 13).padding(.vertical, 9)
-                        .background(leaf, in: Capsule()).foregroundStyle(.black).frame(minHeight: 44)
-                }.accessibilityIdentifier("add-reel")
             }
-        }.padding(.horizontal, 18).padding(.bottom, 12).padding(.top, 4)
+            if !selecting && typeSize > .xLarge { addReel }
+        }.padding(.horizontal, 18).padding(.bottom, 10).padding(.top, 4)
+    }
+
+    private var addReel: some View {
+        Button { sheet = .composer } label: {
+            Label("Add Reel", systemImage: "plus").font(.headline)
+                .padding(.horizontal, 14).padding(.vertical, 7)
+                .foregroundStyle(.black).background(leaf, in: Capsule())
+                .frame(minHeight: 44)
+        }.accessibilityIdentifier("add-reel")
     }
 
     private var transfers: some View {
@@ -239,10 +268,8 @@ struct Home: View {
                     .listRowBackground(canvas).listRowSeparatorTint(.white.opacity(0.12))
                 }
             } header: {
-                HStack(spacing: 6) {
-                    Text(title).font(.headline)
-                    Text(jobs.count, format: .number).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                }.foregroundStyle(.primary).textCase(nil).accessibilityElement(children: .combine)
+                Text("\(title) (\(jobs.count))").font(.headline).textCase(nil)
+                    .fixedSize(horizontal: false, vertical: true).accessibilityAddTraits(.isHeader)
             }
         }
     }
@@ -286,28 +313,38 @@ struct Home: View {
 }
 
 private struct TransferRow: View {
+    @Environment(\.dynamicTypeSize) private var typeSize
     let job: Job
     let api: API?
     let storage: String?
-    private let leaf = Color(red: 0.75, green: 0.87, blue: 0.64)
+    private let leaf = Palette.leaf
     var body: some View {
         HStack(spacing: 13) {
-            ZStack {
-                if job.has_poster == true {
-                    Poster(job: job, api: api)
-                } else {
-                    Rectangle().fill(Color(white: 0.14))
-                    Image(systemName: job.rdPhase.isActive ? "film" : "play.rectangle")
-                        .foregroundStyle(.secondary)
-                }
-            }.frame(width: 50, height: 64).clipShape(RoundedRectangle(cornerRadius: 8))
+            if !typeSize.isAccessibilitySize {
+                ZStack {
+                    if job.has_poster == true {
+                        Poster(job: job, api: api)
+                    } else {
+                        Rectangle().fill(Color(white: 0.14))
+                        if job.rdPhase == .failed {
+                            Image(systemName: "exclamationmark.triangle").foregroundStyle(.orange)
+                        } else {
+                            Image(systemName: job.rdPhase.isActive ? "film" : "play.rectangle")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }.frame(width: 50, height: 64).clipShape(RoundedRectangle(cornerRadius: 8))
+            }
             VStack(alignment: .leading, spacing: 4) {
-                Text(job.displayTitle).font(.subheadline.weight(.semibold)).lineLimit(2)
+                Text(job.displayTitle).font(.subheadline.weight(.semibold)).lineLimit(typeSize.isAccessibilitySize ? nil : 2)
                 if let mode = job.lab_mode {
                     Text("Lab · " + mode.capitalized + " · " + (job.lab_runtime ?? "standard")).font(.caption2).foregroundStyle(.secondary)
                 }
                 switch job.rdPhase {
                 case .running, .queued:
+                    if let cue = job.recoveryCue {
+                        Label(cue, systemImage: "arrow.clockwise").font(.caption.weight(.semibold)).foregroundStyle(.orange)
+                    }
                     TimelineView(.periodic(from: .now, by: 1)) { context in
                         Text(job.timing(at: context.date)).font(.caption.monospacedDigit()).foregroundStyle(leaf)
                     }
@@ -327,7 +364,8 @@ private struct TransferRow: View {
                     if let storage { Text(storage).font(.caption2).foregroundStyle(leaf) }
                     Text(job.timing(at: .now)).font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
                 case .failed:
-                    Text(job.error ?? "Open for details or retry.").font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                    Text(job.error ?? "Open for details or retry.").font(.caption).foregroundStyle(.orange)
+                        .lineLimit(typeSize.isAccessibilitySize ? nil : 2)
                 }
             }.frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -344,9 +382,8 @@ struct RDComposer: View {
 
     @State private var project: ProjectInput?
     @State private var showBalance = false
-    @State private var importing = false
-    @State private var photo: PhotosPickerItem?
     @State private var tempImport: URL?
+    @Environment(\.dynamicTypeSize) private var typeSize
     @State private var link = ""
     @State private var preferredLanguage = OutputLanguage.read()
     private var languages: [String] { studio.account?.output_languages ?? studio.connection?.outputLanguages ?? ["en"] }
@@ -388,15 +425,14 @@ struct RDComposer: View {
             if showBalance, studio.connection?.isHosted == true {
                 BalanceOptions(live: studio.account?.purchase_preflight == true, plans: AnyView(CloudPlanSheet(studio: studio)))
             }
-            HStack(spacing: 10) {
+            field
+            let layout = typeSize.isAccessibilitySize ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8)) : AnyLayout(HStackLayout(spacing: 12))
+            layout {
                 if studio.account?.creator_minutes == true {
-                    Menu {
-                        PhotosPicker(selection:$photo, matching:.videos) { Label("Photos",systemImage:"photo.on.rectangle") }
-                        Button { importing=true } label: { Label("Files",systemImage:"folder") }
-                    } label: { Image(systemName:"plus.circle").font(.title2).frame(minWidth:40,minHeight:44) }
-                    .accessibilityLabel("Import video")
+                    VideoImportButton(receive: openImport, failed: reject)
+                        .buttonStyle(.bordered).tint(.primary)
                 }
-                field
+                if !typeSize.isAccessibilitySize { Spacer(minLength: 0) }
                 trailing
             }
         }
@@ -404,7 +440,7 @@ struct RDComposer: View {
         .padding(.vertical, 10)
         .frame(maxWidth: 900)
         .frame(maxWidth: .infinity)
-        .background(.bar)
+        .background(Color(.systemBackground))
         .overlay(alignment: .top) { Divider() }
         .animation(reduceMotion ? nil : .snappy(duration: 0.25), value: problem)
         .animation(reduceMotion ? nil : .snappy(duration: 0.25), value: notice)
@@ -415,22 +451,6 @@ struct RDComposer: View {
             problem = nil
             showBalance = false
             if !value.isEmpty { notice = nil }
-        }
-        .fileImporter(isPresented:$importing, allowedContentTypes:[.mpeg4Movie,.quickTimeMovie]) { result in
-            do {
-                let url=try result.get()
-                let access=url.startAccessingSecurityScopedResource()
-                defer { if access { url.stopAccessingSecurityScopedResource() } }
-                openImport(try ImportedMovie.copy(url))
-            } catch { reject(error.localizedDescription) }
-        }
-        .task(id:photo) {
-            guard let photo else { return }
-            defer { self.photo=nil }
-            do {
-                if let movie=try await photo.loadTransferable(type:ImportedMovie.self) { openImport(movie) }
-                else { reject("This video could not be imported.") }
-            } catch { if !Task.isCancelled { reject(error.localizedDescription) } }
         }
         .sheet(item:$project,onDismiss:{
             if let tempImport { try? FileManager.default.removeItem(at:tempImport); self.tempImport=nil }
@@ -455,7 +475,7 @@ struct RDComposer: View {
                 .font(.body.weight(.semibold))
                 .foregroundStyle(.secondary)
                 .accessibilityHidden(true)
-            TextField("Paste an Instagram Reel link", text: $link)
+            TextField("Reel link", text: $link)
                 .font(.body)
                 .keyboardType(.URL)
                 .textContentType(.URL)
@@ -505,11 +525,11 @@ struct RDComposer: View {
                 ZStack {
                     Circle().fill(RD.accent)
                     if studio.sending {
-                        ProgressView().tint(.white)
+                        ProgressView().tint(.black)
                     } else {
                         Image(systemName: "arrow.up")
                             .font(.body.weight(.bold))
-                            .foregroundStyle(.white)
+                            .foregroundStyle(.black)
                     }
                 }
                 .frame(width: 50, height: 50)
@@ -574,21 +594,6 @@ struct RDComposer: View {
     }
 }
 
-@MainActor
-enum RDLink {
-    /// Accepts a bare Reel URL or text containing one (e.g. a share caption).
-    static func reel(in text: String) -> String? {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if Job.isReel(trimmed) { return trimmed }
-        guard let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue) else { return nil }
-        let range = NSRange(trimmed.startIndex..., in: trimmed)
-        for match in detector.matches(in: trimmed, range: range) {
-            if let url = match.url?.absoluteString, Job.isReel(url) { return url }
-        }
-        return nil
-    }
-}
-
 struct ProgressRow: View {
     let job: Job
 
@@ -646,6 +651,7 @@ struct ProgressRow: View {
     }
 
     private func headline(_ phase: RDPhase) -> String {
+        if let cue = job.recoveryCue { return cue }
         switch phase {
         case .queued:
             guard let ahead = job.ahead else { return "Queued" }
@@ -911,25 +917,19 @@ struct RDLoading: View {
 struct RDNotice: View {
     let message: String
     let retry: () -> Void
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            Image(systemName: "exclamationmark.icloud.fill")
-                .font(.title3)
-                .foregroundStyle(.orange)
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 3) {
-                Text("Couldn’t refresh")
+        let layout = typeSize.isAccessibilitySize ? AnyLayout(VStackLayout(alignment: .leading, spacing: 12)) : AnyLayout(HStackLayout(alignment: .top, spacing: 12))
+        layout {
+            VStack(alignment: .leading, spacing: 4) {
+                Label("Couldn’t refresh", systemImage: "exclamationmark.icloud")
                     .font(.subheadline.weight(.semibold))
-                Text(message)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(4)
+                Text(message).font(.footnote).foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityElement(children: .combine)
-            Button("Retry", action: retry)
-                .buttonStyle(.bordered)
+            Button("Retry", action: retry).buttonStyle(.bordered)
                 .font(.subheadline.weight(.semibold))
         }
         .padding(14)
@@ -1092,12 +1092,7 @@ extension Job {
 // MARK: - Theme & utilities
 
 enum RD {
-    /// Warm vermilion; deeper in light mode for text contrast, brighter in dark mode.
-    static let accent = Color(uiColor: UIColor { traits in
-        traits.userInterfaceStyle == .dark
-            ? UIColor(red: 1.00, green: 0.45, blue: 0.35, alpha: 1)
-            : UIColor(red: 0.80, green: 0.22, blue: 0.13, alpha: 1)
-    })
+    static let accent = Palette.action
 
     static let palettes: [[Color]] = [
         [Color(red: 0.17, green: 0.11, blue: 0.33), Color(red: 0.89, green: 0.33, blue: 0.48)],

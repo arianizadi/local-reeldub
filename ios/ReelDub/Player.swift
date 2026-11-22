@@ -7,6 +7,10 @@ struct JobView: View {
     let requestDeletion: (Job) -> Void
     @State private var player: AVPlayer?
     @State private var didStart = false
+    @State private var preparingPlayback = false
+    @State private var playbackRequest = UUID()
+    @State private var temporaryPlayback: URL?
+    @State private var audioActive = false
     @State private var playerObservation: NSKeyValueObservation?
     @AppStorage("ReelDub.EnglishSubtitles") private var wantsSubtitles = UIAccessibility.isClosedCaptioningEnabled
     @State private var subtitles: DubSubtitles?
@@ -17,9 +21,11 @@ struct JobView: View {
     @State private var project: ProjectInput?
     @State private var showBalance = false
     @State private var retrying = false
+    @State private var importedFile: URL?
     @State private var confirmSkip = false
     private var job: Job { studio.jobs.first { $0.id == initial.id } ?? initial }
 
+    private var originalURL: URL? { Job.isReel(job.url) ? URL(string: job.url) : nil }
     private var expired: Bool { studio.isExpired(job) }
 
     var body: some View {
@@ -29,6 +35,7 @@ struct JobView: View {
                     Color.black.aspectRatio(0.83, contentMode: .fit)
                         .overlay {
                             if let player { VideoPlayer(player: player) }
+                            else if preparingPlayback { ProgressView("Loading dub…").foregroundStyle(.white) }
                             else {
                                 Poster(job: job, api: studio.api)
                                 Button { Task { await play() } } label: {
@@ -50,14 +57,24 @@ struct JobView: View {
                     Button { Task { await share() } } label: {
                         Label(preparingShare ? "Preparing video…" : "Share \(job.targetName) video", systemImage: "square.and.arrow.up")
                             .font(.headline).frame(maxWidth: .infinity, minHeight: 50)
-                            .foregroundStyle(Palette.ink).background(Palette.ember, in: RoundedRectangle(cornerRadius: 13))
+                            .foregroundStyle(Palette.ink).background(Palette.leaf, in: RoundedRectangle(cornerRadius: 13))
                     }.disabled(preparingShare)
                 }
                 Text(job.displayTitle).font(.custom("InstrumentSerif-Italic", size: 35, relativeTo: .title))
                 if let author = job.author, !author.isEmpty { Text(author).font(.subheadline).foregroundStyle(.secondary) }
+                if let recovery = job.recoveryNotice {
+                    Label(recovery, systemImage: "arrow.clockwise")
+                        .font(.body).padding(14).frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color.orange.opacity(0.13), in: RoundedRectangle(cornerRadius: 12))
+                        .accessibilityIdentifier("render-recovery")
+                }
                 if job.state == "running" || job.state == "queued" { ProgressRow(job: job) }
                 else {
                     Label(job.state == "done" ? (studio.storageLabel(job) ?? "\(job.targetName) dub ready") : "Couldn’t finish this dub", systemImage: job.state == "done" ? "checkmark.circle" : "exclamationmark.circle")
+                    if let error = job.error {
+                        Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
+                        if let originalURL { Link("Check original Reel", destination: originalURL) }
+                    }
                     Text(job.timing(at: Date())).font(.subheadline).foregroundStyle(.secondary)
                     if studio.canDownloadAgain(job.id), job.available_on_server != false {
                         Button("Download to this device", systemImage: "arrow.down.circle") {
@@ -70,43 +87,33 @@ struct JobView: View {
                     }
                     if let seconds = job.media_seconds { LabeledContent("Video length", value: Job.duration(Int(seconds.rounded()))) }
                 }
-                if let quality = job.lab_mode ?? job.render_quality {
+                if job.state != "failed", let quality = job.lab_mode ?? job.render_quality {
                     LabeledContent("Render quality", value: quality.capitalized)
                 }
                 if job.state == "queued", let lane = job.lane {
-                    LabeledContent("Queue", value: lane == "premium" ? "Priority" : "Standard")
-                    if lane == "free", (job.ahead ?? 0) > 0, (studio.account?.queue_skips ?? 0) > 0 {
+                    let recovering = (job.recovery_count ?? 0) > 0 || job.stage == "Recovering render"
+                    DubValueRow("Queue", value: recovering ? "Recovery priority" : lane == "premium" ? "Priority" : "Standard")
+                    if !recovering, lane == "free", (job.ahead ?? 0) > 0, (studio.account?.queue_skips ?? 0) > 0 {
                         Button("Use 1 queue pass") { confirmSkip = true }
                     }
                 }
-                if let error = job.error { Text(error).foregroundStyle(.red) }
                 if job.state == "failed" || expired {
-                    Button(expired ? "Translate again" : "Try this Reel again") { Task {
-                        if studio.account?.creator_minutes == true {
-                            if Job.isReel(job.url) { project = .reel(job.url) }
-                            else if let source=job.source_id { project = .source(source) }
-                            else { problem="Import this video again from Photos or Files." }
-                            return
-                        }
-                        retrying = true
-                        defer { retrying = false }
-                        do { try await studio.submit(job.url, target: job.target); problem = "A new attempt is in your Dubs." }
-                        catch let error as ServiceError where error.status == 428 {
-                            if Job.isReel(job.url) { project = .reel(job.url) }
-                            else if let id = job.source_id { project = .source(id) }
-                            else { problem = "Import this video again from Photos or Files." }
-                        } catch {
-                            showBalance = (error as? ServiceError)?.needsBalance == true
-                            problem = error.localizedDescription
-                        }
-                    } }.disabled(retrying)
+                    if !Job.isReel(job.url) && job.source_id == nil {
+                        VideoImportButton(receive: { movie in
+                            importedFile = movie.file
+                            project = .file(movie.file, movie.title)
+                        }, failed: { problem = $0 }, title: "Choose video again")
+                    } else {
+                        Button(expired ? "Translate again" : "Try again", systemImage: "arrow.clockwise") { Task { await retry() } }
+                            .buttonStyle(.bordered).disabled(retrying)
+                    }
                 }
                 if showBalance, studio.connection?.isHosted == true {
                     BalanceOptions(live: studio.account?.purchase_preflight == true, plans: AnyView(CloudPlanSheet(studio: studio)))
                 }
                 if let problem { Text(problem).font(.footnote).foregroundStyle(.secondary) }
                 Divider()
-                if Job.isReel(job.url), let url = URL(string: job.url) { Link(destination: url) { Label("Open original Reel", systemImage: "arrow.up.right.square") } }
+                if job.error == nil, let originalURL { Link(destination: originalURL) { Label("Open original Reel", systemImage: "arrow.up.right.square") } }
                 Button { reporting = true } label: { Label(job.reported ? "Update issue report" : "Report an issue", systemImage: "flag") }
                 if !job.rdPhase.isActive {
                     Button(role: .destructive) { requestDeletion(job) } label: {
@@ -115,7 +122,9 @@ struct JobView: View {
                 }
             }.padding(20).frame(maxWidth: 650).frame(maxWidth: .infinity)
         }.background(Palette.canvas).navigationTitle("Reel details").navigationBarTitleDisplayMode(.inline)
-            .sheet(item:$project) { input in
+            .sheet(item: $project, onDismiss: {
+                if let importedFile { try? FileManager.default.removeItem(at: importedFile); self.importedFile = nil }
+            }) { input in
                 if let api=studio.api { QuoteSheet(api:api,input:input,languages:studio.account?.output_languages ?? ["en"],target:job.target,trim:job.trimmed ?? false,liveOffers:studio.account?.purchase_preflight == true,plans:AnyView(CloudPlanSheet(studio:studio))) { _ in Task { await studio.refresh() } } }
             }
             .confirmationDialog("Join the end of the priority line?", isPresented: $confirmSkip, titleVisibility: .visible) {
@@ -130,7 +139,7 @@ struct JobView: View {
             .sheet(isPresented: $reporting) { ReportView(studio: studio, job: job) }
             .sheet(item: $sharing) { file in ExportSheet(url: file.url) }
             .task(id: job.state) {
-                if job.state == "done", !expired, !didStart { await play() }
+                if job.state == "done", !expired, !didStart, !UIAccessibility.isVoiceOverRunning { await play() }
             }
             .task(id: player) {
                 subtitles = nil
@@ -146,29 +155,95 @@ struct JobView: View {
                 // The native fullscreen player also offers a subtitle menu.
                 wantsSubtitles = subtitles.isEnabled
             }
-            .onDisappear { player?.pause() }
+            .onChange(of: job.recoveryCue) { _, cue in
+                if let cue { AccessibilityNotification.Announcement(cue).post() }
+            }
+            .onDisappear { stopPlayback() }
     }
+    private func retry() async {
+        guard !retrying else { return }
+        if studio.account?.creator_minutes == true || !Job.isReel(job.url) {
+            openRetryQuote()
+            return
+        }
+        retrying = true
+        defer { retrying = false }
+        do {
+            try await studio.submit(job.url, target: job.target)
+            problem = "A new attempt is in your Dubs."
+        } catch let error as ServiceError where error.status == 428 {
+            openRetryQuote()
+        } catch {
+            showBalance = (error as? ServiceError)?.needsBalance == true
+            problem = error.localizedDescription
+        }
+    }
+    private func openRetryQuote() {
+        if Job.isReel(job.url) { project = .reel(job.url) }
+        else if let source = job.source_id { project = .source(source) }
+    }
+
     private func play() async {
-        guard let api = studio.api else { return }
+        guard !preparingPlayback, player == nil, let api = studio.api else { return }
+        let request = UUID()
+        playbackRequest = request
+        preparingPlayback = true
+        defer { if playbackRequest == request { preparingPlayback = false } }
         didStart = true
         problem = nil
         do {
             let url: URL
             if let local = studio.localMovie(job.id) { url = local }
-            else { url = try await api.playback(job.id) }
-            guard !Task.isCancelled else { return }
+            else {
+                url = try await api.playback(job.id)
+                if url.isFileURL {
+                    guard playbackRequest == request, !Task.isCancelled else {
+                        try? FileManager.default.removeItem(at: url)
+                        return
+                    }
+                    temporaryPlayback = url
+                }
+            }
+            guard playbackRequest == request, !Task.isCancelled else { return }
+            let audio = AVAudioSession.sharedInstance()
+            try audio.setCategory(.playback, mode: .moviePlayback)
+            try audio.setActive(true)
+            audioActive = true
             let item = AVPlayerItem(url: url)
             playerObservation = item.observe(\.status, options: [.new]) { item, _ in
                 guard item.status == .failed else { return }
-                Task { @MainActor in player = nil; problem = "Playback stopped. Tap Play to try again." }
+                Task { @MainActor in
+                    guard playbackRequest == request else { return }
+                    stopPlayback()
+                    problem = "Playback stopped. Tap Play to try again."
+                }
             }
             let next = AVPlayer(playerItem: item)
             player = next
             next.play()
         } catch {
+            guard playbackRequest == request else { return }
+            stopPlayback()
             if !Task.isCancelled { problem = error.localizedDescription }
         }
     }
+
+    private func stopPlayback() {
+        playbackRequest = UUID()
+        preparingPlayback = false
+        playerObservation = nil
+        player?.pause()
+        player = nil
+        if audioActive {
+            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+            audioActive = false
+        }
+        if let temporaryPlayback {
+            try? FileManager.default.removeItem(at: temporaryPlayback)
+            self.temporaryPlayback = nil
+        }
+    }
+
     private func share() async {
         preparingShare = true
         defer { preparingShare = false }

@@ -14,25 +14,22 @@ struct SharePanel: View {
     @State private var project: ProjectInput?
     private var languages: [String] { account?.output_languages ?? connection?.outputLanguages ?? ["en"] }
     private var target: String { OutputLanguage.selected(preferredLanguage, supported: languages) }
-    @State private var result: Job?
-    private var success: Bool { result != nil }
+    @State private var results: [Job] = []
+    private var success: Bool { !results.isEmpty }
     @State private var message: String?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private var validLink: String? { link.flatMap { Job.isReel($0) ? $0 : nil } }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 19) {
-            Capsule().fill(.secondary.opacity(0.4)).frame(width: 36, height: 5).frame(maxWidth: .infinity)
+        ScrollView {
+          VStack(alignment: .leading, spacing: 19) {
             HStack {
                 Label("ReelDub", systemImage: "waveform").font(.headline)
                 Spacer()
                 if !success { Button("Cancel", action: close).disabled(busy) }
             }
-            if let result {
-                Image(systemName: "checkmark.circle.fill").font(.largeTitle).foregroundStyle(.green)
-                Text(result.state == "done" ? "Your dub is ready" : "Reel queued").font(.title.bold())
-                Text(result.state == "done" ? "Open Dubs in ReelDub to watch or save it." : "Follow its progress in ReelDub. You can return to Instagram now.").foregroundStyle(.secondary)
-                Button("Done", action: close).buttonStyle(.borderedProminent)
+            if success {
+                ShareConfirmation(jobs: results, close: close, balanceAPI: connection.map { API(connection: $0) })
             } else if let validLink, let connection {
                 Text("Translate this Reel?").font(.system(.largeTitle, design: .serif, weight: .semibold))
                 Text(validLink).font(.subheadline).foregroundStyle(.secondary).lineLimit(2)
@@ -53,7 +50,7 @@ struct SharePanel: View {
                         message = nil
                         defer { busy = false }
                         do {
-                            result = try await API(connection: connection).submit(validLink, id: requestID, target: target)
+                            results = [try await API(connection: connection).submit(validLink, id: requestID, target: target)]
                         } catch is SessionError {
                             self.connection = nil
                             message = "Your session ended. Sign in again in ReelDub."
@@ -65,18 +62,19 @@ struct SharePanel: View {
                         }
                     }
                 } label: {
-                    Text(account == nil ? (message == nil ? "Checking account…" : "Account unavailable") : busy ? "Queuing…" : (creator ? "Review translation" : "Translate to " + OutputLanguage.name(target))).font(.headline).frame(maxWidth: .infinity, minHeight: 45)
+                    Text(account == nil ? (message == nil ? "Checking account…" : "Account unavailable") : busy ? "Queuing…" : (creator ? "Review translation" : "Translate to " + OutputLanguage.name(target))).font(.headline).foregroundStyle(Palette.onAction).frame(maxWidth: .infinity, minHeight: 45)
                 }.buttonStyle(.borderedProminent).disabled(busy || account == nil)
             } else {
                 Text(connection == nil ? "Sign in to ReelDub first" : "Share a Reel link").font(.title.bold())
-                Text(connection == nil ? "Open ReelDub and continue with Apple, then share this Reel again." : "Choose Share on an individual Instagram Reel.").foregroundStyle(.secondary)
+                Text(connection == nil ? "Open ReelDub to sign in or connect your own server, then share this Reel again." : "Choose Share on an individual Instagram Reel.").foregroundStyle(.secondary)
                 Button("Close", action: close)
             }
             if let message { Text(message).font(.footnote).foregroundStyle(.red) }
             Spacer(minLength: 0)
-        }.tint(Color(red: 0.73, green: 0.245, blue: 0.13)).padding(24)
+          }.padding(24)
+        }.tint(Palette.action)
             .sheet(item:$project) { input in
-                if let connection { QuoteSheet(api:API(connection:connection),input:input,languages:languages,target:target,liveOffers:account?.purchase_preflight == true) { jobs in result=jobs.first } }
+                if let connection { QuoteSheet(api:API(connection:connection),input:input,languages:languages,target:target,liveOffers:account?.purchase_preflight == true) { jobs in results=jobs } }
             }
             .onChange(of: target) { _, _ in requestID = UUID() }
             .task(id: profileAttempt) {
@@ -93,5 +91,56 @@ struct SharePanel: View {
                 }
             }
             .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: success)
+    }
+}
+
+struct ShareConfirmation: View {
+    let jobs: [Job]
+    let close: () -> Void
+    var balanceAPI: API? = nil
+    @State private var balance: Account?
+    @State private var loading = false
+    @State private var balanceIssue: String?
+    var body: some View {
+        Image(systemName: "checkmark.circle.fill").font(.largeTitle).foregroundStyle(.green).accessibilityHidden(true)
+        Text(jobs.count == 1 ? "Dub confirmed" : "\(jobs.count) dubs confirmed").font(.title.bold())
+        ForEach(jobs) { job in
+            DubValueRow(job.targetName, value: status(of: job))
+        }
+        Text("Open Dubs in ReelDub to watch or check progress.").foregroundStyle(.secondary)
+        if let balance {
+            DubValueRow("Daily dubs left", value: balance.dailyRemaining)
+            if balance.creator_minutes == true, balance.tier != "admin" {
+                DubValueRow("Monthly time", value: Account.minuteBalance(balance.monthly_seconds))
+                DubValueRow("Purchased time", value: Account.minuteBalance(balance.pack_seconds))
+            }
+        } else if let balanceAPI {
+            Button(loading ? "Checking balance…" : "Check remaining balance") {
+                Task {
+                    guard !loading else { return }
+                    loading = true
+                    defer { loading = false }
+                    do {
+                        let data = try await balanceAPI.data("v1/me")
+                        balance = try JSONDecoder().decode(Account.self, from: data)
+                        balanceIssue = nil
+                    } catch { balanceIssue = error.localizedDescription }
+                }
+            }.disabled(loading)
+            if let balanceIssue { Text(balanceIssue).font(.footnote).foregroundStyle(.secondary) }
+        }
+        Button(action: close) {
+            Text("Done").foregroundStyle(Palette.onAction).frame(maxWidth: .infinity, minHeight: 44)
+        }.buttonStyle(.borderedProminent)
+    }
+
+    private func status(of job: Job) -> String {
+        switch job.state {
+        case "done": return "Ready"
+        case "queued": return "Queued"
+        case "running": return "Processing"
+        case "failed": return "Failed"
+        default: return job.stage
+        }
     }
 }

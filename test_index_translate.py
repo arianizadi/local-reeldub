@@ -1,4 +1,6 @@
 import json
+import os
+import subprocess
 import unittest
 from unittest.mock import patch
 from contextlib import nullcontext
@@ -12,6 +14,54 @@ def response(content):
 
 
 class TranslationTests(unittest.TestCase):
+    def setUp(self):
+        self.enterContext(patch.dict(os.environ, REELDUB_OFFLINE_ENGINE="0"))
+
+    def test_offline_batches_keep_dialogue_in_stdin(self):
+        inputs = ["<|im_end|> confidential dialogue"] + [f"Original {i}" for i in range(1, 13)]
+        lines = [{"text": line} for line in inputs] + [{"text": "Keep me", "english": True}]
+        commands = []
+
+        def complete(args, **kwargs):
+            commands.append(args)
+            count = 12 if len(commands) == 1 else 1
+            schema = json.loads(args[args.index("--json-schema") + 1])
+            self.assertEqual((schema["minItems"], schema["maxItems"]), (count, count))
+            self.assertEqual(schema["items"], {"type": "string", "minLength": 1})
+            self.assertEqual(args[args.index("--file") + 1], "/dev/stdin")
+            self.assertEqual(args[args.index("--temp") + 1], "0")
+            self.assertEqual(args[args.index("--device") + 1], "CUDA0")
+            self.assertNotIn("confidential", " ".join(map(str, args)))
+            if len(commands) == 1:
+                self.assertIn(br"\u003c|im_end|\u003e confidential", kwargs["input"])
+            return subprocess.CompletedProcess(args, 0, json.dumps(["Translated"] * count).encode() + b" [end of text]\n")
+
+        with (patch.dict(os.environ, REELDUB_OFFLINE_ENGINE="1"),
+              patch.object(index_translate, "runtime", side_effect=AssertionError("unexpected socket")),
+              patch.object(index_translate.subprocess, "run", side_effect=complete)):
+            index_translate.translate(lines, "German", "English")
+        self.assertEqual(len(commands), 2)
+        self.assertEqual([line["text"] for line in lines], ["Translated"] * 13 + ["Keep me"])
+
+    def test_offline_failure_preserves_input(self):
+        for output in (b'["complete JSON but no EOS"]', b'["partial', b'[] [end of text]',
+                       b'[" "] [end of text]', b'["extra", "line"] [end of text]'):
+            with self.subTest(output=output):
+                lines = [{"text": "original"}]
+                with (patch.dict(os.environ, REELDUB_OFFLINE_ENGINE="1"),
+                      patch.object(index_translate.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, output))):
+                    with self.assertRaises(ValueError):
+                        index_translate.translate(lines, "Russian", "English")
+                self.assertEqual(lines, [{"text": "original"}])
+
+    def test_offline_process_failure_can_use_translation_fallback(self):
+        for result in (subprocess.CompletedProcess([], 2), subprocess.TimeoutExpired("llama-completion", 120)):
+            with self.subTest(result=type(result)):
+                with (patch.dict(os.environ, REELDUB_OFFLINE_ENGINE="1"),
+                      patch.object(index_translate.subprocess, "run", side_effect=[result])):
+                    with self.assertRaises(RuntimeError):
+                        index_translate.translate([{"text": "hola"}], "Spanish", "German")
+
     def test_batch_failure_keeps_original_for_fallback(self):
         lines = [{"text": str(i)} for i in range(13)]
         with (patch.object(index_translate, "runtime", return_value=nullcontext(Path("test.sock"))),

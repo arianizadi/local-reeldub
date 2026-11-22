@@ -8,7 +8,7 @@ struct ReelDubApp: App {
             Group {
                 if studio.connection == nil { Welcome(studio: studio) }
                 else { Home(studio: studio) }
-            }.tint(Palette.ember)
+            }.tint(Palette.action)
                 .task(id: studio.account?.store_token) { await studio.observePurchases() }
         }
     }
@@ -45,6 +45,8 @@ final class Studio {
     var connection: Connection?
     private var library: DeviceLibrary?
     private(set) var saved: [String: Job] = [:]
+    private var retainedJobs: [String: Job] = [:]
+    private var unrecordedMarkers = Set<String>()
     private(set) var transferring: String?
     private(set) var transferErrors: [String: String] = [:]
     private var transferRetries: [String: TransferRetry] = [:]
@@ -64,7 +66,9 @@ final class Studio {
     private func restoreLibrary() {
         library = connection.flatMap(DeviceLibrary.init)
         saved = library?.inventory() ?? [:]
-        jobs = saved.values.sorted { $0.activity > $1.activity }
+        retainedJobs = library?.retainedJobs() ?? [:]
+        unrecordedMarkers = library?.unrecordedDownloadMarkers() ?? []
+        mergeJobs([])
     }
     private func matches(_ api: API) -> Bool {
         connection?.base == api.connection.base && connection?.token == api.connection.token
@@ -81,8 +85,8 @@ final class Studio {
         if job.available_on_server == false { return "Server copy expired" }
         if library?.isManualDownload(job.id) == true { return "Removed from this device" }
         if case .stopped = transferRetries[job.id] { return "Download unavailable" }
-        if transferErrors[job.id] != nil { return "Download interrupted · will retry" }
         if transferring == job.id { return "Saving to this device…" }
+        if transferErrors[job.id] != nil { return "Download interrupted · will retry" }
         return nil
     }
 
@@ -169,18 +173,29 @@ final class Studio {
                 }
             }
             let remoteIDs = Set(remote.map(\.id))
-            let missing = saved.keys.filter { !remoteIDs.contains($0) }
-            // The feed is paged. Older offline copies survive unless the owner explicitly deleted them.
+            let missing = Array(Set(saved.keys).union(retainedJobs.keys).subtracting(remoteIDs))
+            // The feed contains at most 100 jobs. Only remove an older local item after the owner’s server confirms deletion.
             for start in stride(from: 0, to: missing.count, by: 100) {
                 let ids = Array(missing[start ..< min(start + 100, missing.count)])
-                let data = try await api.post("v1/library/deletions", ["ids": ids])
-                guard current() else { return }
-                for id in try JSONDecoder().decode([String].self, from: data) {
-                    try library?.remove(id)
-                    saved[id] = nil
-                    RDPosterStore.shared.remove(id, api: api)
+                do {
+                    let data = try await api.post("v1/library/deletions", ["ids": ids])
+                    guard current(), !Task.isCancelled else { return }
+                    for id in try JSONDecoder().decode([String].self, from: data) where ids.contains(id) {
+                        try library?.remove(id)
+                        saved[id] = nil
+                        retainedJobs[id] = nil
+                        RDPosterStore.shared.remove(id, api: api)
+                    }
+                } catch is SessionError {
+                    throw SessionError.expired
+                } catch let denial as ServiceError where denial.status == 403 {
+                    throw denial
+                } catch {
+                    // An older or temporarily unreachable cleanup endpoint can be retried on the next full refresh.
+                    break
                 }
             }
+            guard current(), !Task.isCancelled else { return }
             mergeJobs(remote)
             account = profile
             failure = nil
@@ -200,8 +215,15 @@ final class Studio {
         return true
     }
     private func mergeJobs(_ remote: [Job]) {
-        let ids = Set(remote.map(\.id))
-        jobs = (remote + saved.values.filter { !ids.contains($0.id) }).sorted { $0.activity > $1.activity }
+        if !unrecordedMarkers.isEmpty, !remote.isEmpty, let library {
+            for job in library.recoverReferences(from: remote, pending: &unrecordedMarkers) {
+                retainedJobs[job.id] = job
+            }
+        }
+        var latest = retainedJobs
+        latest.merge(saved) { _, saved in saved }
+        for job in remote { latest[job.id] = job }
+        jobs = latest.values.sorted { $0.activity == $1.activity ? $0.id > $1.id : $0.activity > $1.activity }
     }
 
     var nextTransferRetry: Date? {
@@ -247,7 +269,7 @@ final class Studio {
         transferTask?.cancel()
         transferTask = nil; transferring = nil
         deleting = []; transferErrors = [:]; transferRetries = [:]
-        saved = [:]; library = nil
+        saved = [:]; retainedJobs = [:]; unrecordedMarkers = []; library = nil
     }
 
     private func clearSession() {
@@ -279,6 +301,7 @@ final class Studio {
                     guard matches(api), !deleting.contains(job.id), !library.isManualDownload(job.id), jobs.contains(where: { $0.id == job.id }) else { return }
                     try library.save(temp, job: job)
                     saved[job.id] = job
+                    retainedJobs[job.id] = nil
                 }
                 let bytes = try library.movie(job.id).resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
                 _ = try await api.post("v1/jobs/" + job.id + "/received", ["bytes": bytes])
@@ -292,6 +315,14 @@ final class Studio {
                 welcomeMessage = "Your session ended. Sign in again to see your dubs."
             } catch {
                 guard !Task.isCancelled, matches(api) else { return }
+                if let error = error as? ServiceError, [404, 410].contains(error.status),
+                   saved[job.id] == nil, let index = jobs.firstIndex(where: { $0.id == job.id }) {
+                    jobs[index].available_on_server = false
+                    if retainedJobs[job.id] != nil {
+                        retainedJobs[job.id] = jobs[index]
+                        try? library.retain(jobs[index])
+                    }
+                }
                 transferErrors[job.id] = error.localizedDescription
                 let retry = TransferRetry.next(for: job, error: error, previous: transferRetries[job.id], at: Date())
                 transferRetries[job.id] = retry
@@ -301,8 +332,9 @@ final class Studio {
     }
 
     func removeDownload(_ id: String) throws {
-        guard let library, saved[id] != nil else { return }
-        try library.removeDownload(id)
+        guard let library, let job = saved[id] else { return }
+        try library.removeDownload(job)
+        retainedJobs[id] = job
         libraryRevision += 1
         if transferring == id {
             transferTask?.cancel()
@@ -313,16 +345,18 @@ final class Studio {
         transferErrors[id] = nil
         transferRetries[id] = nil
         if let api { RDPosterStore.shared.remove(id, api: api) }
+        startTransfer()
     }
 
     func canDownloadAgain(_ id: String) -> Bool {
-        guard saved[id] == nil else { return false }
+        guard saved[id] == nil, jobs.first(where: { $0.id == id })?.available_on_server != false else { return false }
         if case .stopped = transferRetries[id] { return true }
         return library?.isManualDownload(id) == true
     }
 
     func downloadAgain(_ id: String) throws {
         guard let library else { throw Problem("Open your Dubs library first.") }
+        guard canDownloadAgain(id) else { throw Problem("This dub is unavailable to download. Refresh your library to check again.") }
         try library.allowDownload(id)
         transferRetries[id] = nil
         startTransfer()
@@ -336,7 +370,7 @@ final class Studio {
         guard matches(api) else { throw Problem("Your connection changed.") }
         libraryRevision += 1
         try library?.remove(id)
-        saved[id] = nil; transferErrors[id] = nil; transferRetries[id] = nil
+        saved[id] = nil; retainedJobs[id] = nil; transferErrors[id] = nil; transferRetries[id] = nil
         RDPosterStore.shared.remove(id, api: api)
         jobs.removeAll { $0.id == id }
     }

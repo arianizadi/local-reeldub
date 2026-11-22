@@ -12,7 +12,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Response
 from pydantic import BaseModel, Field
-from pymongo.errors import DuplicateKeyError
+from pymongo.errors import DuplicateKeyError, PyMongoError
 
 from .db import db, media_db, now, uses_postgres
 from .source import reel_url
@@ -129,7 +129,7 @@ def gpu_snapshot():
             [
                 "nvidia-smi",
                 "-i",
-                "0",
+                os.getenv("REELDUB_DEVICE_ID", "0"),
                 "--query-gpu=" + ",".join(fields),
                 "--format=csv,noheader,nounits",
             ],
@@ -247,9 +247,20 @@ def metrics():
             row[0] += count
             row[1] += float(runtime)
             row[2] += float(duration)
+    fleet, nodes = [], []
+    if uses_postgres() and os.getenv("MONGO_URI"):
+        try:
+            rows = media_db().fleet_telemetry.find({"sampled": {"$gt": now() - timedelta(minutes=3)}}).sort("sampled", -1)
+            fleet = [{"node": row.pop("_id"), **row} for row in rows]
+            from .fleet_health import admin_nodes
+            nodes = admin_nodes()
+        except PyMongoError:
+            pass
     return {
         "states": dict(states),
-        "gpu": gpu_snapshot(),
+        "gpu": (fleet[0] if fleet else gpu_snapshot()),
+        "fleet": fleet,
+        "nodes": nodes,
         "accounts": accounts,
         "banned": banned,
         "signed_in_30d": signed_in,

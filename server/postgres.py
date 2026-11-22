@@ -13,6 +13,7 @@ from psycopg import sql
 from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
 from pymongo.errors import DuplicateKeyError
+from .db import QUEUE_ORDER
 
 TABLES = (
     "accounts",
@@ -470,6 +471,29 @@ class Postgres:
                 WHERE NOT EXISTS (SELECT 1 FROM account WHERE doc->'banned'='true'::jsonb)""",
                 (Jsonb(job["owner"]),Jsonb(encode(job)))).rowcount == 1
 
+    def claim_job(self, candidate, exhausted, failure, release, start, stamp):
+        # The terminal and retryable sets are disjoint. Lock each selected row
+        # before updating it so competing workers can immediately take other work.
+        statement = S("""
+            WITH exhausted AS (
+                SELECT id FROM reeldub.jobs WHERE {exhausted} FOR UPDATE SKIP LOCKED
+            ), failed AS (
+                UPDATE reeldub.jobs j SET doc = (j.doc - %s::text[]) || %s::jsonb
+                FROM exhausted e WHERE j.id = e.id
+            ), next_job AS (
+                SELECT id FROM reeldub.jobs WHERE {candidate}
+                {order} LIMIT 1 FOR UPDATE SKIP LOCKED
+            )
+            UPDATE reeldub.jobs j SET doc = j.doc || %s::jsonb || jsonb_build_object(
+                'started', coalesce(nullif(j.doc->'started', 'null'::jsonb), %s::jsonb),
+                'attempt', coalesce((j.doc->>'attempt')::int, 0) + 1)
+            FROM next_job n WHERE j.id = n.id RETURNING j.doc
+        """).format(exhausted=predicate(exhausted), candidate=predicate(candidate), order=ordering(QUEUE_ORDER))
+        with self.connection() as conn:
+            row = conn.execute(statement, (release, Jsonb(encode(failure)), Jsonb(encode(start)),
+                                           Jsonb(encode(stamp)))).fetchone()
+        return decode(row[0]) if row else None
+
     def admin_accounts(self, cutoff):
         with self.connection() as conn:
             return conn.execute("""
@@ -511,11 +535,11 @@ class Postgres:
                        WHERE doc->'owner'=%s AND doc->'deleted' IS DISTINCT FROM 'true'::jsonb {scope}
                        ORDER BY activity DESC, id DESC LIMIT 100
                    ), positions AS (
-                       SELECT id, rank() OVER (ORDER BY doc->'priority' DESC,
+                       SELECT id, rank() OVER (ORDER BY doc->'recovery_rank' DESC NULLS LAST, doc->'priority' DESC,
                               nullif(doc->'queue_seq','null'::jsonb) ASC NULLS FIRST,
                               CASE WHEN doc->>'queue_seq' IS NULL THEN doc->'created' END,
                               CASE WHEN doc->>'queue_seq' IS NULL THEN id END) - 1 AS ahead
-                       FROM reeldub.jobs WHERE doc->'state'='"queued"'::jsonb
+                       FROM reeldub.jobs WHERE doc->'state'='"queued"'::jsonb AND doc->'deleted' IS DISTINCT FROM 'true'::jsonb
                            AND EXISTS (SELECT 1 FROM feed WHERE item->>'state'='queued')
                    )
                    SELECT feed.item, positions.ahead FROM feed LEFT JOIN positions USING (id)

@@ -23,6 +23,18 @@ final class CheckoutAdmissionTests: XCTestCase {
         XCTAssertEqual(paymentSheets, 1)
     }
 
+    @MainActor func testPurchaseDeliveryRetriesTransientFailuresOnly() {
+        for status in [408, 425, 429, 500, 503] {
+            XCTAssertTrue(Studio.shouldRetryPurchaseDelivery(ServiceError(status: status, errorDescription: nil)))
+        }
+        for status in [400, 401, 403, 409, 422] {
+            XCTAssertFalse(Studio.shouldRetryPurchaseDelivery(ServiceError(status: status, errorDescription: nil)))
+        }
+        XCTAssertTrue(Studio.shouldRetryPurchaseDelivery(URLError(.notConnectedToInternet)))
+        XCTAssertFalse(Studio.shouldRetryPurchaseDelivery(SessionError.expired))
+        XCTAssertFalse(Studio.shouldRetryPurchaseDelivery(URLError(.cancelled)))
+    }
+
     func testOnlyBalanceDenialsOfferPlans() throws {
         let url = URL(string: "https://example.org")!
         let connection = Connection(base: url, token: "test")

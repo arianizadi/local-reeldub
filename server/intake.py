@@ -16,13 +16,14 @@ from .download import download_reel
 from .source import reel_url
 
 MAX_BYTES = 80 * 1024 * 1024
+DAILY_REEL_BYTES = 250 * 1024 * 1024
 slots = BoundedSemaphore(3)
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
 
-def probe(path):
-    if not 0 < path.stat().st_size <= MAX_BYTES:
-        raise HTTPException(413, "Choose a video under 80 MiB.")
+def probe(path, max_bytes=MAX_BYTES):
+    if not 0 < path.stat().st_size <= max_bytes:
+        raise HTTPException(413, f"Choose a video under {max_bytes // (1024 * 1024)} MiB.")
     try:
         raw = subprocess.check_output(
             [
@@ -99,28 +100,37 @@ class SourceFileResponse(FileResponse):
 
 class Reel(BaseModel):
     url: str
+    daily: bool = False
 
 
 @app.post("/reel")
 def fetch(body: Reel):
     if not slots.acquire(False):
         raise HTTPException(429, "Video intake is busy. Try again shortly.")
-    tmp = TemporaryDirectory()
+    tmp = None
 
     def close():
-        tmp.cleanup()
-        slots.release()
+        try:
+            if tmp is not None:
+                tmp.cleanup()
+        finally:
+            slots.release()
 
     handing_off = False
     try:
+        try:
+            tmp = TemporaryDirectory()
+        except OSError as error:
+            raise HTTPException(503, "Intake storage is temporarily unavailable.") from error
         folder = Path(tmp.name)
         metadata = folder / "details.json"
-        path = download_reel(reel_url(body.url), folder, metadata=metadata, max_mib=MAX_BYTES // (1024 * 1024))
+        max_bytes = DAILY_REEL_BYTES if body.daily else MAX_BYTES
+        path = download_reel(reel_url(body.url), folder, metadata=metadata, max_mib=max_bytes // (1024 * 1024))
         from urllib.parse import quote
 
         info = json.loads(metadata.read_text()) if metadata.exists() else {}
         headers = {
-            "X-Duration": str(probe(path)),
+            "X-Duration": str(probe(path, max_bytes)),
             "X-Title": quote(info.get("title") or "", safe=""),
             "X-Author": quote(info.get("author") or "", safe=""),
         }

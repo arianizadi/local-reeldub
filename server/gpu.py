@@ -17,8 +17,12 @@ def pipeline_slot():
         yield True
         return
     import fcntl
-    for slot in range(2):
-        with (lock_dir() / f"pipeline-{slot}").open("a") as file:
+    slots = os.getenv("REELDUB_GPU_PIPELINE_SLOTS", "2")
+    if slots not in {"1", "2"}:
+        raise ValueError("REELDUB_GPU_PIPELINE_SLOTS must be 1 or 2")
+    directory = lock_dir()
+    for slot in range(int(slots)):
+        with (directory / f"pipeline-{slot}").open("a") as file:
             try:
                 fcntl.flock(file, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:

@@ -23,6 +23,8 @@
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 #include "SimulatorLoopback.plistinc"
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Save a dubbed video to Photos when you choose Save Video.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Connect to your own ReelDub server on your network.</string>
 	<key>ReelDubKeychainGroup</key>

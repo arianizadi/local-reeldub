@@ -36,6 +36,23 @@ private final class ExpiredReceiptServer: URLProtocol {
 
 @MainActor
 final class OfflineRemovalTests: XCTestCase {
+    func testSavingReplacesAnIncompleteMovieDirectory() throws {
+        let host = UUID().uuidString + ".example"
+        let connection = Connection(base: URL(string: "https://" + host)!, token: "test", libraryID: host)
+        let library = try XCTUnwrap(DeviceLibrary(connection: connection))
+        defer { try? library.erase() }
+        let job = try JSONDecoder().decode(Job.self, from: JSONSerialization.data(withJSONObject: ExpiredReceiptServer.job))
+        let directory = library.movie(job.id).deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try Data("partial".utf8).write(to: directory.appending(path: "job.json"))
+        XCTAssertNil(library.inventory()[job.id])
+        let temp = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try Data([1, 2, 3]).write(to: temp)
+        try library.save(temp, job: job)
+        XCTAssertEqual(library.inventory()[job.id]?.id, job.id)
+        XCTAssertEqual(try Data(contentsOf: library.movie(job.id)), Data([1, 2, 3]))
+    }
+
     func testSavedPosterSurvivesColdLaunchAndIsRemovedWithMovie() async throws {
         let host = UUID().uuidString.lowercased() + ".example"
         let connection = Connection(base: URL(string: "https://" + host)!, token: "fixture", libraryID: host)
@@ -116,6 +133,36 @@ final class OfflineRemovalTests: XCTestCase {
         XCTAssertFalse(studio.applyActiveProgress([], expected: ["dub"]))
     }
 
+    func testMissingDeletionEndpointDoesNotBlockFreshJobsOrForgetRemovedDownloads() async throws {
+        let host = UUID().uuidString.lowercased() + ".example"
+        let connection = Connection(base: URL(string: "https://" + host)!, token: "fixture", libraryID: host)
+        let library = try XCTUnwrap(DeviceLibrary(connection: connection))
+        defer { try? library.erase() }
+        for id in ["fixture", "old"] {
+            var row = ExpiredReceiptServer.job
+            row["id"] = id
+            let job = try JSONDecoder().decode(Job.self, from: JSONSerialization.data(withJSONObject: row))
+            let temp = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+            try Data([1]).write(to: temp)
+            try library.save(temp, job: job)
+            try library.markReceived(id)
+            if id == "old" { try library.removeDownload(job) }
+        }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [ExpiredReceiptServer.self]
+        let session = URLSession(configuration: config)
+        defer { session.invalidateAndCancel() }
+        let studio = Studio(connection: connection, transport: session)
+        await studio.refresh()
+        XCTAssertNil(studio.failure)
+        XCTAssertEqual(studio.account?.tier, "free")
+        XCTAssertEqual(Set(studio.jobs.map(\.id)), ["fixture", "old"])
+        XCTAssertTrue(studio.canDownloadAgain("old"))
+        try library.remove("old")
+        XCTAssertFalse(library.isManualDownload("old"))
+        XCTAssertNil(library.retainedJobs()["old"])
+    }
+
     func testRemovingTwoDownloadsWithServerOfflineSurvivesRelaunch() async throws {
         let connection = Connection(base: URL(string: "http://127.0.0.1:1")!, token: "offline-test", libraryID: UUID().uuidString)
         let library = try XCTUnwrap(DeviceLibrary(connection: connection))
@@ -142,6 +189,7 @@ final class OfflineRemovalTests: XCTestCase {
         }
         let reopened = Studio(connection: connection)
         XCTAssertEqual(Set(reopened.saved.keys), [ids[2]])
+        XCTAssertEqual(Set(reopened.jobs.map(\.id)), Set(ids))
         XCTAssertTrue(reopened.canDownloadAgain(ids[0]))
         XCTAssertTrue(reopened.canDownloadAgain(ids[1]))
         XCTAssertFalse(reopened.canDownloadAgain(ids[2]))

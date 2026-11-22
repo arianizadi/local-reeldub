@@ -5,6 +5,7 @@ struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var selfHost = false
     @State private var deletingAccount = false
+    @State private var help = false
     var body: some View {
         NavigationStack {
             List {
@@ -18,7 +19,7 @@ struct SettingsView: View {
                     Section("Account") {
                         if let email = account.email { Text(email) }
                         LabeledContent("Plan", value: account.tier == "paid" ? (account.creator_minutes == true ? "Creator" : "Premium") : account.tier.capitalized)
-                        LabeledContent("Daily translations", value: account.limit.map { "\(account.used) of \($0) used" } ?? "Unlimited")
+                        LabeledContent("Daily dubs", value: account.limit.map { "\(account.used) of \($0) used" } ?? "Unlimited")
                     }
                 }
                 if studio.connection?.isHosted == true, studio.account?.admin_console == true {
@@ -31,6 +32,10 @@ struct SettingsView: View {
                         NavigationLink("Plans & minutes") { CloudStore(studio: studio) }
                     }
                 }
+                Section("Help and policies") {
+                    Button("ReelDub help") { help = true }
+                    PolicyLinks()
+                }
                 Section {
                     Button("Use my own server") { selfHost = true }
                     if studio.connection?.isHosted == true {
@@ -40,6 +45,7 @@ struct SettingsView: View {
                 }
             }.navigationTitle("Account")
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+                .sheet(isPresented: $help) { ReelDubHelp() }
                 .sheet(isPresented: $deletingAccount) { DeleteCloudAccount(studio: studio) }
                 .sheet(isPresented: $selfHost) { SelfHost(studio: studio) }
         }

@@ -46,8 +46,9 @@ extension API {
     switch input {
     case .reel(let value):
       var req = try request("v1/sources/reel", method: "POST", body: ["url": value])
-      req.timeoutInterval = 165
-      let (data, response) = try await Self.session.data(for: req)
+      // The intake service can wait 168 seconds for another request to finish preparing the same Reel.
+      req.timeoutInterval = 195
+      let (data, response) = try await transport.data(for: req)
       result = try checked(data, response)
     case .file(let file, let title):
       var req = try request("v1/sources/upload", method: "POST")
@@ -56,7 +57,7 @@ extension API {
         String(title.prefix(140)).addingPercentEncoding(withAllowedCharacters: .alphanumerics),
         forHTTPHeaderField: "X-Video-Title")
       req.timeoutInterval = 180
-      let (data, response) = try await Self.session.upload(for: req, fromFile: file)
+      let (data, response) = try await transport.upload(for: req, fromFile: file)
       result = try checked(data, response)
     case .source(let id):
       result = try await data("v1/sources/" + id)
@@ -83,12 +84,12 @@ struct BalanceOptions: View {
 
   var body: some View {
     if let plans {
-      Button(live ? "View payment options" : "Preview plans") { showing = true }
+      Button(live ? "View payment options" : "View plans") { showing = true }
         .sheet(isPresented: $showing, onDismiss: refresh) { plans }
     } else {
       Text(live
            ? "To add minutes, open ReelDub and choose Account → Plans & minutes."
-           : "Purchases are off for this beta. You can preview plans in ReelDub under Account.")
+           : "Purchases are currently unavailable. Open Account in ReelDub to view your plan.")
         .font(.footnote).foregroundStyle(.secondary)
     }
   }
@@ -112,6 +113,14 @@ struct QuoteSheet: View {
   @State private var revision = 0
   @State private var busy = false
   @State private var message: String?
+  @State private var needsNewFile = false
+  @State private var needsPreparation = false
+  @State private var replacement: ImportedMovie?
+  private var currentInput: ProjectInput { replacement.map { .file($0.file, $0.title) } ?? input }
+  private var preparationTitle: String {
+    if case .file = currentInput { return "Uploading video…" }
+    return "Checking video duration…"
+  }
   init(
     api: API, input: ProjectInput, languages: [String], target: String, trim: Bool = false,
     liveOffers: Bool = false, plans: AnyView? = nil, done: @escaping ([Job]) -> Void
@@ -135,7 +144,7 @@ struct QuoteSheet: View {
         if let source {
           Section {
             Text(source.title).font(.headline)
-            LabeledContent("Source length", value: Job.duration(source.seconds))
+            DubValueRow("Source length", value: Job.duration(source.seconds))
             if source.seconds > 60 { Toggle("Use the first 60 seconds", isOn: $trim) }
           }
           Section("Dub into") {
@@ -156,15 +165,19 @@ struct QuoteSheet: View {
                 }
               }
             } label: {
-              Label(
-                selected.sorted().map(OutputLanguage.name).joined(separator: ", "),
-                systemImage: "globe")
+              HStack {
+                Label(selected.sorted().map(OutputLanguage.name).joined(separator: ", "), systemImage: "globe")
+                Spacer()
+                Image(systemName: "chevron.up.chevron.down").font(.footnote).accessibilityHidden(true)
+              }
+              .accessibilityLabel("Dub languages")
+              .accessibilityValue(selected.sorted().map(OutputLanguage.name).joined(separator: ", "))
             }
           }
-          if let quote, quotedKey == key {
+          if let quote, quotedKey == key, !needsNewFile {
             Section("Cost to confirm") {
               ForEach(quote.lines) { line in
-                LabeledContent(OutputLanguage.name(line.target), value: line.price)
+                DubValueRow(OutputLanguage.name(line.target), value: line.price)
               }
             }
             if quote.lines.contains(where: { $0.missing > 0 }) {
@@ -172,7 +185,7 @@ struct QuoteSheet: View {
                 let missing = quote.lines.reduce(0) { $0 + $1.missing }
                 Text("You need " + Job.duration(missing) + " more for this selection.")
                 if quote.free_left == 0 && !quote.lines.contains(where: { $0.free > 0 }) {
-                  Text("Daily dubs reset at midnight UTC.").foregroundStyle(.secondary)
+                  Text(Account.dailyResetNotice).foregroundStyle(.secondary)
                 }
                 if api.connection.isHosted {
                   BalanceOptions(live: liveOffers, plans: plans) { revision += 1 }
@@ -182,45 +195,68 @@ struct QuoteSheet: View {
             } else {
               if !quote.lines.allSatisfy(\.unlimited) {
                 Section("Available after confirmation") {
-                  LabeledContent("Daily dubs", value: String(quote.free_left))
-                  LabeledContent("Monthly time", value: Job.duration(quote.monthly_left))
-                  LabeledContent("Purchased time", value: Job.duration(quote.pack_left))
+                  DubValueRow("Daily dubs", value: String(quote.free_left))
+                  DubValueRow("Monthly time", value: Account.minuteBalance(quote.monthly_left))
+                  DubValueRow("Purchased time", value: Account.minuteBalance(quote.pack_left))
                 }
               }
-              Button(busy ? "Queuing…" : "Confirm translation") { Task { await confirm(quote) } }
-                .disabled(busy)
+              Button { Task { await confirm(quote) } } label: {
+                Text(busy ? "Queuing…" : "Confirm dub")
+                  .font(.headline).foregroundStyle(Palette.onAction).frame(maxWidth: .infinity, minHeight: 44)
+              }
+              .buttonStyle(.borderedProminent)
+              .listRowBackground(Color.clear)
+              .disabled(busy)
             }
           } else if message == nil {
             ProgressView("Calculating cost…")
           }
         } else if message == nil {
-          ProgressView("Checking video duration…")
+          ProgressView(preparationTitle)
         }
         if let message {
           Text(message).foregroundStyle(.secondary)
-          Button("Review again") { revision += 1 }
+          if needsNewFile {
+            VideoImportButton(receive: { movie in
+              if let replacement { try? FileManager.default.removeItem(at: replacement.file) }
+              replacement = movie
+              source = nil
+              quote = nil
+              needsNewFile = false
+              revision += 1
+            }, failed: { self.message = $0 }, title: "Choose video again")
+          } else {
+            Button("Review again") {
+              if needsPreparation {
+                source = nil
+                quote = nil
+                needsPreparation = false
+              }
+              revision += 1
+            }
+          }
         }
       }
       .disabled(busy)
       .navigationTitle("Review dub")
       .toolbar {
         ToolbarItem(placement: .cancellationAction) {
-          Button("Close") {
+          Button(committed.isEmpty ? "Close" : "Done") {
             if !committed.isEmpty { done(committed) }
             dismiss()
           }.disabled(busy)
         }
       }
     }
-    .interactiveDismissDisabled(busy)
+    .interactiveDismissDisabled(busy || !committed.isEmpty)
     .task(id: source == nil ? revision : -1) {
       guard source == nil else { return }
       message = nil
       do {
-        let item = try await api.prepare(input)
+        let item = try await api.prepare(currentInput)
         try Task.checkCancellation()
         source = item
-      } catch { if !Task.isCancelled { message = error.localizedDescription } }
+      } catch { if !Task.isCancelled { handle(error) } }
     }
     .task(id: key) {
       guard let source else { return }
@@ -234,9 +270,22 @@ struct QuoteSheet: View {
           quote = value
           quotedKey = version
         }
-      } catch { if !Task.isCancelled { message = error.localizedDescription } }
+      } catch { if !Task.isCancelled { handle(error) } }
+    }
+    .onDisappear {
+      if let replacement { try? FileManager.default.removeItem(at: replacement.file) }
     }
   }
+
+  private func handle(_ error: Error) {
+    message = error.localizedDescription
+    if (error as? ServiceError)?.status == 404 {
+      quote = nil
+      if case .source = currentInput { needsNewFile = true }
+      else { needsPreparation = true }
+    }
+  }
+
   private func confirm(_ value: DubQuote) async {
     guard !busy, quotedKey == key, !value.lines.contains(where: { $0.missing > 0 }) else { return }
     busy = true
@@ -262,7 +311,7 @@ struct QuoteSheet: View {
         revision += 1
       }
     } catch {
-      message = error.localizedDescription
+      handle(error)
       if let error = error as? ServiceError, [402, 409, 410].contains(error.status) { quote = nil }
     }
   }

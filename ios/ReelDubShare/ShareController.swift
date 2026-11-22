@@ -21,10 +21,8 @@ final class ShareController: UIViewController {
         for provider in items.flatMap({ $0.attachments ?? [] }) {
             for type in [UTType.url, .plainText] where provider.hasItemConformingToTypeIdentifier(type.identifier) {
                 let item = try? await provider.loadItem(forTypeIdentifier: type.identifier)
-                if let url = item as? URL { return url.absoluteString }
-                if let text = item as? String, let match = text.range(of: #"https://(?:www\.)?instagram\.com/reels?/[^\s]+"#, options: .regularExpression) {
-                    return String(text[match])
-                }
+                if let url = item as? URL, Job.isReel(url.absoluteString) { return url.absoluteString }
+                if let text = item as? String, let reel = RDLink.reel(in: text) { return reel }
             }
         }
         return nil

@@ -8,7 +8,7 @@ final class StoreCatalogTests: XCTestCase {
         let file = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "ReelDub", withExtension: "storekit"))
         let store = try SKTestSession(contentsOf: file)
         store.disableDialogs = true
-        store.timeRate = .realTime
+        store.timeRate = .oneRenewalEveryTwoSeconds
         store.clearTransactions()
         defer { store.clearTransactions() }
         let updates = Task {
@@ -51,12 +51,17 @@ final class StoreCatalogTests: XCTestCase {
                 XCTAssertEqual(restored?.appAccountToken, account)
                 do { try store.expireSubscription(productIdentifier: id) }
                 catch { XCTFail("Local subscription expiry failed: \(error)"); return }
-                for _ in 0..<20 {
-                    if await Transaction.currentEntitlement(for: id) == nil { break }
-                    try await Task.sleep(for: .milliseconds(200))
+                let subscription = try XCTUnwrap(storefrontProduct.subscription)
+                var observedExpiry = false
+                for _ in 0..<30 {
+                    for status in try await subscription.status where status.state == .expired {
+                        let expired = try status.transaction.payloadValue
+                        if expired.productID == id && expired.appAccountToken == account { observedExpiry = true }
+                    }
+                    if observedExpiry { break }
+                    try await Task.sleep(for: .milliseconds(250))
                 }
-                let expired = await Transaction.currentEntitlement(for: id)
-                XCTAssertNil(expired)
+                XCTAssertTrue(observedExpiry, "StoreKit must report the verified account's subscription expired.")
             }
         }
     }

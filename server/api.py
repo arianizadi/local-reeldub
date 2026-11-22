@@ -545,11 +545,18 @@ def summary(job, before=None):
                 {"created": {"$lt": job["created"]}}, {"created": job["created"], "_id": {"$lt": job["_id"]}}]}
         else:
             earlier = {"$or": [{"queue_seq": None}, {"queue_seq": {"$lt": seq}}]}
-        before = db().jobs.count_documents({"state": "queued", "$or": [
-            {"priority": {"$gt": job["priority"]}}, {"priority": job["priority"], **earlier}]})
+        lane = {"$or": [{"priority": {"$gt": job["priority"]}}, {"priority": job["priority"], **earlier}]}
+        if job.get("recovery_rank"):
+            ahead = {"recovery_rank": 1, **lane}
+        else:
+            ahead = {"$or": [{"recovery_rank": 1}, {"recovery_rank": {"$ne": 1}, **lane}]}
+        before = db().jobs.count_documents({"state": "queued", "deleted": {"$ne": True}, **ahead})
     return dict(id=job["_id"], url=job["url"], state=job["state"], stage=job["stage"], created=job["created"],
                 progress=job.get("progress"), estimated_finish=job.get("estimated_finish") if job["state"]=="running" else None,
                 last_requested=job.get("last_requested"), started=job.get("started"), finished=job.get("finished"), ahead=before, lane="premium" if job.get("priority") else "free", error=job.get("error"),
+                recovery_count=job.get("recovery_count", 0),
+                recovery_switched_server=bool(job.get("state") == "running" and job.get("recovery_from_node")
+                    and job.get("fleet_slot") and job["fleet_slot"].rsplit(":", 1)[0] != job["recovery_from_node"]),
                 attempt=job["attempt"], reported=bool(job.get("report")), media_seconds=job.get("media_seconds"),
                 title=job.get("title"), author=job.get("author"), has_poster=job.get("has_poster", False),
                 available_on_server=media_available(job), cache_expires=job.get("media_expires"),
@@ -671,11 +678,11 @@ def submit(body: Submission, user=Depends(owner)):
 def skip(job_id: str, user=Depends(owner)):
     limit_writes(user, "skip", 30)
     job = owned(job_id, user)
-    if job.get("priority"):
+    if job.get("priority") or job.get("recovery_rank"):
         return summary(job)
     if job["state"] != "queued":
         raise HTTPException(409, "This dub has already left the queue.")
-    if not db().jobs.find_one({"state": "queued", "priority": 0, **(
+    if not db().jobs.find_one({"state": "queued", "priority": 0, "recovery_rank": {"$ne": 1}, "deleted": {"$ne": True}, **(
             {"$or": [{"queue_seq": None}, {"queue_seq": {"$lt": job["queue_seq"]}}]} if "queue_seq" in job else
             {"queue_seq": None, "$or": [{"created": {"$lt": job["created"]}},
               {"created": job["created"], "_id": {"$lt": job["_id"]}}]})}, {"_id": 1}):
@@ -683,7 +690,7 @@ def skip(job_id: str, user=Depends(owner)):
     for ticket in store.tickets(user, "skip_ticket"):
         try:
             promoted = db().jobs.find_one_and_update(
-                {"_id": job_id, "owner": user, "state": "queued", "priority": 0},
+                {"_id": job_id, "owner": user, "state": "queued", "priority": 0, "recovery_rank": {"$ne": 1}},
                 {"$set": {"priority": 1, "queue_seq": next_position(), "skip_ticket": ticket}},
                 projection={"poster": 0}, return_document=ReturnDocument.AFTER)
         except DuplicateKeyError:
@@ -692,7 +699,7 @@ def skip(job_id: str, user=Depends(owner)):
             return summary(promoted)
         break
     job = owned(job_id, user)
-    if job.get("priority"):
+    if job.get("priority") or job.get("recovery_rank"):
         return summary(job)
     if job["state"] != "queued":
         raise HTTPException(409, "This dub has already left the queue.")

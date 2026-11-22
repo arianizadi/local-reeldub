@@ -26,12 +26,12 @@ class WorkerLeaseTests(unittest.TestCase):
 
     def test_light_worker_only_claims_jobs_it_can_render(self):
         queue = Mock()
-        with patch("server.worker.db", return_value=queue), patch("server.worker.Path.is_file", return_value=False):
+        with patch("server.worker.uses_postgres", return_value=False), patch("server.worker.db", return_value=queue), patch("server.worker.Path.is_file", return_value=False):
             claim()
         query = queue.jobs.find_one_and_update.call_args.args[0]
         self.assertIsNone(query["render_quality"])
         self.assertIsNone(query["lab_mode"])
-        with patch("server.worker.db", return_value=queue), patch("server.worker.Path.is_file", return_value=True):
+        with patch("server.worker.uses_postgres", return_value=False), patch("server.worker.db", return_value=queue), patch("server.worker.Path.is_file", return_value=True):
             claim()
         self.assertNotIn("render_quality",queue.jobs.find_one_and_update.call_args.args[0])
 
@@ -40,11 +40,15 @@ class WorkerLeaseTests(unittest.TestCase):
         jobs.update_one.return_value.matched_count = 1
         fence = {"_id": "test", "state": "running", "lease": "attempt-1"}
         stamp = now()
-        with patch("server.worker.time.monotonic", side_effect=[0, 12, 15, 30, 31]), patch("server.worker.now", return_value=stamp):
-            lease = RenderLease(jobs, fence)
+        with patch("server.worker.time.monotonic", return_value=0) as clock, patch("server.worker.now", return_value=stamp):
+            lease = RenderLease(jobs, fence, stamp + LEASE)
+            clock.return_value = 12
             self.assertTrue(lease.renew({"stage": "Voicing"}))
+            clock.return_value = 15
             self.assertTrue(lease.renew())
-            jobs.update_one.assert_called_once_with(fence, {"$set": {"stage": "Voicing", "lease_end": stamp + LEASE}})
+            jobs.update_one.assert_called_once_with({**fence, "lease_end": {"$gt": stamp}},
+                                                   {"$set": {"stage": "Voicing", "lease_end": stamp + LEASE}})
+            clock.return_value = 30
             self.assertTrue(lease.renew())
             self.assertEqual(jobs.update_one.call_count, 2)
             jobs.update_one.return_value.matched_count = 0

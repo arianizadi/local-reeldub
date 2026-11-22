@@ -18,8 +18,72 @@ private struct Overview: Decodable {
     let watts: Double?
   }
   let gpu: GPU?
+  let nodes: [FleetNode]?
   let accounts, banned, signed_in_30d: Int?
   let languages: [Pair], speeds: [Speed]
+}
+
+struct FleetNode: Decodable, Identifiable {
+  let node, status: String
+  let last_seen, last_preflight, reason: String?
+  let recoveries, faults, slots: Int?
+  var id: String { node }
+  var severity: Int {
+    switch status {
+    case "quarantined", "offline", "disabled": return 0
+    case "suspect", "recovering", "draining": return 1
+    default: return 2
+    }
+  }
+}
+
+struct FleetSection: View {
+  let nodes: [FleetNode]
+  var body: some View {
+    Section("Render servers") {
+      if nodes.isEmpty { Text("No render servers are registered.").foregroundStyle(.secondary) }
+      ForEach(nodes.sorted { ($0.severity, $0.node) < ($1.severity, $1.node) }) { node in
+        VStack(alignment: .leading, spacing: 5) {
+          Text(node.node).font(.headline).fixedSize(horizontal: false, vertical: true)
+          status(node.status)
+          if let reason = node.reason, !reason.isEmpty, node.status != "online" {
+            Text(reason).font(.subheadline)
+          }
+          if let seen = Job.date(node.last_seen) {
+            Text("Last seen " + seen.formatted(date: .abbreviated, time: .standard))
+              .font(.footnote).foregroundStyle(.secondary)
+          } else {
+            Text("No heartbeat recorded").font(.footnote).foregroundStyle(.secondary)
+          }
+          if let preflight = Job.date(node.last_preflight) {
+            Text("Last preflight " + preflight.formatted(date: .abbreviated, time: .shortened))
+              .font(.footnote).foregroundStyle(.secondary)
+          }
+          let counts = [node.recoveries.map { "\($0) recovery " + ($0 == 1 ? "retry" : "retries") },
+                        node.faults.map { "\($0) " + ($0 == 1 ? "fault" : "faults") }]
+            .compactMap { $0 }
+          if !counts.isEmpty { Text(counts.joined(separator: " · ")).font(.footnote).foregroundStyle(.secondary) }
+        }.padding(.vertical, 3).accessibilityElement(children: .combine)
+      }
+    }
+  }
+
+  private func status(_ value: String) -> some View {
+    let appearance: (icon: String, color: Color)
+    switch value {
+    case "online": appearance = ("checkmark.circle", .green)
+    case "suspect": appearance = ("exclamationmark.triangle", .orange)
+    case "offline": appearance = ("wifi.slash", .red)
+    case "quarantined", "disabled": appearance = ("pause.circle", .red)
+    case "draining": appearance = ("hourglass", .orange)
+    case "recovering": appearance = ("arrow.clockwise", .orange)
+    default: appearance = ("questionmark.circle", .secondary)
+    }
+    return HStack(spacing: 6) {
+      Image(systemName: appearance.icon).accessibilityHidden(true)
+      Text(value.capitalized).fixedSize(horizontal: false, vertical: true)
+    }.font(.subheadline.weight(.semibold)).foregroundStyle(appearance.color)
+  }
 }
 
 private struct Activity: Decodable, Identifiable {
@@ -153,6 +217,7 @@ private struct ConsoleContent: View {
           switch tab {
           case .overview:
             if let summary {
+              if let nodes = summary.nodes { FleetSection(nodes: nodes) }
               if let total = summary.accounts {
                 Section("Accounts") {
                   LabeledContent("Total accounts", value: String(total))

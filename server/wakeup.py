@@ -89,7 +89,7 @@ class Wake:
     def watch_active_leases(self):
         if uses_postgres():
             active = db().jobs.find_one(
-                {"state": "running", "lease_end": {"$exists": True}},
+                {"state": "running", "deleted": {"$ne": True}, "lease_end": {"$gt": now()}},
                 {"lease_end": 1},
                 sort=[("lease_end", 1)],
             )

@@ -12,19 +12,21 @@ from datetime import timedelta
 
 import gridfs
 from pymongo import ReturnDocument
-from pymongo.errors import PyMongoError
+from pymongo.errors import ConnectionFailure, ExecutionTimeout, PyMongoError, WTimeoutError
 
 from .source import reel_url
 from .languages import outputs
-from .db import media_db, QUEUE_ORDER, db, now
+from .db import media_db, QUEUE_ORDER, db, now, uses_postgres
 from .gpu import pipeline_slot
 from .wakeup import Wake
 from .progress import PREFIX, STEPS, line_progress, nearby_runtime
-from psycopg import Error as PostgresError
+from psycopg import Error as PostgresError, OperationalError
 from psycopg_pool import PoolTimeout
 
 LEASE = timedelta(seconds=90)
 HEARTBEAT_SECONDS = 15
+LEASE_MARGIN_SECONDS = 5
+TEMPORARY_DB_ERRORS = (ConnectionFailure, ExecutionTimeout, WTimeoutError, OperationalError, PoolTimeout)
 MAX_ATTEMPTS = 3
 STAGES = {"Waiting for GPU capacity": "Waiting for GPU", "GPU stage: ": "Processing", "Downloading video": "Downloading", "Separating original": "Separating audio",
           "Cleaning residual": "Cleaning background voices", "Listening with": "Transcribing", "Identifying speakers": "Identifying voices",
@@ -43,23 +45,33 @@ def render_error(stage, diagnostic):
     return f"The render failed during {stage.lower()}. You can retry or report this Reel."
 
 
-def claim():
-    jobs = db().jobs
+def claim(studio=None, fleet_slot=None, fleet_request=None, avoid_recovery_node=None):
+    database = db()
     stamp = now()
-    expired = {"state": "running", "lease_end": {"$lt": stamp}}
-    jobs.update_many({**expired, "attempt": {"$gte": MAX_ATTEMPTS}}, {
-        "$set": {"state": "failed", "stage": "Failed", "finished": stamp, "error": "Worker interrupted repeatedly."},
-        "$unset": {"slot": "", "minute_grants": "", "minute_units": "", "render_key": "", "extra_ticket": "", "skip_ticket": "", "lease": ""}})
-    studio = (Path(__file__).resolve().parents[1] / ".qwen-venv/ready").is_file()
+    expired = {"state": "running", "fleet_slot": None, "lease_end": {"$lt": stamp}}
+    exhausted = {**expired, "attempt": {"$gte": MAX_ATTEMPTS}}
+    failure = {"state": "failed", "stage": "Failed", "finished": stamp, "error": "Worker interrupted repeatedly."}
+    release = ["slot", "minute_grants", "minute_units", "render_key", "extra_ticket", "skip_ticket", "lease", "lease_end"]
+    if studio is None:
+        studio = (Path(__file__).resolve().parents[1] / ".qwen-venv/ready").is_file()
     eligible = outputs("studio" if studio else "light") + [None]
     # A Light worker cannot fulfill a job that promises a Studio quality preset.
     profile_filter = {} if studio else {"render_quality": None, "lab_mode": None}
-    doc = jobs.find_one_and_update(
-        {**profile_filter, "deleted": {"$ne": True}, "target_language": {"$in": eligible}, "$or": [{"state": "queued"}, {**expired, "attempt": {"$lt": MAX_ATTEMPTS}}]},
-        [{"$set": {"state": "running", "stage": "Starting", "progress": 0.01, "estimated_finish": None, "lease": str(uuid4()), "lease_end": stamp + LEASE,
-                   "started": {"$ifNull": ["$started", stamp]}, "attempt": {"$add": ["$attempt", 1]}}}],
+    candidate = {**profile_filter, "deleted": {"$ne": True}, "target_language": {"$in": eligible},
+                 "$or": [{"state": "queued"}, {**expired, "attempt": {"$lt": MAX_ATTEMPTS}}]}
+    if avoid_recovery_node:
+        candidate["$and"] = [{"$or": [{"recovery_rank": {"$ne": 1}},
+                                       {"recovery_from_node": {"$ne": avoid_recovery_node}}]}]
+    start = {"state": "running", "stage": "Starting", "progress": 0.01, "estimated_finish": None,
+             "lease": str(uuid4()), "lease_end": stamp + LEASE}
+    start.update(fleet_slot=fleet_slot, fleet_request=fleet_request, attempt_started=stamp)
+    if uses_postgres():
+        return database.claim_job(candidate, exhausted, failure, release, start, stamp)
+    jobs = database.jobs
+    jobs.update_many(exhausted, {"$set": failure, "$unset": dict.fromkeys(release, "")})
+    return jobs.find_one_and_update(
+        candidate, [{"$set": {**start, "started": {"$ifNull": ["$started", stamp]}, "attempt": {"$add": ["$attempt", 1]}}}],
         sort=QUEUE_ORDER, return_document=ReturnDocument.AFTER)
-    return doc
 
 
 def quality_options(job):
@@ -75,41 +87,72 @@ def quality_options(job):
     return []
 
 
+class InfrastructureFailure(Exception):
+    def __init__(self, reason):
+        super().__init__(reason)
+        self.reason = reason
+
+
+class LeaseLost(Exception):
+    pass
+
+
 class RenderLease:
-    def __init__(self, jobs, fence):
+    def __init__(self, jobs, fence, lease_end):
         self.jobs = jobs
         self.fence = fence
         self.lock = threading.Lock()
-        self.last_renewed = time.monotonic()
+        self.stop = threading.Event()
+        expires = time.monotonic() + (lease_end - now()).total_seconds()
+        self.last_renewed = expires - LEASE.total_seconds()
+        self.deadline = expires - LEASE_MARGIN_SECONDS
+
+    def active(self):
+        return not self.stop.is_set() and time.monotonic() < self.deadline
+
+    def current_fence(self, stamp):
+        return {**self.fence, "lease_end": {"$gt": stamp}}
 
     def renew(self, fields=None):
         with self.lock:
-            tick = time.monotonic()
-            if fields is None and tick - self.last_renewed < HEARTBEAT_SECONDS:
-                return True
-            update = {"lease_end": now() + LEASE, **(fields or {})}
-            result = self.jobs.update_one(self.fence, {"$set": update})
-            if result.matched_count:
+            delay = 1
+            while self.active():
+                tick = time.monotonic()
+                if fields is None and tick - self.last_renewed < HEARTBEAT_SECONDS:
+                    return True
+                stamp = now()
+                update = {"lease_end": stamp + LEASE, **(fields or {})}
+                try:
+                    result = self.jobs.update_one(self.current_fence(stamp), {"$set": update})
+                except TEMPORARY_DB_ERRORS:
+                    self.stop.wait(max(0, min(delay, self.deadline - time.monotonic())))
+                    delay = min(5, delay * 2)
+                    continue
+                if not result.matched_count or not self.active():
+                    break
+                # Time spent waiting for the acknowledgement doesn't extend the lease.
                 self.last_renewed = tick
-            return bool(result.matched_count)
+                self.deadline = tick + LEASE.total_seconds() - LEASE_MARGIN_SECONDS
+                return True
+            self.stop.set()
+            return False
 
 
-def process(job):
+def process(job, fleet=None):
     fence = {"_id": job["_id"], "lease": job["lease"], "state": "running"}
-    jobs = db().jobs
-    lease = RenderLease(jobs, fence)
-    stop = threading.Event()
-    lost = threading.Event()
+    jobs = None if fleet else db().jobs
+    lease = RenderLease(fleet or jobs, fence, job["lease_end"])
+    if not lease.active():
+        return
 
     def heartbeat():
-        while not stop.wait(HEARTBEAT_SECONDS):
-            try:
-                if lease.renew():
-                    continue
-            except Exception:
-                pass
-            lost.set()
-            break
+        try:
+            while lease.renew():
+                if lease.stop.wait(HEARTBEAT_SECONDS):
+                    return
+        except Exception as exc:
+            print(f"Lease heartbeat interrupted ({type(exc).__name__})", flush=True)
+        lease.stop.set()
 
     renew = threading.Thread(target=heartbeat, daemon=True)
     renew.start()
@@ -124,7 +167,7 @@ def process(job):
             dest = Path(temp) / "dub.mp4"
             log = Path(temp) / "render.log"
             names = {"PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "CUDA_VISIBLE_DEVICES",
-                     "LD_LIBRARY_PATH", "HF_HOME", "XDG_CACHE_HOME", "REELDUB_GPU_LOCK_DIR",
+                     "LD_LIBRARY_PATH", "HF_HOME", "XDG_CACHE_HOME", "REELDUB_GPU_LOCK_DIR", "REELDUB_LANDRUN",
                      "OMP_NUM_THREADS", "MKL_NUM_THREADS", "REELDUB_TTS_BATCH_SIZE"}
             env = {k: v for k, v in os.environ.items() if k in names}
             if not job.get("priority") and os.getenv("REELDUB_FREE_CPU_OVERFLOW") == "1":
@@ -133,7 +176,17 @@ def process(job):
             env["REELDUB_METADATA_FILE"] = str(metadata)
             env.update(PYTHONUNBUFFERED="1", REELDUB_SERVICE_LIMITS="1", HF_HUB_OFFLINE="1")
             engine = os.getenv("REELDUB_ENGINE", str(Path(__file__).resolve().parents[1] / "dub"))
-            if source_file := job.get("source_file"):
+            if fleet:
+                source = Path(temp) / "source.mp4"
+                if not lease.renew({"stage": "Downloading", "progress": STEPS["Downloading"]}):
+                    raise LeaseLost()
+                stage = "Downloading"
+                duration, runtime = fleet.transfer(lambda: fleet.download(source), lease)
+                env["REELDUB_STAGED_INPUT"] = str(source)
+                if duration:
+                    env["REELDUB_MAX_SECONDS"] = str(duration)
+                input_arg = str(source)
+            elif source_file := job.get("source_file"):
                 source = Path(temp)/"source.mov"
                 with gridfs.GridFS(media_db()).get(source_file) as stored, source.open("wb") as out:
                     from shutil import copyfileobj
@@ -152,14 +205,17 @@ def process(job):
                 try:
                     while True:
                         finished = proc.poll() is not None
-                        if time.monotonic() >= deadline or lost.is_set():
-                            raise RuntimeError("Render timed out or worker lease expired.")
+                        if not lease.active():
+                            raise LeaseLost()
+                        if time.monotonic() >= deadline:
+                            raise RuntimeError("Render timed out.")
                         for line in reader:
                             if line.startswith("Index translation unavailable ("):
                                 print(f"Job {job['_id']}: {line.strip()[:110]}", flush=True)
                             update = next((v for k, v in STAGES.items() if line.startswith(k)), None)
                             if line.startswith("GPU stage: "):
-                                update = line.partition(": ")[2].strip()
+                                candidate = line.partition(": ")[2].strip()
+                                update = candidate if candidate in STEPS else "Processing"
                             previous = stage
                             if update:
                                 stage = update
@@ -172,13 +228,16 @@ def process(job):
                                 if not isinstance(event, dict):
                                     continue
                                 seconds = event.get("duration")
-                                if type(seconds) in (int, float) and 0 < seconds <= 600 and seconds != sampled_duration:
-                                    rows = jobs.find({"state": "done", "lab_mode": job.get("lab_mode"),
-                                                      "render_quality": job.get("render_quality"), "media_seconds": {"$exists": True}},
-                                                     {"media_seconds": 1, "started": 1, "finished": 1,
-                                                      "attempt": 1, "target_language": 1}).sort("finished", -1).limit(40)
-                                    runtime = nearby_runtime(rows, seconds, job.get("target_language", "en"))
+                                if not fleet and type(seconds) in (int, float) and 0 < seconds <= 600 and seconds != sampled_duration:
                                     sampled_duration = seconds
+                                    try:
+                                        rows = jobs.find({"state": "done", "lab_mode": job.get("lab_mode"),
+                                                          "render_quality": job.get("render_quality"), "media_seconds": {"$exists": True}},
+                                                         {"media_seconds": 1, "started": 1, "finished": 1,
+                                                          "attempt": 1, "target_language": 1}).sort("finished", -1).limit(40)
+                                        runtime = nearby_runtime(rows, seconds, job.get("target_language", "en"))
+                                    except TEMPORARY_DB_ERRORS:
+                                        runtime = None
                                 if stage == "Voicing":
                                     progress = max(progress, line_progress(event) or 0)
                             tick = time.monotonic()
@@ -187,7 +246,7 @@ def process(job):
                                 if runtime:
                                     fields["estimated_finish"] = now() + timedelta(seconds=round(runtime*(1-progress)))
                                 if not lease.renew(fields):
-                                    raise RuntimeError("Worker lease expired.")
+                                    raise LeaseLost()
                                 published, last_write = progress, tick
                         if finished:
                             break
@@ -201,11 +260,19 @@ def process(job):
                     trace.seek(max(0, log.stat().st_size - 16384))
                     diagnostic = trace.read().decode(errors="replace").lower()
                 print(f"Render {job['_id']} exited {proc.returncode} at {stage}", flush=True)
+                if fleet:
+                    if any(x in diagnostic for x in ("cuda out of memory", "cuda error", "cuda was explicitly requested", "driver version is insufficient")):
+                        raise InfrastructureFailure("gpu_unavailable")
+                    if any(x in diagnostic for x in ("no such file or directory", "localentrynotfounderror", "missing model")):
+                        raise InfrastructureFailure("model_unavailable")
+                    if not any(x in diagnostic for x in ("no translatable speech", "no spoken lines", "neither translator produced",
+                                                         "invalid data found", "does not contain", "exceeds the", "maximum allowed")):
+                        raise InfrastructureFailure("runtime_unavailable")
                 raise RuntimeError(render_error(stage, diagnostic))
             if dest.stat().st_size > 500 * 1024 * 1024:
                 raise RuntimeError("Rendered video exceeds the 500 MB service limit.")
             seconds = float(subprocess.check_output(["ffprobe", "-v", "error", "-show_entries", "format=duration",
-                            "-of", "csv=p=0", dest], text=True).strip())
+                            "-of", "csv=p=0", dest], text=True, timeout=30).strip())
             details = json.loads(metadata.read_text()) if metadata.is_file() else {}
             details = {k: v for k, v in details.items() if k in
                        {"title", "author", "first_caption", "source_language", "asr_model",
@@ -216,22 +283,44 @@ def process(job):
             if preview.returncode == 0 and 0 < len(preview.stdout) < 512_000:
                 details["has_poster"] = True
             if not lease.renew({"stage": "Saving", "progress": STEPS["Saving"]}):
-                raise RuntimeError("Worker lease expired.")
+                raise LeaseLost()
+            if fleet:
+                fleet.transfer(lambda: fleet.publish(dest, {**details, "media_seconds": seconds},
+                                                     preview.stdout if details.get("has_poster") else b""), lease)
+                return
             bucket = gridfs.GridFS(media_db())
             with dest.open("rb") as video:
                 artifact = bucket.put(video, **({"poster":preview.stdout} if details.get("has_poster") else {}), filename=job["_id"] + ".mp4", lease=job["lease"], job=job["_id"])
-            saved = jobs.update_one(fence, {"$set": {"state": "done", "stage": "Ready", "progress": 1.0, "estimated_finish": None, "finished": now(),
+            if not lease.active():
+                bucket.delete(artifact)
+                raise LeaseLost()
+            saved = jobs.update_one(lease.current_fence(now()), {"$set": {"state": "done", "stage": "Ready", "progress": 1.0, "estimated_finish": None, "finished": now(),
                                     "artifact": artifact, "media_seconds": seconds, "awaiting_delivery": True,
                                     "media_expires": now() + timedelta(days=7), **details}, "$unset": {"lease": "", "lease_end": ""}})
             if not saved.modified_count:
                 bucket.delete(artifact)
+    except InfrastructureFailure as exc:
+        if fleet and lease.active():
+            fleet.interrupt(exc.reason)
+    except (LeaseLost, *TEMPORARY_DB_ERRORS) as exc:
+        # Leave the lease and its reservations for the scheduler to recover. An unacknowledged
+        # publish may already have committed; the existing orphan sweep reconciles its artifact.
+        print(f"Job {job['_id']} yielded at {stage} ({type(exc).__name__})", flush=True)
     except Exception as exc:
+        if not lease.active():
+            return
         print(f"Job {job['_id']} failed at {stage} ({type(exc).__name__})", flush=True)
         message = str(exc) if type(exc) is RuntimeError else f"Worker failed during {stage.lower()}."
-        jobs.update_one(fence, {"$set": {"state": "failed", "stage": "Failed", "error": message, "finished": now()},
+        if fleet:
+            if isinstance(exc, (OSError, subprocess.TimeoutExpired)):
+                fleet.interrupt("runtime_unavailable")
+                return
+            fleet.fail(stage, message)
+            return
+        jobs.update_one(lease.current_fence(now()), {"$set": {"state": "failed", "stage": "Failed", "error": message, "finished": now()},
                                "$unset": {"slot": "", "minute_grants": "", "minute_units": "", "render_key": "", "extra_ticket": "", "skip_ticket": "", "lease": "", "lease_end": ""}})
     finally:
-        stop.set()
+        lease.stop.set()
         renew.join()
 
 

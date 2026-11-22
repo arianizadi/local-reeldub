@@ -10,6 +10,7 @@ import socket
 from threading import Thread
 
 DOMAINS = ("instagram.com", "cdninstagram.com", "fbcdn.net")
+PRIVATE_PROXY = ("127.0.0.1", 18322)
 
 
 def allowed_host(host):
@@ -18,7 +19,8 @@ def allowed_host(host):
 
 
 def connect_public(host):
-    records = socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
+    family = socket.AF_INET if os.getenv("REELDUB_INTAKE_IPV4_ONLY") == "1" else socket.AF_UNSPEC
+    records = socket.getaddrinfo(host, 443, family=family, type=socket.SOCK_STREAM)
     if not records or any(not ip_address(row[4][0]).is_global or ip_address(row[4][0]).is_multicast for row in records):
         raise ValueError("Media destination is not public.")
     # Connect to the vetted address directly. TLS hostname verification remains in the downloader.
@@ -34,6 +36,8 @@ def connect_public(host):
 
 
 class MediaTunnel(BaseHTTPRequestHandler):
+    timeout = 30
+
     def log_message(self, *args):
         pass
 
@@ -68,6 +72,9 @@ class MediaTunnel(BaseHTTPRequestHandler):
 
 @contextmanager
 def instagram_egress():
+    if os.getenv("REELDUB_INTAKE_FIXED_PROXY") == "1":
+        yield f"http://{PRIVATE_PROXY[0]}:{PRIVATE_PROXY[1]}"
+        return
     ports = os.environ.get("REELDUB_INTAKE_PROXY_PORTS", "0").split(",")
     for port in ports:
         try:
@@ -86,3 +93,8 @@ def instagram_egress():
         finally:
             server.shutdown()
             thread.join()
+
+
+if __name__ == "__main__":
+    with ThreadingHTTPServer(PRIVATE_PROXY, MediaTunnel) as server:
+        server.serve_forever()

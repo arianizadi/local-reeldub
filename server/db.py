@@ -5,7 +5,7 @@ from functools import lru_cache
 from pymongo import MongoClient
 
 
-QUEUE_ORDER = [("priority", -1), ("queue_seq", 1), ("created", 1), ("_id", 1)]
+QUEUE_ORDER = [("recovery_rank", -1), ("priority", -1), ("queue_seq", 1), ("created", 1), ("_id", 1)]
 
 
 def now():

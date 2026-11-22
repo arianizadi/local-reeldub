@@ -2,21 +2,15 @@ import SwiftUI
 import AuthenticationServices
 import CryptoKit
 
-enum Palette {
-    static let ink = Color(red: 0.094, green: 0.078, blue: 0.074)
-    static let paper = Color(red: 0.976, green: 0.968, blue: 0.950)
-    static let ember = Color(red: 1, green: 0.405, blue: 0.255)
-    static let canvas = Color(uiColor: UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0.075, alpha: 1) : UIColor(red: 0.976, green: 0.968, blue: 0.950, alpha: 1) })
-    static let surface = Color(uiColor: .secondarySystemGroupedBackground)
-}
-
 struct Welcome: View {
     let studio: Studio
     @State private var selfHost = false
+    @State private var help = false
     @State private var busy = false
     @State private var issue: String?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ScaledMetric(relativeTo: .largeTitle) private var headline = 54.0
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
         GeometryReader { geo in
@@ -29,9 +23,9 @@ struct Welcome: View {
                     .accessibilityElement(children: .combine)
                     Spacer(minLength: 28)
                     Image("voice-print").resizable().scaledToFit()
-                        .frame(maxWidth: .infinity).accessibilityHidden(true)
+                        .frame(maxWidth: .infinity).frame(maxHeight: typeSize.isAccessibilitySize ? 46 : 160).accessibilityHidden(true)
                     Text("Reels, in your language.")
-                        .font(.system(size: headline, weight: .medium, design: .serif)).tracking(-2)
+                        .font(typeSize.isAccessibilitySize ? .system(.title, design: .serif) : .system(size: headline, weight: .medium, design: .serif)).tracking(-1)
                         .fixedSize(horizontal: false, vertical: true).padding(.top, 14)
                     Text("Share a Reel from Instagram. Choose a dub language and hear it with the original background sound.")
                         .font(.body).foregroundStyle(.white.opacity(0.76)).fixedSize(horizontal: false, vertical: true).padding(.top, 12)
@@ -45,14 +39,23 @@ struct Welcome: View {
                         if let message = issue ?? studio.welcomeMessage { Text(message).font(.footnote).foregroundStyle(.white).accessibilityLabel("Sign-in message. " + message) }
                         Button("Use my own server") { selfHost = true }
                             .frame(maxWidth: .infinity, minHeight: 44).foregroundStyle(.white.opacity(0.85))
+                        ViewThatFits(in: .horizontal) {
+                            HStack(spacing: 22) { PolicyLinks() }.fixedSize()
+                            VStack(alignment: .leading, spacing: 8) { PolicyLinks() }
+                        }.font(.footnote).tint(.white)
+                        Button("Help with ReelDub") { help = true }.font(.footnote).tint(.white).frame(minHeight: 44)
                     }
                 }.padding(.horizontal, 26).padding(.vertical, 14)
                     .frame(maxWidth: 570).frame(minHeight: max(0, geo.size.height))
                     .frame(maxWidth: .infinity)
             }
         }.background(Palette.ink.ignoresSafeArea()).foregroundStyle(.white)
+            .sheet(isPresented: $help) { ReelDubHelp() }
             .sheet(isPresented: $selfHost) { SelfHost(studio: studio) }
             .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: busy)
+            .onChange(of: issue) { _, value in
+                if let value { AccessibilityNotification.Announcement(value).post() }
+            }
     }
 }
 
@@ -140,6 +143,34 @@ struct AppleButton: UIViewRepresentable {
             window = nil
             view.busy = false
             view.issue = message
+        }
+    }
+}
+
+struct PolicyLinks: View {
+    var body: some View {
+        Link("Cloud privacy", destination: Connection.hosted.appending(path: "privacy")).frame(minHeight: 44)
+        Link("Terms of use", destination: URL(string: "https://www.apple.com/legal/internet-services/itunes/dev/stdeula/")!).frame(minHeight: 44)
+    }
+}
+
+struct ReelDubHelp: View {
+    @Environment(\.dismiss) private var dismiss
+    var body: some View {
+        NavigationStack {
+            List {
+                Section("Report a problem with a dub") {
+                    Text("Open the video in Dubs, choose Report an issue, and describe the problem. Include the time in the video if you can.")
+                }
+                Section("Sign in") {
+                    Text("Use Continue with Apple for ReelDub Cloud. For your own server, enter the HTTPS address and access key provided by its operator.")
+                }
+                Section("Purchases") {
+                    Text("In Account, open Plans & minutes to restore purchases or manage an Apple subscription.")
+                }
+                Section { PolicyLinks() }
+            }.navigationTitle("ReelDub help").navigationBarTitleDisplayMode(.inline)
+                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
         }
     }
 }

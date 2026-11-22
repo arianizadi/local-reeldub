@@ -90,7 +90,7 @@ def run(args):
             args.voice_mode = "preset" if args.lab_voice == "preset" else "match"
         beam = 1 if args.quality == "fast" else 5
         os.environ["REELDUB_QWEN_SIZE"] = "0.6B" if args.lab_voice == "small" else "1.7B"
-        os.environ["REELDUB_TTS_BATCH_SIZE"] = str(args.voice_batch or 2)
+        os.environ["REELDUB_TTS_BATCH_SIZE"] = str(args.voice_batch or os.getenv("REELDUB_TTS_BATCH_SIZE") or 2)
     matched_default = (APP / ".qwen-venv/ready").is_file() and output.matched
     match = matched_default if args.voice_mode == "auto" else args.voice_mode == "match"
     if match and not output.matched:
