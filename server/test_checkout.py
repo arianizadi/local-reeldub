@@ -10,12 +10,12 @@ from fastapi import HTTPException
 from psycopg.errors import ReadOnlySqlTransaction
 
 from . import api, checkout, store
-from .db import db, uses_postgres
+from .db import db, separate_metadata, uses_postgres
 
 
 @skipUnless(
-    os.getenv("REELDUB_TEST_DATABASE") == "1" and uses_postgres(),
-    "Requires disposable Postgres",
+    os.getenv("REELDUB_TEST_DATABASE") == "1" and separate_metadata(),
+    "Requires disposable metadata",
 )
 class CheckoutTests(TestCase):
     def setUp(self):
@@ -97,6 +97,7 @@ class CheckoutTests(TestCase):
             self.assertEqual(account["store_token"], self.token)
             self.assertEqual(db().purchase_intents.count_documents({"owner": self.user}), 0)
 
+    @skipUnless(uses_postgres(), "Simulates a PostgreSQL read-only transaction")
     def test_failed_database_does_not_admit(self):
         with (
             patch.object(db(), "connection", side_effect=ReadOnlySqlTransaction()),

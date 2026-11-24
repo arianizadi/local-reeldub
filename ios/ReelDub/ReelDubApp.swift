@@ -66,7 +66,9 @@ final class Studio {
     private(set) var transferErrors: [String: String] = [:]
     private var transferRetries: [String: TransferRetry] = [:]
     private var transferTask: Task<Void, Never>?
-    private var deleting: Set<String> = []
+    private var pendingRemovals: [String: DeviceLibrary.Removal] = [:]
+    private var syncing: UUID?
+    var hasPendingRemovals: Bool { !pendingRemovals.isEmpty }
     private var refreshGeneration = 0
     private var fullRefreshes = 0
     @ObservationIgnored var unfinishedPurchases: AsyncStream<Void>.Continuation?
@@ -85,7 +87,9 @@ final class Studio {
 
     private func restoreLibrary() {
         library = connection.flatMap(DeviceLibrary.init)
-        saved = library?.inventory() ?? [:]
+        pendingRemovals = library?.pendingRemovals() ?? [:]
+        for id in pendingRemovals.keys { try? library?.remove(id) }
+        saved = (library?.inventory() ?? [:]).filter { pendingRemovals[$0.key] == nil }
         retainedJobs = library?.retainedJobs() ?? [:]
         unrecordedMarkers = library?.unrecordedDownloadMarkers() ?? []
         mergeJobs([])
@@ -252,7 +256,7 @@ final class Studio {
         var latest = retainedJobs
         latest.merge(saved) { _, saved in saved }
         for job in remote { latest[job.id] = job }
-        jobs = latest.values.sorted { $0.activity == $1.activity ? $0.id > $1.id : $0.activity > $1.activity }
+        jobs = latest.values.filter { pendingRemovals[$0.id] == nil }.sorted { $0.activity == $1.activity ? $0.id > $1.id : $0.activity > $1.activity }
     }
 
     var nextTransferRetry: Date? {
@@ -311,16 +315,23 @@ final class Studio {
     func deleteAccount(identity: String, challenge: String, code: String) async throws {
         guard let api, api.connection.isHosted else { throw Problem("Sign in to ReelDub Cloud first.") }
         let local = library
-        struct Receipt: Decodable { let apple_revoked: Bool }
+        struct Receipt: Decodable { let apple_revoked: Bool; let state: String? }
         let response = try await api.data("v1/account", method: "DELETE", body: [
             "identity_token": identity, "challenge": challenge, "authorization_code": code])
         let receipt = try JSONDecoder().decode(Receipt.self, from: response)
-        guard matches(api) else { return }
-        clearSession()
-        welcomeMessage = receipt.apple_revoked ? "Your ReelDub account was deleted." :
-            "Your ReelDub account was deleted. To disconnect Apple, open Settings → your name → Sign in with Apple → ReelDub."
+        let currentAccount = matches(api)
+        if currentAccount { clearSession() }
+        // Refresh may have signed out the revoked session while the receipt was in flight.
+        // Always erase the original library and leave any newly connected account alone.
+        var message = receipt.state == "pending"
+            ? "Your account is closed. ReelDub will finish deleting your data automatically."
+            : "Your ReelDub account and dubs were deleted."
         do { try local?.erase() }
-        catch { welcomeMessage = "Your Cloud account was deleted. Remove ReelDub from this device to clear the remaining local files." }
+        catch { message += " Remove ReelDub from this device to clear its remaining files." }
+        if !receipt.apple_revoked {
+            message += " To disconnect Apple, open Settings → your name → Sign in with Apple → ReelDub."
+        }
+        if currentAccount || connection == nil { welcomeMessage = message }
     }
     func disconnect() async {
         let previous = api
@@ -331,7 +342,7 @@ final class Studio {
         libraryRevision += 1
         transferTask?.cancel()
         transferTask = nil; transferring = nil
-        deleting = []; transferErrors = [:]; transferRetries = [:]
+        pendingRemovals = [:]; syncing = nil; transferErrors = [:]; transferRetries = [:]
         saved = [:]; retainedJobs = [:]; unrecordedMarkers = []; library = nil
     }
 
@@ -344,7 +355,7 @@ final class Studio {
     private func startTransfer() {
         guard transferTask == nil, let api, let library,
               let job = jobs.first(where: { job in
-                  job.state == "done" && job.available_on_server == true && !deleting.contains(job.id) && !library.isManualDownload(job.id)
+                  job.state == "done" && job.available_on_server == true && pendingRemovals[job.id] == nil && !library.isManualDownload(job.id)
                     && (transferRetries[job.id]?.permits(job, at: Date()) ?? true)
                     && (saved[job.id] == nil || library.needsReceipt(job.id))
               }) else { return }
@@ -362,7 +373,7 @@ final class Studio {
                     defer { try? FileManager.default.removeItem(at: temp) }
                     try await DeviceLibrary.validateMovie(temp)
                     try Task.checkCancellation()
-                    guard matches(api), !deleting.contains(job.id), !library.isManualDownload(job.id), jobs.contains(where: { $0.id == job.id }) else { return }
+                    guard matches(api), pendingRemovals[job.id] == nil, !library.isManualDownload(job.id), jobs.contains(where: { $0.id == job.id }) else { return }
                     try library.save(temp, job: job)
                     saved[job.id] = job
                     retainedJobs[job.id] = nil
@@ -370,7 +381,7 @@ final class Studio {
                 let bytes = try library.movie(job.id).resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
                 _ = try await api.post("v1/jobs/" + job.id + "/received", ["bytes": bytes])
                 try Task.checkCancellation()
-                guard matches(api), !deleting.contains(job.id), !library.isManualDownload(job.id) else { return }
+                guard matches(api), pendingRemovals[job.id] == nil, !library.isManualDownload(job.id) else { return }
                 try library.markReceived(job.id)
                 transferErrors[job.id] = nil; transferRetries[job.id] = nil
             } catch is SessionError {
@@ -395,23 +406,6 @@ final class Studio {
         }
     }
 
-    func removeDownload(_ id: String) throws {
-        guard let library, let job = saved[id] else { return }
-        try library.removeDownload(job)
-        retainedJobs[id] = job
-        libraryRevision += 1
-        if transferring == id {
-            transferTask?.cancel()
-            transferTask = nil
-            transferring = nil
-        }
-        saved[id] = nil
-        transferErrors[id] = nil
-        transferRetries[id] = nil
-        if let api { RDPosterStore.shared.remove(id, api: api) }
-        startTransfer()
-    }
-
     func canDownloadAgain(_ id: String) -> Bool {
         guard saved[id] == nil, jobs.first(where: { $0.id == id })?.available_on_server != false else { return false }
         if case .stopped = transferRetries[id] { return true }
@@ -426,17 +420,50 @@ final class Studio {
         startTransfer()
     }
 
-    func deleteDub(_ id: String) async throws {
-        guard let api else { throw Problem("Connect to a server first.") }
-        deleting.insert(id)
-        defer { if sameConnection(api) { deleting.remove(id) } }
-        _ = try await api.data("v1/jobs/" + id, method: "DELETE")
-        guard matches(api) else { throw Problem("Your connection changed.") }
+    func removeFromLibrary(_ job: Job) throws {
+        guard !job.rdPhase.isActive else { throw Problem("Wait for this dub to finish before removing it.") }
+        guard let library else { throw Problem("Open your library once while connected to remove dubs offline.") }
+        pendingRemovals[job.id] = try library.queueRemoval(job)
         libraryRevision += 1
-        try library?.remove(id)
-        saved[id] = nil; retainedJobs[id] = nil; transferErrors[id] = nil; transferRetries[id] = nil
-        RDPosterStore.shared.remove(id, api: api)
-        jobs.removeAll { $0.id == id }
+        if transferring == job.id {
+            transferTask?.cancel()
+            transferTask = nil
+            transferring = nil
+        }
+        jobs.removeAll { $0.id == job.id }
+        saved[job.id] = nil; retainedJobs[job.id] = nil
+        transferErrors[job.id] = nil; transferRetries[job.id] = nil
+        if let api { RDPosterStore.shared.remove(job.id, api: api) }
+        try library.remove(job.id)
+        startTransfer()
+    }
+
+    func syncLibraryRemovals() async {
+        guard syncing == nil, !pendingRemovals.isEmpty, let api, let library else { return }
+        let run = UUID()
+        syncing = run
+        defer { if syncing == run { syncing = nil } }
+        var newerRequest = false
+        for entry in Array(pendingRemovals.values) {
+            guard !Task.isCancelled, matches(api), pendingRemovals[entry.id] == entry else { break }
+            do {
+                // If the app closed after writing its intent, cleanup still precedes acknowledgement.
+                try library.remove(entry.id)
+                do {
+                    try await api.removeLibraryEntry(entry.id, revision: entry.revision)
+                } catch let error as ServiceError where [404, 410, 412].contains(error.status) {
+                    if error.status == 412 { newerRequest = true }
+                }
+                guard matches(api), pendingRemovals[entry.id] == entry else { break }
+                try library.finishRemoval(entry.id)
+                pendingRemovals.removeValue(forKey: entry.id)
+                libraryRevision += 1
+            } catch {
+                // Keep the intent across network loss, throttling, or session expiry.
+                break
+            }
+        }
+        if newerRequest, matches(api) { Task { await refresh() } }
     }
 
     @discardableResult func submit(_ url: String, target: String = "en") async throws -> Job {

@@ -4,9 +4,10 @@ import logging
 import os
 import re
 import secrets
+import subprocess
 from contextlib import asynccontextmanager, nullcontext
-from datetime import timedelta
-from typing import Literal
+from datetime import datetime, timedelta
+from typing import Annotated, Literal
 from uuid import UUID, uuid4
 from tempfile import TemporaryFile
 from urllib.parse import unquote
@@ -21,12 +22,12 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import PlainTextResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 from pymongo import ReturnDocument
-from pymongo.errors import DuplicateKeyError
+from pymongo.errors import ConnectionFailure, DuplicateKeyError, ExecutionTimeout, WTimeoutError
 from starlette.concurrency import run_in_threadpool
 
 from .wakeup import next_hour, notify
-from .db import uses_postgres, media_db, db, now, setup_indexes
-from . import console, checkout, erasure, store, store_history, minutes, sources, launch_metrics
+from .db import separate_metadata, uses_postgres, media_db, db, now, setup_indexes
+from . import console, checkout, erasure, erasure_journal, store, store_history, minutes, sources, launch_metrics
 from .source import TOO_LONG, reel_url
 from .languages import default_render_quality, outputs
 
@@ -205,7 +206,7 @@ async def sweep_media():
     while True:
         delay = 60
         try:
-            if uses_postgres():
+            if separate_metadata():
                 delay = await run_in_threadpool(maintain_postgres)
             else:
                 await run_in_threadpool(resume_deletions)
@@ -234,6 +235,9 @@ async def lifespan(app):
 app = FastAPI(title="ReelDub", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 
 
+@app.exception_handler(ConnectionFailure)
+@app.exception_handler(ExecutionTimeout)
+@app.exception_handler(WTimeoutError)
 @app.exception_handler(OperationalError)
 @app.exception_handler(PoolTimeout)
 async def database_unavailable(request, error):
@@ -255,7 +259,7 @@ def health():
 def privacy():
     return """ReelDub Cloud privacy
 
-ReelDub uses your Apple sign-in identifier and the email Apple shares to manage your account. Hosted account and job records are held in Neon Postgres. Video and poster bytes stay in our private media cache.
+ReelDub uses your Apple sign-in identifier and the email Apple shares to manage your account. Hosted account and job records are stored on our private servers. Video and poster bytes stay in our private media cache. Offsite account database backups, when enabled, are encrypted and expire after seven days. Video and poster files are excluded. Deletion receipts allow us to remove deleted accounts when restoring a backup.
 
 When uploads are enabled, ReelDub stores private source files temporarily, normally for 24 hours, and while confirmed work needs them. ReelDub fetches submitted Reel URLs from Instagram and processes the audio and video on its render workers. Cloudflare routes hosted requests. Your account can access your job history, reports and videos. The service administrator can review submitted Reel links, titles, language choices, issue reports, account contact information and processing statistics for support and moderation. A minimal suspension record may be retained to enforce a ban. Sharing a video exports a copy to the destination you choose. After the app confirms a download, the server keeps the video for 24 hours from the last eligible request. Undelivered videos expire after seven days. Removing a dub hides it from your library, revokes playback links and clears its issue report. A private cached copy can be reused by your account until its deadline. Saved dubs remain on your device until removed.
 
@@ -292,7 +296,7 @@ def me(user=Depends(restricted_owner), checkout_version: str = Header(default=""
         if minutes.enabled():
             monthly, pack = minutes.funding(user,result["tier"],now())
             result.update(monthly_seconds=len(monthly), pack_seconds=len(pack))
-        store_connected = checkout_version == "1" and uses_postgres() and store.enabled()
+        store_connected = checkout_version == "1" and separate_metadata() and store.enabled()
         result["purchase_preflight"] = store_connected and minutes.enabled() and user.startswith("apple:")
     if store_connected and user.startswith("apple:"):
         result["store_token"] = account.get("store_token") or store.store_token(user)
@@ -416,7 +420,7 @@ class SelfHostAppProof(BaseModel):
 
 @app.post("/v1/store/self-host/intents")
 def prepare_self_host(body: SelfHostAppProof):
-    if not uses_postgres():
+    if not separate_metadata():
         raise HTTPException(503, checkout.UNAVAILABLE)
     proof = store.verify_self_host(body.signed_app, app=True)
     identifier = proof.appTransactionId or proof.deviceVerification
@@ -429,7 +433,7 @@ def prepare_self_host(body: SelfHostAppProof):
 
 @app.post("/v1/store/self-host/transactions", status_code=204)
 def deliver_self_host(body: SignedTransaction):
-    if not uses_postgres():
+    if not separate_metadata():
         raise HTTPException(503, "Purchase recording is temporarily unavailable.")
     store.record_self_host(store.verify_self_host(body.signed_transaction))
 
@@ -467,10 +471,10 @@ def challenge(request: Request):
     if os.getenv("TRUST_TUNNEL_IP") == "1":
         client_ip = request.headers.get("CF-Connecting-IP") or client_ip
     ip = hash_value(client_ip)
-    challenges = media_db().signin_challenges if uses_postgres() else db().challenges
+    challenges = media_db().signin_challenges if separate_metadata() else db().challenges
     if challenges.count_documents({"ip": ip, "expires": {"$gt": stamp}}, limit=20) >= 20:
         raise HTTPException(429, "Try signing in again later.")
-    value = ("v1." if uses_postgres() else "") + secrets.token_urlsafe(32)
+    value = ("v1." if separate_metadata() else "") + secrets.token_urlsafe(32)
     challenges.insert_one({"_id": hash_value(value), "ip": ip, "expires": stamp + timedelta(minutes=5)})
     return {"challenge": value}
 
@@ -544,9 +548,21 @@ class DeleteAccount(AppleLogin):
 def delete_account(body: DeleteAccount, user=Depends(restricted_owner)):
     if not user.startswith("apple:") or "apple:" + verify_identity(body)["sub"] != user:
         raise HTTPException(403, "Confirm deletion with the Apple Account that owns these dubs.")
-    db().account_deletions.update_one({"_id": user}, {"$setOnInsert": {"created": now()}}, upsert=True)
-    erasure.erase(user)
-    return {"apple_revoked": erasure.revoke_apple(body.authorization_code, user, apple_keys)}
+    stamp = now()
+    try:
+        erasure_journal.record(user, stamp)
+    except (OSError, subprocess.SubprocessError):
+        logging.error("Could not persist the account deletion receipt")
+        raise HTTPException(503, "Your account deletion could not start. Please try again shortly.")
+    db().account_deletions.update_one({"_id": user}, {"$setOnInsert": {"created": stamp}}, upsert=True)
+    # The durable marker denies access immediately; maintenance retries a partial cleanup.
+    state = "deleted"
+    try:
+        erasure.erase(user)
+    except Exception:
+        logging.exception("Account deletion is pending a cleanup retry")
+        state = "pending"
+    return {"state": state, "apple_revoked": erasure.revoke_apple(body.authorization_code, user, apple_keys)}
 
 
 @app.delete("/v1/session", status_code=204)
@@ -652,15 +668,23 @@ def enqueue_render(job, plan, limit):
             job["launch_free_slot"] = job["slot"]
         if job.get("priority"):
             job.update(launch_metrics.priority_entry(job, now()))
-    if uses_postgres():
-        if not db().admit_job(job):
-            raise HTTPException(403,"This account is suspended.")
-    else:
-        db().jobs.insert_one(job)
-        if job["owner"].startswith("apple:") and db().accounts.find_one({"_id":job["owner"],"banned":True},{"_id":1}):
-            console.cancel_pending(job["owner"])
-            raise HTTPException(403,"This account is suspended.")
+    if not admit_job(job):
+        raise HTTPException(403, "This account is suspended.")
     notify(ticket=ticket)
+
+
+def admit_job(job):
+    if uses_postgres():
+        return db().admit_job(job)
+    user = job["owner"]
+    suspended = {"_id": user, "banned": True}
+    if user.startswith("apple:") and db().accounts.find_one(suspended, {"_id": 1}):
+        return False
+    db().jobs.insert_one(job)
+    if user.startswith("apple:") and db().accounts.find_one(suspended, {"_id": 1}):
+        console.cancel_pending(user)
+        return False
+    return True
 
 
 @app.post("/v1/jobs")
@@ -838,8 +862,21 @@ def job_status(job_id: str, user=Depends(owner)):
 
 
 @app.delete("/v1/jobs/{job_id}", status_code=204)
-def delete_dub(job_id: str, user=Depends(owner)):
+def delete_dub(job_id: str, user=Depends(owner),
+               revision: Annotated[str | None, Header(alias="X-ReelDub-Library-Revision", max_length=64)] = None):
     key = {"_id": job_id, "owner": user}
+    if revision is not None:
+        # A cached dub keeps its ID when requested again, including by a different device.
+        if revision == "original":
+            key["last_requested"] = None
+        else:
+            try:
+                timestamp = datetime.fromisoformat(revision)
+                if timestamp.tzinfo is None:
+                    raise ValueError()
+            except ValueError:
+                raise HTTPException(422, "Invalid library revision.")
+            key["last_requested"] = timestamp
     stamp = now()
     retained = db().jobs.find_one_and_update({**key, **live_media_query(stamp)}, [
         {"$set": {"deleted": True, "cache_retained": True,
@@ -861,7 +898,9 @@ def delete_dub(job_id: str, user=Depends(owner)):
                        "artifact": 1, "deleted": {"$literal": True}, **launch_metrics.TOMBSTONE_FIELDS}}],
         return_document=ReturnDocument.AFTER)
     if not job:
-        owned(job_id, user)
+        current = owned(job_id, user)
+        if revision is not None and current.get("last_requested") != key["last_requested"]:
+            raise HTTPException(412, "This dub was requested again. Its new library entry was kept.")
         raise HTTPException(409, "Wait for this translation to finish before deleting it.")
     purge_deleted_media(job)
 
@@ -942,14 +981,18 @@ def playback(job_id: str, user=Depends(owner)):
     return {"ticket": ticket}
 
 
+def playback_grant(digest, job_id, stamp):
+    if uses_postgres():
+        return db().playback_grant(digest, job_id, stamp)
+    grant = db().playback.find_one({"_id": digest, "job": job_id, "expires": {"$gt": stamp}})
+    if grant and db().accounts.find_one({"_id": grant["owner"], "banned": True}, {"_id": 1}):
+        return None
+    return grant
+
+
 @app.api_route("/v1/play/{job_id}/{ticket}", methods=["GET", "HEAD"])
 def stream(job_id: str, ticket: str, request: Request, range: str | None = Header(default=None)):
-    if uses_postgres():
-        grant = db().playback_grant(hash_value(ticket), job_id, now())
-    else:
-        grant = db().playback.find_one({"_id": hash_value(ticket), "job": job_id, "expires": {"$gt": now()}})
-        if grant and db().accounts.find_one({"_id":grant["owner"],"banned":True},{"_id":1}):
-            grant = None
+    grant = playback_grant(hash_value(ticket), job_id, now())
     if not grant:
         raise HTTPException(404, "Playback link expired.")
     job = owned(job_id, grant["owner"])

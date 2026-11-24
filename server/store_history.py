@@ -11,7 +11,7 @@ from uuid import uuid4
 from pymongo import ReturnDocument
 
 from . import store
-from .db import db, now, uses_postgres
+from .db import db, now, separate_metadata
 
 
 def configured():
@@ -19,7 +19,7 @@ def configured():
 
 
 def next_check(stamp):
-    if uses_postgres():
+    if separate_metadata():
         return stamp.replace(minute=30 * (stamp.minute // 30), second=0, microsecond=0) + timedelta(minutes=30)
     return stamp + timedelta(minutes=30)
 
@@ -83,4 +83,4 @@ async def run():
         except Exception as error:
             logging.warning("Apple notification history will retry (%s)", type(error).__name__)
         stamp = now()
-        await asyncio.sleep((next_check(stamp) - stamp).total_seconds() if uses_postgres() else 60)
+        await asyncio.sleep((next_check(stamp) - stamp).total_seconds() if separate_metadata() else 60)

@@ -37,9 +37,12 @@ findmnt -rn -M "$private" >/dev/null
 if [[ -n ${REELDUB_EXPECTED_PRIVATE_SOURCE:-} ]]; then
     [[ $(findmnt -nr -o SOURCE -M "$private") == "$REELDUB_EXPECTED_PRIVATE_SOURCE" ]]
 fi
-required=(api.env operator.env fleet.env intake.env api.dsn ca.pem server.pem fleet-registry.json
+required=(api.env operator.env fleet.env intake.env ca.pem server.pem fleet-registry.json
     fleet-ca.pem fleet-tls.pem fleet-tls.key origin.key gateway-known
     intake/ca.pem intake/client.pem intake/client.key)
+if grep -q '^REELDUB_POSTGRES_DSN_FILE=' "$cfg"/{api,operator,fleet}.env; then
+    required+=(api.dsn)
+fi
 for file in "${required[@]}"; do
     [[ -f $cfg/$file && ! -L $cfg/$file && -s $cfg/$file ]] || { echo "Missing physical configuration: $file" >&2; exit 1; }
 done
@@ -83,8 +86,12 @@ done
 if [[ ! -d $private/mongo ]]; then install -d -m 0700 -o reeldub-media -g reeldub-media "$private/mongo"; fi
 chown root:root "$cfg"/{api,operator,fleet,intake}.env
 chmod 0600 "$cfg"/{api,operator,fleet,intake}.env
-chown root:reeldub "$cfg"/{api.dsn,fleet-registry.json}
-chmod 0640 "$cfg"/{api.dsn,fleet-registry.json}
+chown root:reeldub "$cfg/fleet-registry.json"
+chmod 0640 "$cfg/fleet-registry.json"
+if [[ -f $cfg/api.dsn ]]; then
+    chown root:reeldub "$cfg/api.dsn"
+    chmod 0640 "$cfg/api.dsn"
+fi
 chown root:reeldub "$cfg/intake" "$cfg/intake"/{ca.pem,client.key,client.pem}
 chmod 0750 "$cfg/intake"
 chmod 0640 "$cfg/intake"/{ca.pem,client.key,client.pem}

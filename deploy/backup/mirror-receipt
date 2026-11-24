@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+export AWS_EC2_METADATA_DISABLED=true
+export AWS_SHARED_CREDENTIALS_FILE="${REELDUB_ERASURE_AWS_FILE:?}"
+exec /opt/reeldub-backup/venv/bin/python /opt/reeldub-backup/archive.py mirror "$1"

@@ -6,7 +6,7 @@ from unittest.mock import patch
 from uuid import uuid4
 
 from . import api, launch_metrics
-from .db import db, setup_indexes, uses_postgres
+from .db import db, separate_metadata, setup_indexes, uses_postgres
 
 
 @skipUnless(os.getenv("REELDUB_TEST_DATABASE") == "1", "Disposable test database required")
@@ -90,9 +90,9 @@ class LaunchMetricsTests(TestCase):
         self.assertEqual(data["priority_started"], 2)
         self.assertEqual(data["priority_median_seconds"], 7)
         self.assertAlmostEqual(data["priority_p95_seconds"], 11.5)
-        self.assertEqual(data["busy_priority_started"], int(uses_postgres()))
-        self.assertEqual(data["priority_occupancy_known"], 2 if uses_postgres() else 0)
-        self.assertEqual(data["busy_priority_p95_seconds"], 12 if uses_postgres() else None)
+        self.assertEqual(data["busy_priority_started"], int(separate_metadata()))
+        self.assertEqual(data["priority_occupancy_known"], 2 if separate_metadata() else 0)
+        self.assertEqual(data["busy_priority_p95_seconds"], 12 if separate_metadata() else None)
 
     def test_paid_skip_wait_begins_at_promotion(self):
         stamp = self.stamp

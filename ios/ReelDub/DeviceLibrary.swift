@@ -116,14 +116,38 @@ struct DeviceLibrary {
         try JSONEncoder().encode(job).write(to: reference(job.id), options: [.atomic, .completeFileProtection])
     }
 
-    func removeDownload(_ job: Job) throws {
-        let id = job.id
-        try retain(job)
-        let marker = exclusion(id)
-        try files.createDirectory(at: marker.deletingLastPathComponent(), withIntermediateDirectories: true)
-        // Persist the preference before unlinking the movie so a refresh or relaunch cannot restore it.
-        try Data().write(to: marker, options: .atomic)
-        if files.fileExists(atPath: directory(id).path) { try files.removeItem(at: directory(id)) }
+    struct Removal: Codable, Equatable {
+        let id: String
+        let revision: String
+    }
+
+    private var removals: URL { root.appending(path: ".pending-removals", directoryHint: .isDirectory) }
+    private func removal(_ id: String) -> URL { removals.appending(path: Self.digest(id)) }
+
+    func pendingRemovals() -> [String: Removal] {
+        var entries: [String: Removal] = [:]
+        for file in (try? files.contentsOfDirectory(at: removals, includingPropertiesForKeys: nil)) ?? [] {
+            guard let data = try? Data(contentsOf: file), let entry = try? JSONDecoder().decode(Removal.self, from: data),
+                  file.lastPathComponent == Self.digest(entry.id) else { continue }
+            entries[entry.id] = entry
+        }
+        return entries
+    }
+
+    func queueRemoval(_ job: Job) throws -> Removal {
+        let entry = Removal(id: job.id, revision: job.last_requested ?? "original")
+        try files.createDirectory(at: removals, withIntermediateDirectories: true)
+        var folder = root
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        try folder.setResourceValues(values)
+        try JSONEncoder().encode(entry).write(to: removal(job.id), options: [.atomic, .completeFileProtection])
+        return entry
+    }
+
+    func finishRemoval(_ id: String) throws {
+        let file = removal(id)
+        if files.fileExists(atPath: file.path) { try files.removeItem(at: file) }
     }
 
     func allowDownload(_ id: String) throws {

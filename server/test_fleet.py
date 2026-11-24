@@ -24,7 +24,7 @@ import requests
 import uvicorn
 
 from . import api, console, fleet, fleet_health, worker
-from .db import db, media_db, now, uses_postgres
+from .db import db, media_db, now, separate_metadata, setup_indexes, uses_postgres
 from .postgres import install
 from .wakeup import notify
 from .source import TOO_LONG
@@ -51,13 +51,16 @@ def http_fixture(app, *, lifespan="auto"):
             thread.join(timeout=10)
 
 
-@skipUnless(os.getenv("REELDUB_TEST_DATABASE") == "1" and uses_postgres(), "Requires disposable PostgreSQL and GridFS")
+@skipUnless(os.getenv("REELDUB_TEST_DATABASE") == "1" and separate_metadata(), "Requires disposable metadata and GridFS")
 class FleetIntegration(TestCase):
     @classmethod
     def setUpClass(cls):
         cls.enterClassContext(patch.dict(os.environ, {"REELDUB_FLEET_REGISTRY": '{"nodes":{}}'}))
-        with db().connection() as conn:
-            install(conn)
+        if uses_postgres():
+            with db().connection() as conn:
+                install(conn)
+        else:
+            setup_indexes()
         cls.base = cls.enterClassContext(http_fixture(fleet.app))
 
     def setUp(self):

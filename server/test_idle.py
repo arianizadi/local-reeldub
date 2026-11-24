@@ -20,7 +20,7 @@ from .db import db, media_db, now, uses_postgres
 class LocalWakeTests(unittest.TestCase):
     @unittest.skipUnless(sys.platform == "linux", "Linux notification")
     def test_one_signal_wakes_every_waiter_and_idle_reads_no_queue(self):
-        with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {"REELDUB_WAKE_FILE": str(Path(temp) / "signal")}), patch.object(wakeup, "uses_postgres", return_value=False):
+        with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {"REELDUB_WAKE_FILE": str(Path(temp) / "signal")}), patch.object(wakeup, "separate_metadata", return_value=False):
             workers = [wakeup.Wake(), wakeup.Wake()]
             for worker in workers:
                 self.assertIsNotNone(worker.watcher)

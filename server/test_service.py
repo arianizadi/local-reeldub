@@ -101,7 +101,7 @@ class QueueIntegration(unittest.TestCase):
         bucket = gridfs.GridFS(media_db())
         artifact = bucket.put(b"test video")
         db().jobs.update_one({"_id": job["_id"]}, {"$set": {
-            "state": "done", "artifact": artifact}})
+            "state": "done", "artifact": artifact, "source_seconds": 10}})
         ticket = call(paid, path + "/playback", {})[1]["ticket"]
         used = call(paid, "/v1/me")[1]["used"]
         for _ in range(2):

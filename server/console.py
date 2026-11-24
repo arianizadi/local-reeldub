@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Response
 from pydantic import BaseModel, Field
 from pymongo.errors import DuplicateKeyError, PyMongoError
 
-from .db import db, media_db, now, uses_postgres
+from .db import db, media_db, now, separate_metadata, uses_postgres
 from . import launch_metrics
 from .source import reel_url
 from .languages import LANGUAGES, outputs
@@ -249,7 +249,7 @@ def metrics():
             row[1] += float(runtime)
             row[2] += float(duration)
     fleet, nodes = [], []
-    if uses_postgres() and os.getenv("MONGO_URI"):
+    if separate_metadata() and os.getenv("MONGO_URI"):
         try:
             rows = media_db().fleet_telemetry.find({"sampled": {"$gt": now() - timedelta(minutes=3)}}).sort("sampled", -1)
             fleet = [{"node": row.pop("_id"), **row} for row in rows]
@@ -344,7 +344,7 @@ def router(owner):
         if "apple:" + claims["sub"] != user:
             raise HTTPException(403, "Use the Apple account that owns the console.")
         token = secrets.token_urlsafe(40)
-        store = media_db().signin_challenges if uses_postgres() else db().challenges
+        store = media_db().signin_challenges if separate_metadata() else db().challenges
         store.insert_one(
             {
                 "_id": "admin/" + hash_value(token),
@@ -358,7 +358,7 @@ def router(owner):
         authorization: str = Header(),
         grant: str = Header(default="", alias="X-ReelDub-Admin"),
     ):
-        store = media_db().signin_challenges if uses_postgres() else db().challenges
+        store = media_db().signin_challenges if separate_metadata() else db().challenges
         if not 30 <= len(grant) <= 100 or not store.find_one(
             {
                 "_id": "admin/" + hash_value(grant),

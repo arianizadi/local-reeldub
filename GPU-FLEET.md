@@ -8,7 +8,7 @@ The hosted beta runs on one RTX 4070 Ti Super with two render slots. Proxmox hos
 | Control and media | Proxmox CT115 | Runs the API, private worker coordinator and encrypted GridFS for originals, renders and posters. Owns server credentials and publishes results. |
 | Media intake | Proxmox CT114 | Accepts authenticated fetch and inspection requests from CT115 on private TCP 8443. A restricted proxy sends Instagram and CDN requests through the provider VPN. If the VPN goes down, media egress closes. |
 | GPU | Linux devbox | Two slots on one 16 GiB card pull jobs through the private coordinator on TCP 8343. Model inference, audio mixing and encoding run on this machine. |
-| Durable metadata | Neon PostgreSQL | Holds accounts, entitlements, queue order, job leases and artifact references. Media bytes stay in private storage. |
+| Durable metadata | Private MongoDB database on Proxmox | Holds accounts, entitlements, queue order, job leases and artifact references. Media bytes stay in private storage. |
 
 ## From admission to playback
 

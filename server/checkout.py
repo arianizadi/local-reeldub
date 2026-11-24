@@ -9,10 +9,10 @@ from fastapi import HTTPException
 from psycopg import Error as DatabaseError
 from psycopg.types.json import Jsonb
 from psycopg_pool import PoolTimeout
-from pymongo.errors import DuplicateKeyError
+from pymongo.errors import PyMongoError
 
 from . import minutes, store
-from .db import db, now, uses_postgres
+from .db import db, now, separate_metadata, uses_mongo_metadata
 from .postgres import encode
 
 logger = logging.getLogger(__name__)
@@ -22,7 +22,7 @@ UNAVAILABLE = "Purchases are temporarily paused. No payment was started."
 def prepare(user, product):
     if (
         not minutes.enabled()
-        or not uses_postgres()
+        or not separate_metadata()
         or not store.enabled()
         or product not in (store.CREATOR, store.MINUTE_PACK)
     ):
@@ -47,30 +47,50 @@ def commit_intent(user, product, environment):
             "created": stamp,
             "expires": stamp + timedelta(days=30),
         }
-        with db().connection() as conn:
-            conn.execute("SET LOCAL synchronous_commit = on")
-            # One dedicated project/branch. Include other accessible databases on this endpoint.
-            size, provider_limit = conn.execute("""
-                SELECT sum(pg_database_size(oid)), pg_size_bytes(current_setting('neon.max_cluster_size',true))
-                FROM pg_database WHERE has_database_privilege(oid,'CONNECT')
-                """).fetchone()
-            if provider_limit and provider_limit > 0:
-                limit = min(limit, provider_limit)
-            if size >= limit * 4 // 5:
-                logger.warning("Checkout paused at database storage watermark")
-                raise HTTPException(503, UNAVAILABLE)
-            # Proves we can commit to the authoritative store. Payment deliveries never use this gate.
-            conn.execute(
-                "INSERT INTO reeldub.purchase_intents(doc) VALUES (%s)",
-                (Jsonb(encode(record)),),
-            )
+        if uses_mongo_metadata():
+            mongo_intent(record, limit)
+        else:
+            postgres_intent(record, limit)
         return {"id": record["_id"], "account": token, "product": product}
     except (
         DatabaseError,
         PoolTimeout,
-        DuplicateKeyError,
+        PyMongoError,
         ValueError,
         KeyError,
     ) as error:
         logger.warning("Checkout admission unavailable (%s)", type(error).__name__)
         raise HTTPException(503, UNAVAILABLE) from None
+
+
+def mongo_intent(record, limit):
+    database = db()
+    stats = database.command("dbStats", scale=1)
+    allocated = stats["storageSize"] + stats["indexSize"]
+    total, used = stats["fsTotalSize"], stats["fsUsedSize"]
+    if total <= 0 or allocated >= limit * 4 // 5 or used >= total * 4 // 5:
+        logger.warning("Checkout paused at database storage watermark")
+        raise HTTPException(503, UNAVAILABLE)
+    # The metadata client requests majority + journal acknowledgement before
+    # returning an intent. An unreachable/full/read-only database fails closed.
+    database.purchase_intents.insert_one(record)
+
+
+def postgres_intent(record, limit):
+    with db().connection() as conn:
+        conn.execute("SET LOCAL synchronous_commit = on")
+        # One dedicated project/branch. Include other accessible databases on this endpoint.
+        size, provider_limit = conn.execute("""
+            SELECT sum(pg_database_size(oid)), pg_size_bytes(current_setting('neon.max_cluster_size',true))
+            FROM pg_database WHERE has_database_privilege(oid,'CONNECT')
+            """).fetchone()
+        if provider_limit and provider_limit > 0:
+            limit = min(limit, provider_limit)
+        if size >= limit * 4 // 5:
+            logger.warning("Checkout paused at database storage watermark")
+            raise HTTPException(503, UNAVAILABLE)
+        # Proves we can commit to the authoritative store. Payment deliveries never use this gate.
+        conn.execute(
+            "INSERT INTO reeldub.purchase_intents(doc) VALUES (%s)",
+            (Jsonb(encode(record)),),
+        )

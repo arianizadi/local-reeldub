@@ -178,10 +178,10 @@ final class StudioSmoke: XCTestCase {
         XCTAssertTrue(delete.waitForExistence(timeout: 4), app.debugDescription)
         row(0).tap()
         drag(1, through: 3)
-        XCTAssertEqual(delete.label, "Delete (4)")
+        XCTAssertEqual(delete.label, "Remove (4)")
         for index in 0...3 { XCTAssertTrue(row(index).isSelected) }
         drag(2, through: 1)
-        XCTAssertEqual(delete.label, "Delete (2)")
+        XCTAssertEqual(delete.label, "Remove (2)")
         XCTAssertTrue(row(0).isSelected)
         XCTAssertFalse(row(1).isSelected)
         XCTAssertFalse(row(2).isSelected)
@@ -208,7 +208,7 @@ final class StudioSmoke: XCTestCase {
         let row = try prepareRangeSelection(app, signOutAfterTest: false)
         let inner = try await hinge.move(to: "open")
         XCTAssertGreaterThan(min(inner.width, inner.height), min(closed.width, closed.height))
-        XCTAssertEqual(app.buttons["delete-selected"].label, "Delete (2)")
+        XCTAssertEqual(app.buttons["delete-selected"].label, "Remove (2)")
         XCTAssertTrue(row(0).isSelected)
         XCTAssertTrue(row(3).isSelected)
         add(try await hinge.screenshot(named: "Duo unfolded library keeps selection"))
@@ -220,7 +220,7 @@ final class StudioSmoke: XCTestCase {
         let row = try prepareRangeSelection(app, signOutAfterTest: true)
         let delete = app.buttons["delete-selected"]
         delete.tap()
-        let confirm = app.buttons["Delete 2 dubs from library"]
+        let confirm = app.buttons.matching(identifier: "confirm-library-removal").firstMatch
         XCTAssertTrue(confirm.waitForExistence(timeout: 4))
         let cancel = app.buttons["Cancel"]
         if cancel.exists && cancel.isHittable {
@@ -229,7 +229,7 @@ final class StudioSmoke: XCTestCase {
             app.coordinate(withNormalizedOffset: CGVector(dx: 0.25, dy: 0.12)).tap()
         }
         XCTAssertTrue(confirm.waitForNonExistence(timeout: 3))
-        XCTAssertEqual(delete.label, "Delete (2)")
+        XCTAssertEqual(delete.label, "Remove (2)")
         XCTAssertTrue(row(0).exists)
         delete.tap()
         confirm.tap()

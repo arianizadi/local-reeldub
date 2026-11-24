@@ -9,7 +9,7 @@ from uuid import uuid4
 
 from pymongo.errors import PyMongoError
 
-from .db import db, media_db, now, uses_postgres
+from .db import db, media_db, now, separate_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +19,7 @@ def next_hour(stamp):
 
 def notify(*, preparing=False, ticket=None):
     generation = uuid4().hex
-    if uses_postgres():
+    if separate_metadata():
         try:
             fields = {"generation": generation}
             if preparing:
@@ -69,7 +69,7 @@ class Wake:
         delay = 60 if self.watcher else 5
         if self.hints_down:
             delay = min(delay, 15)
-        elif uses_postgres():
+        elif separate_metadata():
             delay = min(delay, max(0, self.next_scan - time.monotonic()))
             if self.settle_until:
                 delay = min(delay, 5, max(0, (self.settle_until - now()).total_seconds()))
@@ -87,7 +87,7 @@ class Wake:
         time.sleep(delay)
 
     def watch_active_leases(self):
-        if uses_postgres():
+        if separate_metadata():
             active = db().jobs.find_one(
                 {"state": "running", "deleted": {"$ne": True}, "lease_end": {"$gt": now()}},
                 {"lease_end": 1},
@@ -98,7 +98,7 @@ class Wake:
                 self.next_scan = min(self.next_scan, time.monotonic() + until)
 
     def due(self):
-        if not uses_postgres():
+        if not separate_metadata():
             return True
         try:
             hint = media_db().queue_wake.find_one({"_id": "gpu"}) or {}

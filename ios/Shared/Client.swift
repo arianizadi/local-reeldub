@@ -262,6 +262,11 @@ struct API {
     func data(_ path: String, method: String = "GET", body: [String:String]? = nil) async throws -> Data {
         try await response(for: request(path, method: method, body: body))
     }
+    func removeLibraryEntry(_ id: String, revision: String) async throws {
+        var req = try request("v1/jobs/" + id, method: "DELETE")
+        req.setValue(revision, forHTTPHeaderField: "X-ReelDub-Library-Revision")
+        _ = try await response(for: req)
+    }
     func post<T: Encodable>(_ path: String, _ value: T) async throws -> Data {
         var req = try request(path, method: "POST")
         req.httpBody = try JSONEncoder().encode(value)

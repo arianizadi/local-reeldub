@@ -1,0 +1,26 @@
+[Unit]
+Description=Snapshot ReelDub account metadata to Amazon S3
+Wants=network-online.target
+After=network-online.target
+RequiresMountsFor=/srv/reeldub-private
+
+[Service]
+Type=oneshot
+DynamicUser=yes
+EnvironmentFile=/etc/reeldub-backup/cloud.env
+Environment=AWS_EC2_METADATA_DISABLED=true TMPDIR=/run/reeldub-backup
+Environment=AWS_SHARED_CREDENTIALS_FILE=%d/aws-credentials REELDUB_BACKUP_CA=%d/mongo-ca
+LoadCredential=mongo-uri:/etc/reeldub-backup/mongo-uri
+LoadCredential=mongo-ca:/srv/reeldub-private/config/metadata-ca.pem
+LoadCredential=aws-credentials:/srv/reeldub-private/config/backup-credentials
+RuntimeDirectory=reeldub-backup
+StateDirectory=reeldub-backup
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+TimeoutStartSec=8min
+ExecStart=/opt/reeldub-backup/venv/bin/python /opt/reeldub-backup/archive.py backup --mongo-uri-file %d/mongo-uri

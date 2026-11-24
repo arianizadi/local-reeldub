@@ -12,7 +12,6 @@ def main():
     config = private / "config"
     group_shared = {"api", "operator", "fleet"}
     permissions = {
-        "api.dsn": group_shared,
         "intake/client.key": group_shared,
         "fleet-registry.json": group_shared,
         "fleet-tls.key": {"fleet-proxy"},
@@ -22,6 +21,16 @@ def main():
         "operator.env": set(),
         "fleet.env": set(),
     }
+    if (config / "api.dsn").exists():
+        permissions["api.dsn"] = group_shared
+    if (config / "metadata-app.uri").exists():
+        permissions.update({
+            "metadata-app.uri": {"api"},
+            "metadata-operator.uri": {"operator"},
+            "metadata-fleet.uri": {"fleet"},
+            "metadata-backup.uri": set(),
+            "metadata-link/ssh.key": set(),
+        })
     services = ("api", "operator", "fleet", "media", "origin", "ingress", "fleet-proxy")
     uids = set()
     for name in services:

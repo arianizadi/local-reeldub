@@ -16,13 +16,13 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 import requests
 import uvicorn
 from . import api, console, erasure
-from .db import db, now, uses_postgres
+from .db import db, now, separate_metadata, setup_indexes, uses_postgres
 from .postgres import install
 
 
 @skipUnless(
-    os.getenv("REELDUB_TEST_DATABASE") == "1" and uses_postgres(),
-    "Isolated PostgreSQL only",
+    os.getenv("REELDUB_TEST_DATABASE") == "1" and separate_metadata(),
+    "Isolated metadata stores only",
 )
 class ConsoleTests(TestCase):
     @classmethod
@@ -67,8 +67,11 @@ class ConsoleTests(TestCase):
         )
         self.env.start()
         self.addCleanup(self.env.stop)
-        with db().connection() as conn:
-            install(conn)
+        if uses_postgres():
+            with db().connection() as conn:
+                install(conn)
+        else:
+            setup_indexes()
         db().request_rates.delete_many(
             {
                 "_id": api.hash_value("apple:console-fixture")
@@ -235,7 +238,7 @@ class ConsoleTests(TestCase):
             self.client.get("/v1/me", headers=self.member).json()["tier"], "suspended"
         )
         self.assertFalse(
-            db().admit_job(
+            api.admit_job(
                 {"_id": str(uuid4()), "owner": self.subject, "request_id": str(uuid4())}
             )
         )
@@ -251,7 +254,7 @@ class ConsoleTests(TestCase):
                 "expires": now() + timedelta(minutes=1),
             }
         )
-        self.assertIsNone(db().playback_grant(key, job, now()))
+        self.assertIsNone(api.playback_grant(key, job, now()))
         other_key = uuid4().hex
         db().playback.insert_one(
             {
@@ -262,7 +265,7 @@ class ConsoleTests(TestCase):
             }
         )
         self.assertEqual(
-            db().playback_grant(other_key, job, now())["owner"], "apple:console-fixture"
+            api.playback_grant(other_key, job, now())["owner"], "apple:console-fixture"
         )
         erasure.erase(self.subject)
         self.assertEqual(

@@ -1,7 +1,7 @@
 """Private GPU coordinator. Serve on loopback behind the node mTLS gateway."""
 import asyncio
 import base64
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from functools import lru_cache
@@ -24,7 +24,7 @@ from pymongo.errors import DuplicateKeyError
 from starlette.concurrency import run_in_threadpool
 
 from . import fleet_health, sources, worker
-from .db import db, media_db, now, uses_postgres
+from .db import db, media_db, now, separate_metadata, uses_postgres
 from .progress import STEPS, nearby_runtime
 from .source import MAX_SOURCE_SECONDS, TOO_LONG
 from .wakeup import Wake, notify
@@ -32,8 +32,9 @@ from .wakeup import Wake, notify
 
 @asynccontextmanager
 async def lifespan(app):
-    if not uses_postgres():
-        raise RuntimeError("The private coordinator requires PostgreSQL metadata.")
+    if not separate_metadata():
+        raise RuntimeError("The private coordinator requires a configured metadata store.")
+    db().command("ping")
     try:
         if not isinstance(fleet_health.registry(), dict):
             raise ValueError
@@ -198,6 +199,31 @@ def claim_reply(job):
             "lease_remaining_seconds": max(0, min(worker.LEASE.total_seconds(), (job["lease_end"] - now()).total_seconds()))}
 
 
+@contextmanager
+def claim_lock(slot_key):
+    busy = HTTPException(503, "Worker slot is assigning a job. Retry shortly.")
+    if uses_postgres():
+        with db().connection() as conn:
+            if not conn.execute("SELECT pg_try_advisory_xact_lock(hashtextextended(%s, 0))",
+                                ("reeldub/fleet/" + slot_key,)).fetchone()[0]:
+                raise busy
+            yield
+        return
+    # Cross-replica mutex. Unique job indexes independently fence slot and
+    # request assignments even if a paused coordinator outlives this lease.
+    stamp, token = now(), uuid4().hex
+    locks = db().fleet_claim_locks
+    try:
+        locks.update_one({"_id": slot_key, "expires": {"$lte": stamp}},
+                         {"$set": {"expires": stamp + worker.LEASE, "token": token}}, upsert=True)
+    except DuplicateKeyError:
+        raise busy from None
+    try:
+        yield
+    finally:
+        locks.delete_one({"_id": slot_key, "token": token})
+
+
 @app.post("/v1/slots/{slot}/claim")
 def claim(slot: int, body: Claim, node: Node = Depends(authenticated)):
     if not 0 <= slot < node.slots:
@@ -220,10 +246,7 @@ def claim(slot: int, body: Claim, node: Node = Depends(authenticated)):
         if not claim_capacity.acquire(blocking=False):
             raise HTTPException(503, "Coordinator is assigning work. Retry shortly.")
         try:
-            with db().connection() as conn:
-                if not conn.execute("SELECT pg_try_advisory_xact_lock(hashtextextended(%s, 0))",
-                                    ("reeldub/fleet/" + slot_key,)).fetchone()[0]:
-                    raise HTTPException(503, "Worker slot is assigning a job. Retry shortly.")
+            with claim_lock(slot_key):
                 # Read again inside the distributed lock. A replica might have assigned this request.
                 replay = store.find_one(key)
                 if replay and replay.get("empty"):

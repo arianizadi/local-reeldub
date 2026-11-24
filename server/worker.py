@@ -60,20 +60,26 @@ def claim(studio=None, fleet_slot=None, fleet_request=None, avoid_recovery_node=
     eligible = outputs("studio" if studio else "light") + [None]
     # A Light worker cannot fulfill a job that promises a Studio quality preset.
     profile_filter = {} if studio else {"render_quality": None, "lab_mode": None}
-    candidate = {**profile_filter, "deleted": {"$ne": True}, "target_language": {"$in": eligible},
-                 "$or": [{"state": "queued"}, {**expired, "attempt": {"$lt": MAX_ATTEMPTS}}]}
+    candidate = {**profile_filter, "deleted": {"$ne": True}, "target_language": {"$in": eligible}}
     if avoid_recovery_node:
         candidate["$and"] = [{"$or": [{"recovery_rank": {"$ne": 1}},
                                        {"recovery_from_node": {"$ne": avoid_recovery_node}}]}]
     start = {"state": "running", "stage": "Starting", "progress": 0.01, "estimated_finish": None,
              "lease": str(uuid4()), "lease_end": stamp + LEASE}
     start.update(fleet_slot=fleet_slot, fleet_request=fleet_request, attempt_started=stamp)
+    retryable = {**expired, "deleted": {"$ne": True}, "attempt": {"$lt": MAX_ATTEMPTS}}
     if uses_postgres():
+        candidate["$or"] = [{"state": "queued"}, retryable]
         return database.claim_job(candidate, exhausted, failure, release, start, stamp)
     jobs = database.jobs
     jobs.update_many(exhausted, {"$set": failure, "$unset": dict.fromkeys(release, "")})
+    # Expired direct-worker jobs join the recovery queue first. Fleet jobs are
+    # separately fenced and requeued by the node watchdog.
+    jobs.update_many(retryable, {"$set": {"state": "queued", "stage": "Recovering render", "recovery_rank": 1},
+                                 "$unset": {"lease": "", "lease_end": ""}})
+    candidate["state"] = "queued"
     return jobs.find_one_and_update(
-        candidate, [{"$set": {**start, "started": {"$ifNull": ["$started", stamp]}, "attempt": {"$add": ["$attempt", 1]}}}],
+        candidate, [{"$set": {**start, "started": {"$ifNull": ["$started", stamp]}, "attempt": {"$add": [{"$ifNull": ["$attempt", 0]}, 1]}}}],
         sort=QUEUE_ORDER, return_document=ReturnDocument.AFTER)
 
 

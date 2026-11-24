@@ -134,7 +134,8 @@ struct SettingsView: View {
                 Section {
                     Button("Use my own server") { selfHost = true }
                     if studio.connection?.isHosted == true {
-                        Button("Delete Cloud account", role: .destructive) { deletingAccount = true }
+                        Button("Delete account and data", role: .destructive) { deletingAccount = true }
+                            .accessibilityIdentifier("delete-cloud-account")
                     }
                     Button("Sign out", role: .destructive) { Task { await studio.disconnect() } }
                 }
@@ -158,9 +159,12 @@ private struct DeleteCloudAccount: View {
     var body: some View {
         NavigationStack {
             List {
-                Section {
-                    Text("Deleting your account removes your profile, reports, dubs and private server cache. It also clears the saved dubs on this iPhone. Exported copies and downloads on other devices can remain.")
-                    Text("Apple subscriptions keep renewing until you cancel them with Apple. Your purchase and credit records are retained so you can recover paid access with the same Apple Account.")
+                Section("Your account and dubs") {
+                    Text("ReelDub will delete your profile, uploads, dubs, reports, and saved videos for this account on this device. This is permanent.")
+                    Text("Copies you exported or downloaded elsewhere can remain. Backup copies of account records expire within seven days.")
+                }
+                Section("App Store purchases") {
+                    Text("Cancel any active subscription with Apple to stop renewal. ReelDub keeps a limited purchase and credit record so you can restore your balance.")
                     Link("Manage Apple subscriptions", destination: URL(string: "https://apps.apple.com/account/subscriptions")!)
                 }
                 if confirmed {

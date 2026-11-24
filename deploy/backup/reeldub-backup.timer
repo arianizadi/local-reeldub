@@ -1,0 +1,10 @@
+[Unit]
+Description=Back up ReelDub metadata every fifteen minutes
+
+[Timer]
+OnCalendar=*-*-* *:00,15,30,45:00 UTC
+AccuracySec=10s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

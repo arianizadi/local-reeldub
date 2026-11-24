@@ -1,0 +1,35 @@
+# ReelDub metadata backups
+
+The control guest takes one MongoDB snapshot every 15 minutes. All reads in an export share one replica-set snapshot time. The first successful run of each UTC day is the daily restore point. The other 95 possible runs use the same format. S3 expires both after seven days and expires separate account-deletion receipts after 14 days. S3 processes expiration asynchronously. The production server can create new objects but cannot overwrite, list, read or delete them. An authorized recovery operator can read them.
+
+The archive includes account settings, entitlements and purchase ledgers, jobs, source metadata, deletion markers and other recognized application metadata. It excludes video and audio, poster bytes, session credentials, sign-in challenges, playback tokens and worker locks. Unknown Mongo collections stop a backup until an operator reviews the mapping in `snapshot.py`. Clients sign in again after a disaster restore.
+
+## Provision storage
+
+Use an AWS administrator session from the local CLI or CloudShell. `aws.yaml` creates a private S3 bucket, account-owner-only ACL configuration, short lifecycle policies, TLS and create-only object policies, and separate IAM writers scoped to `snapshots/` and `erasures/`. S3 uses SSE-S3 (AES256). These objects are readable with authorized AWS recovery access even if the home server and its keys are lost. The optional temporary transport certificate below protects the writer credentials between CloudShell and your server.
+
+1. Generate a short-lived RSA encryption certificate on a trusted machine. Keep its private key there. Transfer only the public certificate, `aws.yaml` and `provision.py` to CloudShell.
+2. From that folder run `python3 provision.py --account ACCOUNT_ID --region us-west-2 --certificate public.pem --output writers.p7m`. This verifies the current account, deploys the stack and seals the two new credentials to your public certificate. It refuses to replace existing access keys. CloudFormation does not store access keys.
+3. Decrypt the bundle on a trusted machine using `openssl cms -decrypt -binary -inform DER -in writers.p7m -inkey private.pem -recip public.pem`. Pipe this output directly to your installer or a protected file on encrypted storage. The resulting JSON contains the AWS account, bucket, region and separate AWS credentials named `backup` and `erasure`. Protect each as a standard AWS shared-credentials INI file with a single `[default]` section. Keep the snapshot writer root-only. Allow only the production API group to read the receipt writer. Once installed and verified, remove temporary private keys and transport copies. Rotate each IAM user's access key by testing the replacement before deactivating the old key.
+
+## Configure the guest
+
+- Install a dedicated Python 3.11+ environment with PyMongo 4.x and boto3 with S3 conditional PUT support (1.40+). The unit files use `/opt/reeldub-backup/venv/bin/python`. Install `snapshot.py`, `archive.py` and `mirror-receipt` under `/opt/reeldub-backup/`. On a noexec encrypted volume, the Python source can reside there, while the executable shell wrapper and Python interpreter need a normal executable mount.
+- Provision a separate Mongo credential with read access only to the application's metadata database. Save the TLS URI at `/etc/reeldub-backup/mongo-uri`, accessible only to root. The service reads its TLS CA and the two AWS credentials from encrypted storage. Adjust the paths in the supplied units for another layout.
+- Write `AWS_REGION`, `REELDUB_BACKUP_BUCKET`, `REELDUB_BACKUP_AWS_ACCOUNT` and `REELDUB_BACKUP_DATABASE` to `/etc/reeldub-backup/cloud.env`. This file contains configuration only. Install `erasure-mirror.conf` as an API service drop-in, configure `REELDUB_ERASURE_JOURNAL_DIR` on durable encrypted storage, reload systemd and restart the API. Verify the live API can submit a clearly synthetic receipt and safely repeat the same write.
+- Mirror any receipts already committed to the local journal. Only after the API requires successful S3 receipt writes for every acknowledged erasure, use an **operator** AWS session to run `python archive.py start-coverage` with the same bucket/account/region. The marker is write-once. Never disable strict receipt mirroring while continuing to publish recoverable snapshots under that coverage marker. An outage leaves account deletion retryable.
+- Install the backup service and timer, run `systemctl daemon-reload`, then `systemctl start reeldub-backup`. Inspect its successful upload before `systemctl enable --now reeldub-backup.timer`. The service creates plaintext staging files only in its private runtime directory under `/run` and removes them after upload. Local service state contains the object name, size and timestamp.
+
+## Check freshness and recover
+
+`python archive.py status` reads the last checksum-verified S3 upload time on the control guest. Its exit code is nonzero for missing state or a snapshot at least 30 minutes old. Point an independent monitor at this status for outage notifications. A powered-off site cannot update its own status. Check S3 from an operator login after an outage. The 15-minute schedule is a recovery **target** when Mongo, the host, the network and S3 remain available. Changes since the last successful snapshot can be lost.
+
+Recover against an empty Mongo namespace named `reeldub_restore_<unique>` with an explicitly scoped recovery credential. The normal backup writer cannot retrieve archives. Run the commands from a Python environment with both the backup and ReelDub server dependencies. Set `PYTHONPATH` to the installed server root and set `REELDUB_BACKUP_CA` to the trusted target Mongo CA. Choose a snapshot whose start time falls inside the current seven-day window and after the verified coverage marker.
+
+```sh
+python archive.py restore --key "$SNAPSHOT_KEY" --mongo-uri-file "$DRILL_URI_FILE" --target reeldub_restore_drill
+```
+
+If credentials are available only inside CloudShell, set `TMPDIR=/dev/shm` there and run `python3 archive.py export-encrypted --key "$SNAPSHOT_KEY" --certificate public.pem --output restore.p7m`. Decrypt that freshly verified operator export directly into protected RAM storage on the recovery guest and run `python archive.py restore-export --bundle "$RAM_BUNDLE" --mongo-uri-file "$DRILL_URI_FILE" --target reeldub_restore_drill`. Remove temporary transfer files after use. Accept exports only from your own authenticated recovery operator.
+
+Both paths verify S3 object checksums and encryption during retrieval, verify every collection's BSON contents from the restored Mongo documents, replay the independently mirrored journal, and create application indexes. They leave traffic pointing to the live database. The app, worker credentials and Apple signing secrets need their own provisioning for a lost site. To promote a restore after site loss, quiesce all writers, reconcile deletions through that final cutoff, and follow the [media-loss and promotion procedure](../../HOSTING.md#recover-when-only-the-s3-metadata-backup-survives).

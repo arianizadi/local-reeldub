@@ -1,0 +1,71 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Private, expiring ReelDub metadata snapshots and erasure receipts
+Resources:
+  Archive:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      OwnershipControls:
+        Rules: [{ObjectOwnership: BucketOwnerEnforced}]
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: {SSEAlgorithm: AES256}
+      LifecycleConfiguration:
+        Rules:
+          - {Id: Snapshots, Status: Enabled, Prefix: snapshots/, ExpirationInDays: 7}
+          - {Id: Erasures, Status: Enabled, Prefix: erasures/, ExpirationInDays: 14}
+  PrivateTransportAndCreateOnly:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref Archive
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: TLSOnly
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource: [!GetAtt Archive.Arn, !Sub '${Archive.Arn}/*']
+            Condition: {Bool: {'aws:SecureTransport': 'false'}}
+          - Sid: RequireCreateOnly
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:PutObject'
+            Resource: !Sub '${Archive.Arn}/*'
+            Condition: {StringNotEquals: {'s3:if-none-match': '*'}}
+          - Sid: RequireSSE
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:PutObject'
+            Resource: !Sub '${Archive.Arn}/*'
+            Condition: {StringNotEquals: {'s3:x-amz-server-side-encryption': AES256}}
+  SnapshotWriter:
+    Type: AWS::IAM::User
+    Properties:
+      Path: /reeldub/
+      Policies:
+        - PolicyName: AddSnapshots
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - {Effect: Allow, Action: 's3:PutObject', Resource: !Sub '${Archive.Arn}/snapshots/*'}
+  ReceiptWriter:
+    Type: AWS::IAM::User
+    Properties:
+      Path: /reeldub/
+      Policies:
+        - PolicyName: AddReceipts
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - {Effect: Allow, Action: 's3:PutObject', Resource: !Sub '${Archive.Arn}/erasures/*'}
+Outputs:
+  Bucket: {Value: !Ref Archive}
+  SnapshotUser: {Value: !Ref SnapshotWriter}
+  ReceiptUser: {Value: !Ref ReceiptWriter}

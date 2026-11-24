@@ -10,7 +10,7 @@ struct JobView: View {
     @State private var preparingPlayback = false
     @State private var playbackRequest = UUID()
     @State private var temporaryPlayback: URL?
-    @State private var audioActive = false
+    @State private var soundMuted = true
     @State private var playerObservation: NSKeyValueObservation?
     @AppStorage("ReelDub.EnglishSubtitles") private var wantsSubtitles = true
     @AppStorage("ReelDub.PlaybackMuted") private var wantsMuted = false
@@ -64,6 +64,20 @@ struct JobView: View {
                 // Keep an explicit change from the native fullscreen menu, once selection has settled.
                 wantsSubtitles = subtitles.isEnabled
             }
+            .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.interruptionNotification)) { note in
+                guard let player, !soundMuted,
+                      let type = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+                      type == AVAudioSession.InterruptionType.ended.rawValue,
+                      let options = note.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt,
+                      AVAudioSession.InterruptionOptions(rawValue: options).contains(.shouldResume),
+                      player.timeControlStatus != .paused else { return }
+                applySound(muted: false, on: player)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.mediaServicesWereResetNotification)) { _ in
+                guard player != nil else { return }
+                stopPlayback()
+                problem = "Audio was reset. Tap Play to continue."
+            }
             .onChange(of: job.recoveryCue) { _, cue in
                 if let cue { AccessibilityNotification.Announcement(cue).post() }
             }
@@ -91,10 +105,10 @@ struct JobView: View {
                     if let player {
                         HStack(spacing: 16) {
                             Button {
-                                setMuted(!player.isMuted, on: player)
+                                chooseSound(muted: !soundMuted, on: player)
                             } label: {
-                                Label(wantsMuted ? "Unmute video" : "Mute video",
-                                      systemImage: wantsMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                                Label(soundMuted ? "Unmute video" : "Mute video",
+                                      systemImage: soundMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
                                     .labelStyle(.iconOnly)
                                     .frame(minWidth: 44, minHeight: 44)
                                     .background(.quaternary, in: Circle())
@@ -114,8 +128,13 @@ struct JobView: View {
                         }
                         .onReceive(player.publisher(for: \.isMuted).receive(on: RunLoop.main)) { _ in
                             // AVKit can also change sound when using its native playback controls.
-                            guard self.player === player, player.isMuted != wantsMuted else { return }
-                            setMuted(player.isMuted, on: player)
+                            guard self.player === player, player.isMuted != soundMuted else { return }
+                            chooseSound(muted: player.isMuted, on: player)
+                        }
+                        .onReceive(player.publisher(for: \.timeControlStatus).removeDuplicates().receive(on: RunLoop.main)) { status in
+                            // Replay from native controls can follow an interruption that deactivated the session.
+                            guard self.player === player, status == .playing, !soundMuted else { return }
+                            applySound(muted: false, on: player)
                         }
                     }
                     Button { Task { await share() } } label: {
@@ -181,7 +200,7 @@ struct JobView: View {
                 Button { reporting = true } label: { Label(job.reported ? "Update issue report" : "Report an issue", systemImage: "flag") }
                 if !job.rdPhase.isActive {
                     Button(role: .destructive) { requestDeletion(job) } label: {
-                        Label("Delete dub", systemImage: "trash")
+                        Label("Remove from Library", systemImage: "trash")
                     }.accessibilityIdentifier("delete-dub")
                 }
             }.padding(DubVideoFrame.inset).frame(maxWidth: DubVideoFrame.contentWidth).frame(maxWidth: .infinity)
@@ -245,8 +264,8 @@ struct JobView: View {
                 // Select before attachment so a cue starting at time zero is delivered.
                 track.setEnabled(wantsSubtitles)
             }
-            next.isMuted = wantsMuted
-            if !wantsMuted { try activatePlaybackAudio() }
+            next.isMuted = true
+            soundMuted = true
             player = next
             playerObservation = item.observe(\.status, options: [.new]) { item, _ in
                 Task { @MainActor in
@@ -257,6 +276,7 @@ struct JobView: View {
                             if track.isEnabled != wantsSubtitles { applyCaptions(wantsSubtitles, to: track) }
                             subtitles = track
                         }
+                        applySound(muted: wantsMuted, on: next)
                         next.play()
                     case .failed:
                         stopPlayback()
@@ -279,38 +299,38 @@ struct JobView: View {
         track.setEnabled(enabled)
     }
 
-    private func activatePlaybackAudio() throws {
-        guard !audioActive else { return }
-        let audio = AVAudioSession.sharedInstance()
-        try audio.setCategory(.playback, mode: .moviePlayback)
-        try audio.setActive(true)
-        audioActive = true
+    @discardableResult
+    private func applySound(muted: Bool, on player: AVPlayer) -> Bool {
+        do {
+            if muted { DubPlaybackAudio.mute(player) }
+            else { try DubPlaybackAudio.unmute(player) }
+            soundMuted = muted
+            return true
+        } catch {
+            DubPlaybackAudio.mute(player)
+            soundMuted = true
+            problem = "Sound couldn’t start. Tap Unmute to try again."
+            return false
+        }
     }
 
-    private func setMuted(_ muted: Bool, on player: AVPlayer) {
-        do {
-            if !muted { try activatePlaybackAudio() }
-            wantsMuted = muted
-            if player.isMuted != muted { player.isMuted = muted }
-        } catch {
-            wantsMuted = true
-            player.isMuted = true
-            problem = "Sound couldn’t start. Tap Unmute to try again."
-        }
+    private func chooseSound(muted: Bool, on player: AVPlayer) {
+        if applySound(muted: muted, on: player) { wantsMuted = muted }
     }
 
     private func stopPlayback() {
         playbackRequest = UUID()
         preparingPlayback = false
         playerObservation = nil
-        player?.pause()
+        if let player {
+            player.pause()
+            player.replaceCurrentItem(with: nil)
+            DubPlaybackAudio.release(player)
+        }
         player = nil
+        soundMuted = true
         subtitles = nil
         pendingCaptionChoice = nil
-        if audioActive {
-            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-            audioActive = false
-        }
         if let temporaryPlayback {
             try? FileManager.default.removeItem(at: temporaryPlayback)
             self.temporaryPlayback = nil
@@ -322,6 +342,43 @@ struct JobView: View {
         defer { preparingShare = false }
         do { sharing = ShareFile(url: try await studio.shareMovie(job.id)) }
         catch { problem = error.localizedDescription }
+    }
+}
+
+/// The session belongs to the app, while mute belongs to each visible player.
+@MainActor
+enum DubPlaybackAudio {
+    private static let audible = NSHashTable<AVPlayer>.weakObjects()
+
+    static func unmute(_ player: AVPlayer) throws {
+        let audio = AVAudioSession.sharedInstance()
+        if audio.category != .playback || audio.mode != .moviePlayback {
+            try audio.setCategory(.playback, mode: .moviePlayback)
+        }
+        // iOS can deactivate a session without changing its category or the player's mute flag.
+        try audio.setActive(true)
+        if #available(iOS 26.0, *), audio.isOutputMuted {
+            try audio.setOutputMuted(false)
+        }
+        player.isMuted = false
+        audible.add(player)
+    }
+
+    static func mute(_ player: AVPlayer) {
+        player.isMuted = true
+        audible.remove(player)
+        if audible.allObjects.isEmpty {
+            // Silent autoplay can mix with music from another app.
+            try? AVAudioSession.sharedInstance().setCategory(.ambient, mode: .default)
+        }
+    }
+
+    static func release(_ player: AVPlayer) {
+        audible.remove(player)
+        guard audible.allObjects.isEmpty else { return }
+        let audio = AVAudioSession.sharedInstance()
+        try? audio.setActive(false, options: .notifyOthersOnDeactivation)
+        try? audio.setCategory(.ambient, mode: .default)
     }
 }
 

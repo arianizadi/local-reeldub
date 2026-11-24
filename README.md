@@ -6,9 +6,9 @@ Paste an Instagram Reel link and get a dubbed MP4 in your chosen language. ReelD
 
 **All AI runs on your computer.** Setup downloads model weights. Link inputs contact the video platform. Once setup finishes, local video files can be dubbed offline.
 
-On iPhone, open **Dubs** to download finished videos for offline playback and sharing. **Select** lets you delete several finished or failed dubs together. After the first device confirms its download, the server keeps a copy for 24 hours. Requesting the same Reel again within that window renews it and uses no additional translation credit. Choose **Remove download from this device** to free space offline. The same option works on multiple selections. The app remembers the decision until you choose **Download to this device**. Deleting the library entry revokes access while its private cache expires on schedule.
+On iPhone, open **Dubs** to download finished videos for offline playback and sharing. **Select** lets you delete several finished or failed dubs together. After the first device confirms its download, the server keeps a copy for 24 hours. Requesting the same Reel again within that window renews it and uses no additional translation credit. Choose **Remove from Library** to remove one or more entries and free their device storage, even offline. ReelDub syncs removals when the server is reachable. Copies exported to Photos or Files stay there, and the private server cache expires on its normal schedule.
 
-The Creator review build accepts private MP4/MOV uploads from **Dubs → + → Photos or Files** and Instagram Reel links from the share sheet. Select the output languages, review the server’s duration quote, then confirm. Free includes five single-language dubs of up to 60 seconds a day. Creator adds 120 minutes per billing month and priority. A one-time pack adds 15 minutes. Minutes are metered by the second. Self-hosted processing is unlimited. See [the product guide](PRODUCT.md) for setup and [the hosted database setup](HOSTING.md) for the Neon deployment.
+The Creator review build accepts private MP4/MOV uploads from **Dubs → + → Photos or Files** and Instagram Reel links from the share sheet. Select the output languages, review the server’s duration quote, then confirm. Free includes five single-language dubs of up to 60 seconds a day. Creator adds 120 minutes per billing month and priority. A one-time pack adds 15 minutes. Minutes are metered by the second. Self-hosted processing is unlimited. See [the product guide](PRODUCT.md) for setup and [the hosted database setup](HOSTING.md) for the private metadata deployment.
 
 
 ## Use ReelDub on iPhone
@@ -21,7 +21,7 @@ Share an Instagram Reel up to two minutes long to **ReelDub**, or paste its link
 
 **Help & FAQ** is available before sign-in and in Account. Signed-in Cloud users can suggest other types of videos from that screen. Their latest answer appears in the administrator’s account detail view.
 
-The library groups jobs under **Processing**, **Queued**, **Ready**, and **Failed**. Swipe left on a ready or failed dub, or use its **•••** menu, then choose **Delete dub** and confirm. This removes the library entry, hosted video, poster, and attached issue report. Copies exported to Photos or Files are separate.
+The library groups jobs under **Processing**, **Queued**, **Ready**, and **Failed**. Swipe left on a ready or failed dub, or use its **•••** menu, then choose **Remove from Library** and confirm. ReelDub removes the device copy immediately. When it syncs, the server hides the entry and clears its issue report. The private hosted video keeps its normal cache deadline. Copies exported to Photos or Files stay there.
 
 Start your own server with Docker Compose v2:
 

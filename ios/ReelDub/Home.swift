@@ -18,7 +18,6 @@ struct Home: View {
     @State private var selecting = false
     @State private var selected: Set<String> = []
     @State private var deletion: [Job] = []
-    @State private var removing = false
     @State private var rangeSelection = LibraryDragSelection()
     private var eligible: [String] { sections.flatMap { $0.jobs }.filter { !$0.rdPhase.isActive }.map(\.id) }
     @State private var deletionError: String?
@@ -69,7 +68,7 @@ struct Home: View {
                         Button(role: .destructive) {
                             deletion = visible.filter { selected.contains($0.id) }
                         } label: {
-                            Label(selected.isEmpty ? "Delete" : "Delete (\(selected.count))", systemImage: "trash")
+                            Label(selected.isEmpty ? "Remove" : "Remove (\(selected.count))", systemImage: "trash")
                         }.disabled(selected.isEmpty).accessibilityIdentifier("delete-selected")
                     }.font(.headline).padding(.horizontal, 20).frame(minHeight: 56)
                 }
@@ -115,40 +114,30 @@ struct Home: View {
             }
         }
         .preferredColorScheme(.dark).tint(leaf)
-        .disabled(removing)
         .onChange(of: selecting) { _, active in if !active { rangeSelection.detach() } }
         .onDisappear { rangeSelection.detach() }
         .onChange(of: eligible) { _, ids in selected.formIntersection(ids) }
-        .confirmationDialog("Remove dubs", isPresented: Binding(get: { !deletion.isEmpty }, set: { if !$0 { deletion = [] } }),
+        .confirmationDialog(deletion.count > 1 ? "Remove \(deletion.count) dubs?" : "Remove this dub?",
+                            isPresented: Binding(get: { !deletion.isEmpty }, set: { if !$0 { deletion = [] } }),
                             titleVisibility: .visible, presenting: deletion.isEmpty ? nil : deletion) { items in
-            let downloads = items.filter { studio.saved[$0.id] != nil }
-            if !downloads.isEmpty {
-                Button(downloads.count == 1 ? "Remove download from this device" : "Remove \(downloads.count) downloads from this device", role: .destructive) {
-                    do {
-                        for item in downloads {
-                            try studio.removeDownload(item.id)
-                            selected.remove(item.id)
-                            path.removeAll { $0.id == item.id }
-                        }
-                        if selected.isEmpty { selecting = false }
-                        AccessibilityNotification.Announcement("Downloads removed from this device").post()
-                    } catch { deletionError = error.localizedDescription }
-                }.accessibilityIdentifier("remove-local-downloads")
-            }
-            Button(items.count == 1 ? "Delete dub from library" : "Delete \(items.count) dubs from library", role: .destructive) {
-                removing = true
-                Task { await delete(items) }
-            }
+            Button("Remove from Library", role: .destructive) { remove(items) }
+                .accessibilityIdentifier("confirm-library-removal")
             Button("Cancel", role: .cancel) {}
-        } message: { items in
-            if items.contains(where: { studio.saved[$0.id] != nil }) {
-                Text("Removing a download frees device storage, even offline. You can download it again while the server copy is available.")
-            } else {
-                Text("Library deletion needs a connection. Your private cached video expires on its own schedule.")
+        } message: { _ in
+            Text("Removes the library entry and its download from this device. Copies you saved in Photos or Files stay there.")
+        }
+        .alert("Couldn’t finish removing dubs", isPresented: Binding(get: { deletionError != nil },
+               set: { if !$0 { deletionError = nil } })) { Button("OK") {} } message: { Text(deletionError ?? "") }
+        .task(id: scenePhase == .active && studio.hasPendingRemovals) {
+            guard scenePhase == .active, studio.hasPendingRemovals else { return }
+            var delay = 15
+            while !Task.isCancelled, studio.hasPendingRemovals {
+                await studio.syncLibraryRemovals()
+                guard studio.hasPendingRemovals else { return }
+                do { try await Task.sleep(for: .seconds(delay)) } catch { return }
+                delay = min(delay * 2, 300)
             }
         }
-        .alert("Couldn’t finish deleting", isPresented: Binding(get: { deletionError != nil },
-               set: { if !$0 { deletionError = nil } })) { Button("OK") {} } message: { Text(deletionError ?? "") }
         .task(id: scenePhase == .active && (studio.connection?.isHosted == true || studio.selfHostAccess.owned)) {
             guard scenePhase == .active else { return }
             if studio.connection?.isHosted == true || studio.selfHostAccess.owned {
@@ -313,7 +302,7 @@ struct Home: View {
                     .contextMenu { if !selecting { actions(job) } }
                     .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                         if !selecting && !job.rdPhase.isActive {
-                            Button("Delete dub", systemImage: "trash", role: .destructive) { deletion = [job] }
+                            Button("Remove from Library", systemImage: "trash", role: .destructive) { deletion = [job] }
                         }
                     }
                     .listRowInsets(EdgeInsets(top: 9, leading: 18, bottom: 9, trailing: 10))
@@ -330,37 +319,23 @@ struct Home: View {
         RDJobMenu(job: job, expired: studio.isExpired(job)) { path.append(job) }
         if !job.rdPhase.isActive {
             Divider()
-            Button("Delete dub", systemImage: "trash", role: .destructive) { deletion = [job] }
+            Button("Remove from Library", systemImage: "trash", role: .destructive) { deletion = [job] }
         }
     }
 
-    private func delete(_ items: [Job]) async {
-        defer { removing = false }
-        let original = studio.connection
-        var reason: String?
+    private func remove(_ items: [Job]) {
         for job in items {
-            guard studio.connection?.token == original?.token, studio.connection?.base == original?.base else {
-                reason = "Your connection changed."
-                break
-            }
             do {
-                do { try await studio.deleteDub(job.id) }
-                catch let error as ServiceError where error.status == 429 {
-                    try await Task.sleep(for: .seconds(1))
-                    try await studio.deleteDub(job.id)
-                }
+                try studio.removeFromLibrary(job)
                 selected.remove(job.id)
                 path.removeAll { $0.id == job.id }
             } catch {
-                reason = error.localizedDescription
-                if error is URLError || error is SessionError { break }
+                deletionError = error.localizedDescription
+                return
             }
         }
-        if let reason { deletionError = reason }
-        else {
-            selecting = false; selected = []
-            AccessibilityNotification.Announcement(items.count == 1 ? "Dub deleted" : "\(items.count) dubs deleted").post()
-        }
+        selecting = false; selected = []
+        AccessibilityNotification.Announcement(items.count == 1 ? "Dub removed" : "\(items.count) dubs removed").post()
     }
 }
 

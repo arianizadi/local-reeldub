@@ -4,7 +4,7 @@ import os
 from datetime import timedelta
 from math import floor
 
-from .db import db, uses_postgres
+from .db import db, separate_metadata, uses_postgres
 from .languages import outputs
 from .fleet_health import registry
 from .worker import TEMPORARY_DB_ERRORS
@@ -20,7 +20,7 @@ TOMBSTONE_FIELDS = {
 def priority_entry(job, stamp):
     fields = {"launch_priority_at": stamp}
     config = os.getenv("REELDUB_FLEET_REGISTRY")
-    if not config or not uses_postgres():
+    if not config or not separate_metadata():
         return fields
     # An unavailable or malformed configuration leaves occupancy unknown. Render
     # leases are scheduling observations, not GPU utilization measurements.

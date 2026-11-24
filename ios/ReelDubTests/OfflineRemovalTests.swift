@@ -16,6 +16,18 @@ private final class ExpiredReceiptServer: URLProtocol {
         let body: Any
         switch url.path {
         case "/v1/me": body = ["tier": "free", "used": 0, "library_id": host] as [String: Any]
+        case "/v1/account" where request.httpMethod == "DELETE":
+            if request.value(forHTTPHeaderField: "Authorization") == "Bearer denied-fixture" {
+                code = 403
+                body = ["detail": "Confirm deletion with the owning Apple Account."]
+            } else {
+                body = ["state": "pending", "apple_revoked": false] as [String: Any]
+            }
+        case "/v1/jobs/fixture" where request.httpMethod == "DELETE":
+            let revision = request.value(forHTTPHeaderField: "X-ReelDub-Library-Revision") ?? "missing"
+            Self.lock.withLock { Self.counts.add("removal/" + host + "/" + revision) }
+            code = 412
+            body = ["detail": "Requested again"]
         case "/v1/jobs": body = [Self.job]
         case "/v1/jobs/fixture/poster":
             Self.lock.withLock { Self.counts.add("poster/" + host) }
@@ -36,6 +48,35 @@ private final class ExpiredReceiptServer: URLProtocol {
 
 @MainActor
 final class OfflineRemovalTests: XCTestCase {
+    func testAccountDeletionRequiresOwnerAndErasesOnlyTheirDeviceLibrary() async throws {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [ExpiredReceiptServer.self]
+        let session = URLSession(configuration: config)
+        defer { session.invalidateAndCancel() }
+        let id = UUID().uuidString
+        let other = Connection(base: Connection.hosted, token: "other", libraryID: UUID().uuidString)
+        let denied = Connection(base: Connection.hosted, token: "denied-fixture", libraryID: id)
+        let accepted = Connection(base: Connection.hosted, token: "accepted-fixture", libraryID: id)
+        let local = try XCTUnwrap(DeviceLibrary(connection: accepted))
+        let sharedDevice = try XCTUnwrap(DeviceLibrary(connection: other))
+        defer { try? local.erase(); try? sharedDevice.erase() }
+        let job = try JSONDecoder().decode(Job.self, from: JSONSerialization.data(withJSONObject: ExpiredReceiptServer.job))
+        try local.retain(job)
+        try sharedDevice.retain(job)
+        let deniedStudio = Studio(connection: denied, transport: session)
+        do {
+            try await deniedStudio.deleteAccount(identity: "wrong", challenge: "fixture", code: "fixture")
+            XCTFail("A rejected deletion must preserve the user's files")
+        } catch let denial as ServiceError { XCTAssertEqual(denial.status, 403) }
+        XCTAssertEqual(local.retainedJobs().count, 1)
+        let studio = Studio(connection: accepted, transport: session)
+        try await studio.deleteAccount(identity: "verified", challenge: "fixture", code: "fixture")
+        XCTAssertNil(studio.connection)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: local.root.path))
+        XCTAssertEqual(sharedDevice.retainedJobs().count, 1)
+        XCTAssertTrue(studio.welcomeMessage?.contains("finish deleting") == true)
+    }
+
     func testSavingReplacesAnIncompleteMovieDirectory() throws {
         let host = UUID().uuidString + ".example"
         let connection = Connection(base: URL(string: "https://" + host)!, token: "test", libraryID: host)
@@ -146,7 +187,15 @@ final class OfflineRemovalTests: XCTestCase {
             try Data([1]).write(to: temp)
             try library.save(temp, job: job)
             try library.markReceived(id)
-            if id == "old" { try library.removeDownload(job) }
+            if id == "old" {
+                // An earlier ReelDub build removed the download but kept the library entry.
+                let folder = library.movie(id).deletingLastPathComponent()
+                let markers = library.root.appending(path: ".manual-downloads")
+                try FileManager.default.createDirectory(at: markers, withIntermediateDirectories: true)
+                try Data().write(to: markers.appending(path: folder.lastPathComponent))
+                try library.retain(job)
+                try FileManager.default.removeItem(at: folder)
+            }
         }
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [ExpiredReceiptServer.self]
@@ -163,7 +212,7 @@ final class OfflineRemovalTests: XCTestCase {
         XCTAssertNil(library.retainedJobs()["old"])
     }
 
-    func testRemovingTwoDownloadsWithServerOfflineSurvivesRelaunch() async throws {
+    func testRemovingTwoLibraryEntriesOfflineReclaimsBytesAndSurvivesRelaunch() async throws {
         let connection = Connection(base: URL(string: "http://127.0.0.1:1")!, token: "offline-test", libraryID: UUID().uuidString)
         let library = try XCTUnwrap(DeviceLibrary(connection: connection))
         defer { try? library.erase() }
@@ -182,19 +231,46 @@ final class OfflineRemovalTests: XCTestCase {
         await studio.refresh()
         XCTAssertNotNil(studio.failure)
         XCTAssertEqual(studio.saved.count, 3)
+        let exported = try library.export(ids[0])
+        defer { try? FileManager.default.removeItem(at: exported) }
         for id in ids.prefix(2) {
-            try studio.removeDownload(id)
+            try studio.removeFromLibrary(XCTUnwrap(studio.jobs.first { $0.id == id }))
             XCTAssertNil(studio.localMovie(id))
             XCTAssertFalse(FileManager.default.fileExists(atPath: library.movie(id).path))
         }
         let reopened = Studio(connection: connection, selfHostAuthorized: { true })
         XCTAssertEqual(Set(reopened.saved.keys), [ids[2]])
-        XCTAssertEqual(Set(reopened.jobs.map(\.id)), Set(ids))
-        XCTAssertTrue(reopened.canDownloadAgain(ids[0]))
-        XCTAssertTrue(reopened.canDownloadAgain(ids[1]))
-        XCTAssertFalse(reopened.canDownloadAgain(ids[2]))
-        try reopened.downloadAgain(ids[0])
-        XCTAssertFalse(library.isManualDownload(ids[0]))
-        XCTAssertTrue(library.isManualDownload(ids[1]))
+        XCTAssertEqual(Set(reopened.jobs.map(\.id)), [ids[2]])
+        XCTAssertEqual(Set(library.pendingRemovals().keys), Set(ids.prefix(2)))
+        await reopened.syncLibraryRemovals()
+        XCTAssertTrue(reopened.hasPendingRemovals)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: exported.path))
+
     }
+    func testNewServerRequestReusingRemovedIDSurvivesOfflineRemovalSync() async throws {
+        let host = UUID().uuidString.lowercased() + ".example"
+        let connection = Connection(base: URL(string: "https://" + host)!, token: "fixture", libraryID: host)
+        let library = try XCTUnwrap(DeviceLibrary(connection: connection))
+        defer { try? library.erase() }
+        var payload = ExpiredReceiptServer.job
+        payload["last_requested"] = "2026-11-18T12:00:00Z"
+        let old = try JSONDecoder().decode(Job.self, from: JSONSerialization.data(withJSONObject: payload))
+        try library.retain(old)
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [ExpiredReceiptServer.self]
+        let session = URLSession(configuration: config)
+        defer { session.invalidateAndCancel() }
+        let studio = Studio(connection: connection, transport: session, selfHostAuthorized: { true })
+        try studio.removeFromLibrary(old)
+        await studio.refresh()
+        XCTAssertFalse(studio.jobs.contains { $0.id == old.id })
+        await studio.syncLibraryRemovals()
+        for _ in 0..<100 where !studio.jobs.contains(where: { $0.id == old.id }) {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertEqual(ExpiredReceiptServer.receipts("removal/" + host + "/2026-11-18T12:00:00Z"), 1)
+        XCTAssertFalse(studio.hasPendingRemovals)
+        XCTAssertTrue(studio.jobs.contains { $0.id == old.id })
+    }
+
 }
