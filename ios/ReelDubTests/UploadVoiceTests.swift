@@ -11,6 +11,25 @@ final class UploadVoiceTests: XCTestCase {
         XCTAssertNil(json["consent_reference"])
     }
 
+    func testNarratorEngineIsOptInAndScopedToAdvertisedLanguages() throws {
+        func request(_ engine: NarratorEngine, target: String = "en", voice: DubVoice = .narrator) -> UploadQuoteRequest? {
+            UploadQuoteRequest(source: "clip", targets: [target], supported: ["en", "es"], trim: false,
+                               voice: voice, consent: .own, reference: "", agreed: true,
+                               engine: engine, kittenLanguages: ["en"])
+        }
+        let original = try XCTUnwrap(request(.original))
+        let kitten = try XCTUnwrap(request(.kitten2))
+        XCTAssertNotEqual(original, kitten)
+        let encoder = JSONEncoder()
+        let normalPayload = try XCTUnwrap(JSONSerialization.jsonObject(with: encoder.encode(original)) as? [String: Any])
+        let testPayload = try XCTUnwrap(JSONSerialization.jsonObject(with: encoder.encode(kitten)) as? [String: Any])
+        XCTAssertNil(normalPayload["narrator_engine"])
+        XCTAssertEqual(testPayload["narrator_engine"] as? String, "kitten2")
+        XCTAssertNil(testPayload["voice_consent"])
+        XCTAssertNil(request(.kitten2, target: "es"))
+        XCTAssertNil(request(.kitten2, voice: .match))
+    }
+
     func testMatchRequiresCurrentConsentAndAnAvailableLanguage() throws {
         func quote(_ scope: VoiceConsent?, _ ref: String = "", agreed: Bool = true, target: String = "en") -> UploadQuoteRequest? {
             UploadQuoteRequest(source: "clip", targets: [target], supported: ["en"], trim: false,

@@ -13,6 +13,7 @@ from pymongo.errors import AutoReconnect, DuplicateKeyError
 from .db import db, media_db, now
 from .wakeup import notify
 from .worker import MAX_ATTEMPTS
+from .upload_voice import KITTEN_ENGINE
 
 
 SUSPECT = timedelta(seconds=35)
@@ -61,11 +62,12 @@ def status(doc, stamp, *, enabled=True):
     return "online"
 
 
-def health(node, ready, preflight, reason):
+def health(node, ready, preflight, reason, kitten_narrator=False):
     table, stamp = media_db().fleet_nodes, now()
     key = {"_id": node.name}
-    old = table.find_one_and_update(key, {"$set": {"last_seen": stamp, "slots": node.slots,
-                                 "enabled": node.enabled, "studio": node.studio}, "$setOnInsert": {"ready": False}}, upsert=True)
+    observed = {"last_seen": stamp, "slots": node.slots, "enabled": node.enabled, "studio": node.studio,
+                "kitten_narrator": bool(node.studio and kitten_narrator)}
+    old = table.find_one_and_update(key, {"$set": observed, "$setOnInsert": {"ready": False}}, upsert=True)
     if old and old.get("last_seen", stamp - OFFLINE) <= stamp - OFFLINE:
         # A late keepalive cannot silently restore a node that was offline.
         table.update_one({**key, "last_seen": stamp}, {"$set": {"ready": False},
@@ -115,17 +117,25 @@ def admin_nodes():
             for doc in media_db().fleet_nodes.find({}).sort("_id", 1)]
 
 
-def idle_alternative(node):
+def idle_alternative_engines(node):
+    """Engines available on at least one compatible, currently idle alternate GPU."""
     stamp = now()
     query = {"_id": {"$ne": node.name}, "enabled": True, "ready": True,
              "last_seen": {"$gt": stamp - SUSPECT}, "last_preflight": {"$gt": stamp - PREFLIGHT_AGE}}
     if node.studio:
         query["studio"] = True
-    candidates = {row["_id"]: row["slots"] for row in media_db().fleet_nodes.find(query)}
+    candidates = list(media_db().fleet_nodes.find(query, {"slots": 1, "kitten_narrator": 1}))
     if not candidates:
-        return False
-    busy = set(tickets().distinct("slot", {"node": {"$in": list(candidates)}, "watch": True}))
-    return any(f"{name}:{slot}" not in busy for name, count in candidates.items() for slot in range(count))
+        return set()
+    names = [row["_id"] for row in candidates]
+    busy = set(tickets().distinct("slot", {"node": {"$in": names}, "watch": True}))
+    engines = set()
+    for row in candidates:
+        if any(f"{row['_id']}:{slot}" not in busy for slot in range(row["slots"])):
+            engines.add(None)  # The existing Studio/Light compatibility filter applies to ordinary jobs.
+            if row.get("kitten_narrator"):
+                engines.add(KITTEN_ENGINE)
+    return engines
 
 
 def recover(job, reason, *, only_expired=False):

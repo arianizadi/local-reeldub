@@ -91,6 +91,14 @@ struct Job: Codable, Identifiable, Hashable {
     let started, finished, error: String?
     let ahead: Int?
     var voice_mode: String? = nil
+    var narrator_engine: String? = nil
+    var dubVoiceLabel: String? {
+        switch voice_mode {
+        case "narrator": narrator_engine == "kitten2" ? "KittenTTS 2 narrator" : "Original narrator"
+        case "match": "Matched speaker"
+        default: nil
+        }
+    }
     var recovery_count: Int? = nil
     var recovery_switched_server: Bool? = nil
     var recoveryCue: String? {
@@ -200,6 +208,7 @@ struct Account: Codable {
     var admin_console: Bool? = nil
     var video_uploads: Bool? = nil
     var upload_voice_modes: [String: [String]]? = nil
+    var kitten_narrator_languages: [String]? = nil
     var creator_minutes: Bool? = nil
     var batch_progress: Bool? = nil
     var video_suggestions: Bool? = nil

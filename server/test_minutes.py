@@ -68,6 +68,36 @@ class CreatorTests(TestCase):
     def confirm(self, q):
         return minutes.confirm(self.owner, q["id"])
 
+    def test_kitten_narrator_is_a_private_english_choice_with_independent_cache(self):
+        source = self.source(10)
+        self.enterContext(patch.dict(os.environ, {"REELDUB_ACCESS_MODE": "hosted", "ADMIN_APPLE_SUB": self.owner[6:],
+                                                  "REELDUB_KITTEN_NARRATOR": "1", "REELDUB_CREATOR_MINUTES": "0"}))
+
+        def request(mode="narrator", targets=("en",), engine="kitten2"):
+            return api.create_quote(api.QuoteRequest(source_id=source, targets=targets, voice_mode=mode,
+                                                     narrator_engine=engine), self.owner)
+
+        self.assertEqual(api.me(self.owner)["kitten_narrator_languages"], ["en"])
+        self.assertNotIn("kitten_narrator_languages", api.me("apple:another"))
+        self.assertFalse(minutes.kitten_permitted("review"))
+        for mode, target in [("match", "en"), ("narrator", "fr")]:
+            with self.assertRaises(HTTPException):
+                request(mode=mode, targets=[target])
+        quote = request()
+        with patch.dict(os.environ, {"ADMIN_APPLE_SUB": "other"}):
+            with self.assertRaises(HTTPException) as revoked:
+                self.confirm(quote)
+            self.assertEqual(revoked.exception.status_code, 403)
+            with self.assertRaises(HTTPException):
+                request()
+        kitten, = self.confirm(quote)
+        original, = self.confirm(request(engine=None))
+        self.assertEqual(kitten["narrator_engine"], "kitten2")
+        self.assertIsNone(original.get("narrator_engine"))
+        self.assertNotEqual(original["id"], kitten["id"])
+        self.assertEqual(self.confirm(request())[0]["id"], kitten["id"])
+        self.assertEqual(self.confirm(request(engine=None))[0]["id"], original["id"])
+
     def test_uploaded_daily_allowance_without_storekit_and_private_voice_cache(self):
         with patch.dict(os.environ, {"REELDUB_CREATOR_MINUTES": "0", "REELDUB_REEL_LINKS": "0"}):
             src = self.source(120)

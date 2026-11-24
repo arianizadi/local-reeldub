@@ -15,7 +15,7 @@ from faster_whisper import WhisperModel
 from server.progress import report
 from server.gpu import transcription_device
 from server.languages import LANGUAGES
-from server.upload_voice import VOICE_ERRORS
+from server.upload_voice import KITTEN_ENGINE, KITTEN_MODEL, VOICE_ERRORS, kitten_ready
 from server.source import inspect_video, reel_url
 from server.download import download_reel
 from clean_background import leakage_regions, matching_dialogue, merge_regions, suppress_unresolved
@@ -97,6 +97,11 @@ def run(args):
     if args.upload_voice:
         # A quality or experiment preset must never select the voice for an upload.
         match = args.upload_voice in ("own_voice", "documented_permission")
+    if args.narrator_engine:
+        if args.upload_voice != "narrator" or target != "en":
+            raise ValueError("KittenTTS requires an English upload in narrator mode.")
+        if not kitten_ready():
+            raise ValueError("Run ./setup-lab.sh kitten2 before choosing KittenTTS.")
     if match and not output.matched:
         raise ValueError(f"{output.name} uses a preset voice. Select --voice-mode auto.")
     if not match and not output.voices:
@@ -217,7 +222,7 @@ def run(args):
         if match:
             write_references(lines, turns, analysis_audio, folder, require_isolated=bool(args.upload_voice))
         print(f"Synthesizing {output.name} voices…", flush=True)
-        synthesize(lines, folder, match, target, args.lab_runtime)
+        synthesize(lines, folder, match, target, args.lab_runtime, args.narrator_engine)
         print("Mixing soundtrack…", flush=True)
         mix(lines, source, folder)
         print("Encoding video…", flush=True)
@@ -234,6 +239,8 @@ def run(args):
                                "Same language" if language == target else f"Whisper {args.model}"),
                            voice_model=f"Qwen3-TTS-12Hz-{os.getenv('REELDUB_QWEN_SIZE', '1.7B')}-Base" if match else "Kokoro v1.0",
                            audio_mix_version=2)
+            if args.narrator_engine == KITTEN_ENGINE:
+                details["voice_model"] = KITTEN_MODEL
             if args.upload_voice:
                 details["rendered_voice_mode"] = "match" if match else "narrator"
             path.write_text(json.dumps(details, ensure_ascii=False))
@@ -260,6 +267,7 @@ def main():
     parser.add_argument("--background", choices=["separate", "stereo"], default="separate" if studio else "stereo")
     parser.add_argument("--translation", choices=["context", "whisper"], default="context" if studio else "whisper")
     parser.add_argument("--voice-mode", choices=["auto", "preset", "match"], default="auto")
+    parser.add_argument("--narrator-engine", choices=[KITTEN_ENGINE], help="Use the experimental English upload narrator")
     parser.add_argument("--upload-voice", choices=["narrator", "own_voice", "documented_permission"],
                         help="Render a user-supplied video in the confirmed voice mode and consent scope")
     try:

@@ -65,6 +65,10 @@ enum DubVoice: String, Encodable {
   case narrator, match
 }
 
+enum NarratorEngine: String, Encodable {
+  case original, kitten2
+}
+
 enum VoiceConsent: String, Encodable {
   case own = "own_voice"
   case documented = "documented_permission"
@@ -75,12 +79,17 @@ struct UploadQuoteRequest: Encodable, Hashable {
   let targets: [String]
   let trim: Bool
   let voice_mode: DubVoice
+  let narrator_engine: NarratorEngine?
   let voice_consent: VoiceConsent?
   let consent_reference: String?
 
   init?(source: String?, targets: Set<String>, supported: [String], trim: Bool, voice: DubVoice,
-        consent: VoiceConsent?, reference: String, agreed: Bool) {
+        consent: VoiceConsent?, reference: String, agreed: Bool,
+        engine: NarratorEngine = .original, kittenLanguages: [String] = []) {
     guard let source, !targets.isEmpty, targets.isSubset(of: Set(supported)) else { return nil }
+    if engine == .kitten2 {
+      guard voice == .narrator, targets.isSubset(of: Set(kittenLanguages)) else { return nil }
+    }
     let ref = reference.trimmingCharacters(in: .whitespacesAndNewlines)
     if voice == .match {
       guard agreed, let consent else { return nil }
@@ -90,6 +99,7 @@ struct UploadQuoteRequest: Encodable, Hashable {
     self.targets = targets.sorted()
     self.trim = trim
     voice_mode = voice
+    narrator_engine = engine == .original ? nil : engine
     voice_consent = voice == .match ? consent : nil
     consent_reference = voice_consent == .documented ? ref : nil
   }
@@ -118,6 +128,7 @@ struct QuoteSheet: View {
   let api: API
   let input: ProjectInput
   let voiceModes: [String: [String]]
+  let kittenLanguages: [String]
   let done: ([Job]) -> Void
   let creatorMinutes: Bool
   let liveOffers: Bool
@@ -129,6 +140,7 @@ struct QuoteSheet: View {
   @State private var quote: DubQuote?
   @State private var quotedRequest: UploadQuoteRequest?
   @State private var voice = DubVoice.narrator
+  @State private var engine = NarratorEngine.original
   @State private var consent: VoiceConsent?
   @State private var releaseReference = ""
   @State private var agreed = false
@@ -146,12 +158,13 @@ struct QuoteSheet: View {
     return "Checking video duration…"
   }
   init(
-    api: API, input: ProjectInput, voiceModes: [String: [String]], target: String, trim: Bool = false,
+    api: API, input: ProjectInput, voiceModes: [String: [String]], kittenLanguages: [String] = [], target: String, trim: Bool = false,
     creatorMinutes: Bool = false, liveOffers: Bool = false, plans: AnyView? = nil, done: @escaping ([Job]) -> Void
   ) {
     self.api = api
     self.input = input
     self.voiceModes = voiceModes
+    self.kittenLanguages = kittenLanguages.filter { (voiceModes["narrator"] ?? []).contains($0) }
     self.done = done
     self.creatorMinutes = creatorMinutes
     self.liveOffers = liveOffers
@@ -160,10 +173,17 @@ struct QuoteSheet: View {
     _selected = State(initialValue: available.isEmpty ? [] : [OutputLanguage.selected(target, supported: available)])
     _trim = State(initialValue: trim)
   }
-  private var languages: [String] { voiceModes[voice.rawValue] ?? [] }
+  private var languages: [String] {
+    voice == .narrator && engine == .kitten2 ? kittenLanguages : (voiceModes[voice.rawValue] ?? [])
+  }
+  private func keepAvailableLanguages() {
+    selected.formIntersection(languages)
+    if selected.isEmpty, let first = languages.first { selected = [first] }
+  }
   private var request: UploadQuoteRequest? {
     UploadQuoteRequest(source: source?.id, targets: selected, supported: languages, trim: trim,
-                       voice: voice, consent: consent, reference: releaseReference, agreed: agreed)
+                       voice: voice, consent: consent, reference: releaseReference, agreed: agreed,
+                       engine: voice == .narrator ? engine : .original, kittenLanguages: kittenLanguages)
   }
 
   private var canUpload: Bool { !(voiceModes["narrator"] ?? []).isEmpty }
@@ -188,6 +208,23 @@ struct QuoteSheet: View {
       Text(voice == .narrator
            ? "A standard generated voice reads the translation."
            : "ReelDub uses speech from this video to generate translated audio that sounds like the speaker.")
+    }
+    if voice == .narrator && !kittenLanguages.isEmpty {
+      Section {
+        Picker("Narrator engine", selection: $engine) {
+          Text("Original").tag(NarratorEngine.original)
+          Text("KittenTTS 2").tag(NarratorEngine.kitten2)
+        }
+        .pickerStyle(.segmented)
+        .accessibilityIdentifier("narrator-engine")
+      } header: { Text("Narrator engine") } footer: {
+        let names = kittenLanguages.map(OutputLanguage.name).joined(separator: ", ")
+        if engine == .kitten2 {
+          Text("Powered by KittenML. Test output: " + names + ".")
+        } else {
+          Text("Original uses Kokoro. KittenTTS 2 can narrate in " + names + " for this test.")
+        }
+      }
     }
     if voice == .match {
       Section("Speaker permission") {
@@ -347,9 +384,10 @@ struct QuoteSheet: View {
     }
     .onChange(of: voice) { _, _ in
       resetConsent()
-      selected.formIntersection(languages)
-      if selected.isEmpty, let first = languages.first { selected = [first] }
+      engine = .original
+      keepAvailableLanguages()
     }
+    .onChange(of: engine) { _, _ in keepAvailableLanguages() }
     .onChange(of: consent) { _, _ in agreed = false; releaseReference = "" }
     .onChange(of: releaseReference) { _, _ in agreed = false }
     .onChange(of: selected) { _, _ in agreed = false }

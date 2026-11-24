@@ -9,7 +9,7 @@ import sherpa_onnx as so
 import soundfile as sf
 
 from server.languages import LANGUAGES
-from server.upload_voice import VOICE_ERRORS
+from server.upload_voice import KITTEN_ENGINE, KITTEN_ROOT, VOICE_ERRORS
 from server.progress import report
 from assets import CACHE, SPEAKER
 
@@ -101,7 +101,19 @@ def write_references(lines, turns, source, folder, *, require_isolated=False):
             sf.write(folder / f"reference-{i}.wav", ref.mean(axis=1), rate)
 
 
-def synthesize(lines, folder, match, target="en", runtime="standard"):
+def synthesize(lines, folder, match, target="en", runtime="standard", narrator_engine=None):
+    if narrator_engine is not None:
+        if narrator_engine != KITTEN_ENGINE or match or target != "en":
+            raise ValueError("Unsupported narrator selection.")
+        from server.gpu import stage
+
+        (folder / "lines.json").write_text(json.dumps([line["text"] for line in lines]))
+        env = dict(os.environ, HF_HOME=str(KITTEN_ROOT / "hf"), HF_HUB_OFFLINE="1")
+        with stage("exclusive"):
+            print("GPU stage: Voicing", flush=True)
+            subprocess.run([KITTEN_ROOT / "env/bin/python", Path(__file__).with_name("kitten_voice.py"), folder],
+                           check=True, env=env)
+        return
     if match:
         python = Path(__file__).resolve().parent / ".qwen-venv/bin/python"
         (folder / "lines.json").write_text(json.dumps(lines))

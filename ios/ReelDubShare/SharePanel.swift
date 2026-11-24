@@ -71,6 +71,7 @@ struct SharePanel: View {
         .sheet(item: $attachment.project, onDismiss: attachment.discard) { input in
             if let connection, let account {
                 QuoteSheet(api: API(connection: connection), input: input, voiceModes: account.upload_voice_modes ?? [:],
+                           kittenLanguages: account.kitten_narrator_languages ?? [],
                            target: OutputLanguage.read(), creatorMinutes: account.creator_minutes == true,
                            liveOffers: account.purchase_preflight == true) { jobs in
                     results = jobs

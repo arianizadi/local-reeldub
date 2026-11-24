@@ -386,7 +386,7 @@ private struct TransferRow: View {
                         }
                     }
                 case .done:
-                    Text([job.targetName, job.rdByline, job.rdRuntime].compactMap { $0 }.joined(separator: " · "))
+                    Text([job.targetName, job.narrator_engine == "kitten2" ? "KittenTTS 2" : nil, job.rdByline, job.rdRuntime].compactMap { $0 }.joined(separator: " · "))
                         .font(.caption).foregroundStyle(.secondary).lineLimit(2)
                     if let storage { Text(storage).font(.caption2).foregroundStyle(leaf) }
                     Text(job.timing(at: .now)).font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
@@ -442,6 +442,7 @@ struct RDComposer: View {
         }) { input in
             if let api = studio.api, let account = studio.account {
                 QuoteSheet(api: api, input: input, voiceModes: account.upload_voice_modes ?? [:],
+                           kittenLanguages: account.kitten_narrator_languages ?? [],
                            target: OutputLanguage.read(), creatorMinutes: account.creator_minutes == true,
                            liveOffers: account.purchase_preflight == true,
                            plans: AnyView(CloudPlanSheet(studio: studio))) { _ in

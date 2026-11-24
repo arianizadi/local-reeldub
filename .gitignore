@@ -30,3 +30,5 @@ ios/Config/LocalSigning.xcconfig
 
 .tts-graph/
 .omni-venv/
+
+.kitten2

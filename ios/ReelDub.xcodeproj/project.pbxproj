@@ -9,12 +9,16 @@
 /* Begin PBXBuildFile section */
 		103561703A935EE4E5012299 /* InstrumentSerif-License.txt in Resources */ = {isa = PBXBuildFile; fileRef = 02A95A5C21A3387E878D6140 /* InstrumentSerif-License.txt */; };
 		11710A52BA7AFE3E0C0E7477 /* ReelDub.storekit in Resources */ = {isa = PBXBuildFile; fileRef = 55BD43B10BECFEEAC241D3DE /* ReelDub.storekit */; };
+		157E4229B351D0C072B1A221 /* NOTICE.txt in Resources */ = {isa = PBXBuildFile; fileRef = B261E79B2E460510BDC704FE /* NOTICE.txt */; };
+		19F844C976A2B8392A6B6750 /* NOTICE.txt in Resources */ = {isa = PBXBuildFile; fileRef = B261E79B2E460510BDC704FE /* NOTICE.txt */; };
 		1EBA2DB3BDE2840D09A0E64E /* AdaptiveNavigationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = ABD127768F9C99E088EB5B6B /* AdaptiveNavigationTests.swift */; };
 		201D517F9F5327C41DA629EF /* VideoImport.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9AFCA869A58D3086F964E62 /* VideoImport.swift */; };
 		2466B64CEE3DF1BB83D795C9 /* Palette.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D14F892F6DBFC685C356355 /* Palette.swift */; };
 		27FE6B085D83E04CF14A1075 /* CheckoutAdmissionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F273FA5A7B5C9284743C425F /* CheckoutAdmissionTests.swift */; };
 		2B0CA8FB30D77B3E183948A2 /* Client.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43208AEF5AECA108781F363F /* Client.swift */; };
 		3FDC44E6E2EEC5FF5F8DEC30 /* clip.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = 7E3D56A94780B4E473485E12 /* clip.mp4 */; };
+		4DE8D653DBC345907C86A50A /* Stellon-Community-License.txt in Resources */ = {isa = PBXBuildFile; fileRef = 786B5BDD69AF6AA6FE5AA02F /* Stellon-Community-License.txt */; };
+		509E912068A1B6B27946758D /* Stellon-Community-License.txt in Resources */ = {isa = PBXBuildFile; fileRef = 786B5BDD69AF6AA6FE5AA02F /* Stellon-Community-License.txt */; };
 		5F451703B7CE01CA61521BF7 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E478752859957286A715793F /* SettingsView.swift */; };
 		668F34419ECB618A32D75CA2 /* DeviceLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = E92049E5BD652058AAE3905E /* DeviceLibrary.swift */; };
 		67E4B4EB5753A78FED6BFC06 /* PlaybackSoundTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FEFAC5E8265F423BA8BC73DE /* PlaybackSoundTests.swift */; };
@@ -109,6 +113,7 @@
 		69B0AEF679C982E1261D3F4D /* CloudStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudStore.swift; sourceTree = "<group>"; };
 		6B3FB6960C8146A94CA0E243 /* ReelDubApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReelDubApp.swift; sourceTree = "<group>"; };
 		6E00C4E65D8618D94922BB95 /* AdminConsole.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdminConsole.swift; sourceTree = "<group>"; };
+		786B5BDD69AF6AA6FE5AA02F /* Stellon-Community-License.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "Stellon-Community-License.txt"; sourceTree = "<group>"; };
 		7D14F892F6DBFC685C356355 /* Palette.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Palette.swift; sourceTree = "<group>"; };
 		7E3D56A94780B4E473485E12 /* clip.mp4 */ = {isa = PBXFileReference; path = clip.mp4; sourceTree = "<group>"; };
 		8E562891A2A6B21798745625 /* ReportView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReportView.swift; sourceTree = "<group>"; };
@@ -117,6 +122,7 @@
 		9A360E5C178187669B008D52 /* Home.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Home.swift; sourceTree = "<group>"; };
 		ABD127768F9C99E088EB5B6B /* AdaptiveNavigationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdaptiveNavigationTests.swift; sourceTree = "<group>"; };
 		AE343891330017A0F05F9F8B /* QuoteSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuoteSheet.swift; sourceTree = "<group>"; };
+		B261E79B2E460510BDC704FE /* NOTICE.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = NOTICE.txt; sourceTree = "<group>"; };
 		B27411E2E57CC46FC63EDDFF /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		C0722C48DDDE5B0822434CB3 /* Build.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Build.xcconfig; sourceTree = "<group>"; };
 		C42F82996F8624A12042E38D /* Player.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Player.swift; sourceTree = "<group>"; };
@@ -195,6 +201,7 @@
 				AE343891330017A0F05F9F8B /* QuoteSheet.swift */,
 				61D27E79630E0125C93FF7F7 /* SelfHostEntitlement.swift */,
 				D9AFCA869A58D3086F964E62 /* VideoImport.swift */,
+				C2247E7B3B3D12DC9BDB377C /* KittenML */,
 			);
 			path = Shared;
 			sourceTree = "<group>";
@@ -279,6 +286,15 @@
 			path = ReelDub;
 			sourceTree = "<group>";
 		};
+		C2247E7B3B3D12DC9BDB377C /* KittenML */ = {
+			isa = PBXGroup;
+			children = (
+				B261E79B2E460510BDC704FE /* NOTICE.txt */,
+				786B5BDD69AF6AA6FE5AA02F /* Stellon-Community-License.txt */,
+			);
+			path = KittenML;
+			sourceTree = "<group>";
+		};
 		F22AAFE2E944B4272EA87707 /* qa */ = {
 			isa = PBXGroup;
 			children = (
@@ -352,6 +368,7 @@
 			buildConfigurationList = 9E9FFF225DDA9EA094CC4042 /* Build configuration list for PBXNativeTarget "ReelDubShare" */;
 			buildPhases = (
 				8C3E807EE6C2A3E03F832FFE /* Sources */,
+				F8B3D7154CBCE88D54504E15 /* Resources */,
 			);
 			buildRules = (
 			);
@@ -427,7 +444,18 @@
 				C2738F45B7E4966A9BDBB60D /* Assets.xcassets in Resources */,
 				8EDFED545097599993FB93EF /* InstrumentSerif-Italic.ttf in Resources */,
 				103561703A935EE4E5012299 /* InstrumentSerif-License.txt in Resources */,
+				157E4229B351D0C072B1A221 /* NOTICE.txt in Resources */,
 				CAA0B292C34EBF8FE061EEBF /* PrivacyInfo.xcprivacy in Resources */,
+				4DE8D653DBC345907C86A50A /* Stellon-Community-License.txt in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		F8B3D7154CBCE88D54504E15 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				19F844C976A2B8392A6B6750 /* NOTICE.txt in Resources */,
+				509E912068A1B6B27946758D /* Stellon-Community-License.txt in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -642,7 +670,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 15;
+				CURRENT_PROJECT_VERSION = 16;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
@@ -745,7 +773,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 15;
+				CURRENT_PROJECT_VERSION = 16;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;

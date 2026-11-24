@@ -24,7 +24,7 @@ from pymongo.errors import DuplicateKeyError
 from starlette.concurrency import run_in_threadpool
 
 from . import fleet_health, sources, worker
-from .upload_voice import upload_mode, voice_scope, VOICE_ERRORS
+from .upload_voice import KITTEN_ENGINE, KITTEN_MODEL, VOICE_ERRORS, upload_mode, voice_scope
 from .db import db, media_db, now, separate_metadata, uses_postgres
 from .progress import STEPS, nearby_runtime
 from .source import MAX_SOURCE_SECONDS, TOO_LONG
@@ -61,7 +61,7 @@ MAX_VIDEO = 500 * 1024 * 1024
 MAX_POSTER = 512_000
 STAGES = set(STEPS) | {"Waiting for GPU", "Processing"}
 CLAIM_FIELDS = ("_id", "lease", "lease_end", "priority", "target_language", "render_quality",
-                "lab_mode", "lab_runtime", "lab_separation", "lab_voice", "voice_batch", "quoted_seconds")
+                "lab_mode", "lab_runtime", "lab_separation", "lab_voice", "voice_batch", "quoted_seconds", "narrator_engine")
 claim_capacity = BoundedSemaphore(3)  # Each advisory-lock holder also needs a SQL connection for its claim.
 
 
@@ -118,6 +118,7 @@ class StrictModel(BaseModel):
 class Claim(StrictModel):
     request_id: UUID
     upload_voice_protocol: Literal[1] | None = None
+    kitten_narrator: bool = False
 
 
 class Heartbeat(StrictModel):
@@ -137,6 +138,7 @@ class Infrastructure(StrictModel):
 
 
 class Health(StrictModel):
+    kitten_narrator: bool = False
     ready: bool
     preflight: bool
     reason: Literal["gpu_unavailable", "model_unavailable", "runtime_unavailable"] | None = None
@@ -146,7 +148,7 @@ class Health(StrictModel):
 def health(slot: int, body: Health, node: Node = Depends(authenticated)):
     if slot != 0:
         raise HTTPException(403, "Only the first slot reports node health.")
-    return fleet_health.health(node, body.ready, body.preflight, body.reason)
+    return fleet_health.health(node, body.ready, body.preflight, body.reason, body.kitten_narrator)
 
 
 class Telemetry(StrictModel):
@@ -194,7 +196,7 @@ class Slot:
 
 
 @lru_cache(maxsize=512)
-def slot_state(key, upload_voice_protocol=None):
+def slot_state(key, upload_voice_protocol=None, kitten_narrator=False):
     return Slot()
 
 
@@ -242,7 +244,7 @@ def claim(slot: int, body: Claim, node: Node = Depends(authenticated)):
     slot_key = f"{node.name}:{slot}"
     req = str(body.request_id)
     key = {"_id": slot_key + "/" + req}
-    gate = slot_state(slot_key, body.upload_voice_protocol)
+    gate = slot_state(slot_key, body.upload_voice_protocol, body.kitten_narrator)
     store = fleet_health.tickets()
     with gate.lock:
         replay = store.find_one(key)
@@ -274,6 +276,8 @@ def claim(slot: int, body: Claim, node: Node = Depends(authenticated)):
                         and existing.get("lease") and existing.get("lease_end", now()) > now()):
                     if not body.upload_voice_protocol and upload_mode(existing) is not None:
                         return Response(status_code=204)
+                    if existing.get("narrator_engine") == KITTEN_ENGINE and not body.kitten_narrator:
+                        return Response(status_code=204)
                     return claim_reply(existing)
                 if existing or replay:
                     # A pending ticket with no surviving assignment means the previous attempt
@@ -285,11 +289,14 @@ def claim(slot: int, body: Claim, node: Node = Depends(authenticated)):
                 store.update_one(key, {"$setOnInsert": ttl}, upsert=True)
                 active = db().jobs.find_one({"fleet_slot": slot_key, "state": "running",
                                              "lease_end": {"$gt": now()}}, {"_id": 1})
-                avoid = None
-                if not active and health_doc and health_doc.get("recoveries", 0) and fleet_health.idle_alternative(node):
-                    avoid = node.name
+                alternatives = set()
+                if not active and health_doc and health_doc.get("recoveries", 0):
+                    alternatives = fleet_health.idle_alternative_engines(node)
+                avoid = node.name if alternatives else None
                 job = None if active else worker.claim(studio=node.studio, fleet_slot=slot_key, fleet_request=req,
-                                                       avoid_recovery_node=avoid, upload_voices=bool(body.upload_voice_protocol))
+                                                       avoid_recovery_node=avoid, upload_voices=bool(body.upload_voice_protocol),
+                                                       kitten_narrator=body.kitten_narrator,
+                                                       alternatives=alternatives)
                 if not job:
                     gate.wake.watch_active_leases()
                     if avoid and db().jobs.find_one({"state": "queued", "deleted": {"$ne": True},
@@ -420,7 +427,8 @@ def source(job=Depends(current_job)):
     duration = min(doc["seconds"], job.get("quoted_seconds") or doc["seconds"])
     headers = {"Content-Length": str(stream.length), "X-Duration": str(duration), "Cache-Control": "no-store"}
     try:
-        rows = db().jobs.find({"state": "done", "lab_mode": job.get("lab_mode"), "render_quality": job.get("render_quality"),
+        rows = db().jobs.find({"state": "done", "lab_mode": job.get("lab_mode"),
+                               "narrator_engine": job.get("narrator_engine"), "render_quality": job.get("render_quality"),
                                "media_seconds": {"$exists": True}}, {"media_seconds": 1, "started": 1, "finished": 1,
                                "attempt": 1, "target_language": 1}).sort("finished", -1).limit(40)
         runtime = nearby_runtime(rows, duration, job.get("target_language", "en"))
@@ -527,6 +535,8 @@ async def result(request: Request, job=Depends(current_job)):
     expected_voice = upload_mode(job)
     if expected_voice is not None and details.get("rendered_voice_mode") != expected_voice:
         raise HTTPException(422, "Rendered voice mode does not match the confirmed job.")
+    if (job.get("narrator_engine") == KITTEN_ENGINE) != (details.get("voice_model") == KITTEN_MODEL):
+        raise HTTPException(422, "Rendered narrator does not match the confirmed job.")
     if not job.get("staged_source") or job.get("staged_lease") != job["lease"]:
         raise HTTPException(422, "Prepare the assigned source first.")
     if job.get("quoted_seconds") and details["media_seconds"] > job["quoted_seconds"] + 1:

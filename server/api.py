@@ -294,6 +294,8 @@ def me(user=Depends(restricted_owner), checkout_version: str = Header(default=""
         result["output_languages"] = outputs(profile)
         result["video_uploads"] = True
         result["upload_voice_modes"] = upload_voice_modes(profile)
+        if minutes.kitten_permitted(user):
+            result["kitten_narrator_languages"] = ["en"]
         result["reel_links"] = sources.reel_links_enabled()
         result["library_id"] = account.get("library_id", hash_value(user))
         result["email"] = account.get("email")
@@ -348,6 +350,7 @@ class QuoteRequest(BaseModel):
     targets: list[str] = Field(min_length=1, max_length=11)
     trim: bool = False
     voice_mode: Literal["narrator", "match"] | None = None
+    narrator_engine: Literal["kitten2"] | None = None
     voice_consent: Literal["own_voice", "documented_permission"] | None = None
     consent_reference: str | None = Field(default=None, max_length=160)
     model_config = {"extra":"forbid"}
@@ -398,7 +401,7 @@ def create_quote(body: QuoteRequest,user=Depends(owner)):
     if len(targets)!=len(body.targets) or any(t not in outputs(os.getenv("REELDUB_OUTPUT_PROFILE","light")) for t in targets):
         raise HTTPException(422,"Select supported output languages once each.")
     return minutes.quote(user, body.source_id, targets, body.trim, body.voice_mode,
-                         body.voice_consent, body.consent_reference)
+                         body.voice_consent, body.consent_reference, body.narrator_engine)
 
 
 @app.post("/v1/quotes/{quote_id}/confirm")
@@ -648,7 +651,8 @@ def summary(job, before=None):
                 title=job.get("title"), author=job.get("author"), has_poster=job.get("has_poster", False),
                 available_on_server=media_available(job), cache_expires=job.get("media_expires"),
                 source_id=str(job["source_file"]) if job.get("source_file") else None, trimmed=job.get("trimmed",False),
-                voice_mode=job.get("voice_mode"), render_quality=job.get("render_quality"), lab_mode=job.get("lab_mode"), lab_runtime=job.get("lab_runtime"), voice_batch=job.get("voice_batch"), target_language=job.get("target_language", "en"), source_language=job.get("source_language"), first_caption=job.get("first_caption"))
+                voice_mode=job.get("voice_mode"), narrator_engine=job.get("narrator_engine"),
+                render_quality=job.get("render_quality"), lab_mode=job.get("lab_mode"), lab_runtime=job.get("lab_runtime"), voice_batch=job.get("voice_batch"), target_language=job.get("target_language", "en"), source_language=job.get("source_language"), first_caption=job.get("first_caption"))
 
 
 def enqueue_render(job, plan, limit):
@@ -661,7 +665,8 @@ def enqueue_render(job, plan, limit):
         if not job.get("voice_mode") or not job.get("source_file"):
             raise HTTPException(428, "Choose a voice and confirm the video before rendering.")
         voice = minutes.voice_policy(job["url"], [job["target_language"]], job["voice_mode"],
-                                     job.get("voice_consent"), job.get("consent_reference"))
+                                     job.get("voice_consent"), job.get("consent_reference"),
+                                     job.get("narrator_engine"), job["owner"])
         if "voice_consent" in voice and (job.get("voice_consent_version") != voice["voice_consent_version"]
                                        or not job.get("voice_consented_at")):
             raise HTTPException(428, "Review the voice permission before rendering.")

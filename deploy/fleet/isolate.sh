@@ -10,7 +10,7 @@ landrun=${REELDUB_LANDRUN:-$HOME/.local/opt/reeldub-host/landrun}
 python3 -c 'import ctypes,platform; assert platform.machine() in ("x86_64","aarch64") and ctypes.CDLL(None).syscall(444,0,0,1)>=6'
 args=(--best-effort --rox /usr --ro /etc --ro /sys --rw /proc --rox "$repo" --rw "$TMPDIR" --rw "$REELDUB_GPU_LOCK_DIR"
       --ro /dev/urandom --ro /dev/random --rw /dev/null --rw /dev/zero --rw /dev/shm)
-for path in "$repo"/{.tools,.venv,.qwen-venv,.omni-venv,.tts-graph} "$HOME/.cache/bandit-infer" "$HOME/.cache/reeldub/index-translate" "$HOME/.cache/local-reeldub" "$HOME/.cache/torch" "$HOME/.cache/huggingface/hub"; do
+for path in "$repo"/{.tools,.venv,.qwen-venv,.omni-venv,.tts-graph,.kitten2} "$HOME/.cache/bandit-infer" "$HOME/.cache/reeldub/index-translate" "$HOME/.cache/local-reeldub" "$HOME/.cache/torch" "$HOME/.cache/huggingface/hub"; do
   [[ ! -e $path ]] || args+=(--rox "$(realpath "$path")")
 done
 gpu_paths=(/dev/nvidiactl /dev/nvidia-uvm /dev/nvidia-uvm-tools /dev/nvidia-modeset /dev/nvidia-caps /dev/dri)

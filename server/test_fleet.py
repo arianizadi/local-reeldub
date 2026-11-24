@@ -109,6 +109,48 @@ class FleetIntegration(TestCase):
         return self.req("POST", f"/v1/slots/{slot}/claim", node,
                         json={"request_id": request or str(uuid4()), "upload_voice_protocol": 1})
 
+    def test_kitten_narration_requires_a_ready_studio_worker_and_matching_result(self):
+        original = self.queue(url="upload:kitten", voice_mode="narrator", narrator_engine="kitten2")
+        self.assertEqual(self.claim().status_code, 204)
+        body = {"request_id": str(uuid4()), "kitten_narrator": True, "upload_voice_protocol": 1}
+        self.assertEqual(self.req("POST", "/v1/slots/0/claim", node="beta", json=body).status_code, 204)
+        job = self.req("POST", "/v1/slots/0/claim", json=body).json()
+        self.assertEqual((job["_id"], job["narrator_engine"]), (original["_id"], "kitten2"))
+        self.assertEqual(self.claim(request=body["request_id"]).status_code, 204)
+        details = {"media_seconds": 5, "rendered_voice_mode": "narrator", "voice_model": "Kokoro v1.0"}
+        headers = {"Content-Type": "application/octet-stream", "X-ReelDub-Details":
+                   base64.urlsafe_b64encode(json.dumps(details).encode()).decode()}
+        result = self.req("PUT", "/v1/jobs/" + job["_id"] + "/result", lease=job["lease"], headers=headers, data=b"")
+        self.assertEqual(result.status_code, 422)
+        self.assertIn("narrator", result.json()["detail"])
+
+    def test_kitten_recovery_prefers_an_idle_compatible_gpu_then_reuses_its_own(self):
+        registry = json.loads(os.environ["REELDUB_FLEET_REGISTRY"])
+        registry["nodes"]["beta"]["studio"] = True
+        self.enterContext(patch.dict(os.environ, {"REELDUB_FLEET_REGISTRY": json.dumps(registry)}))
+
+        def claim_kitten(node):
+            return self.req("POST", "/v1/slots/0/claim", node,
+                            json={"request_id": str(uuid4()), "upload_voice_protocol": 1, "kitten_narrator": True})
+
+        for node in ("alpha", "beta"):
+            self.req("POST", "/v1/slots/0/health", node,
+                     json={"ready": True, "preflight": True, "kitten_narrator": True}).raise_for_status()
+        fields = {"url": "upload:kitten", "voice_mode": "narrator", "narrator_engine": "kitten2",
+                  "recovery_rank": 1, "recovery_from_node": "alpha"}
+        media_db().fleet_nodes.update_one({"_id": "alpha"}, {"$set": {"recoveries": 1}})
+        first = self.queue(**fields)
+        self.assertEqual(claim_kitten("alpha").status_code, 204)
+        self.assertEqual(claim_kitten("beta").json()["_id"], first["_id"])
+
+        # The second Studio worker returns online without Kitten installed.
+        db().jobs.update_one({"_id": first["_id"]}, {"$set": {"state": "done"}})
+        fleet_health.tickets().update_many({"node": "beta"}, {"$set": {"watch": False}})
+        self.assertEqual(self.pulse("beta", check=True)["status"], "online")
+        retry = self.queue(**fields)
+        self.assertEqual(self.claim("beta").status_code, 204)
+        self.assertEqual(claim_kitten("alpha").json()["_id"], retry["_id"])
+
     def test_two_nodes_claim_distinct_work_and_retries_cannot_reserve_extra_jobs(self):
         best = self.queue(1, priority=1, render_quality="best")
         regular = self.queue(2)
@@ -264,6 +306,12 @@ class FleetIntegration(TestCase):
                 json.dumps({**details, "rendered_voice_mode": mode}).encode()).decode()
         report_voice("match")
         self.assertEqual(send(body).status_code, 422)
+        details["voice_model"] = "KittenTTS 2 1.7B"
+        report_voice("narrator")
+        unexpected = send(body)
+        self.assertEqual(unexpected.status_code, 422)
+        self.assertIn("narrator", unexpected.json()["detail"])
+        details["voice_model"] = "Kokoro v1.0"
         report_voice("narrator")
         self.assertEqual(send(bytes(4) + bytes(16)).status_code, 422)
         done = send(body)
