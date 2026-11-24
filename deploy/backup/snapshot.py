@@ -6,8 +6,9 @@ import json
 import re
 from zipfile import ZIP_DEFLATED, ZipFile
 
-from bson import decode_file_iter
-from bson.codec_options import CodecOptions
+from bson import decode, decode_file_iter
+from bson.codec_options import CodecOptions, DatetimeConversion
+from bson.errors import InvalidBSON
 from bson.raw_bson import RawBSONDocument
 
 
@@ -19,32 +20,72 @@ COLLECTIONS = (
     "store_history", "store_quarantine", "subscription_status",
 )
 RAW = CodecOptions(document_class=RawBSONDocument, tz_aware=True)
+VALIDATION = CodecOptions(datetime_conversion=DatetimeConversion.DATETIME_AUTO)
 STAGING_NAME = re.compile(r"reeldub_restore_[a-z0-9_]{5,55}\Z")
 
 
-def capture(database, path):
+def capture(database, path, *, started_at=None, verify_source_counts=False):
     names = set(database.list_collection_names())
     unknown = names - set(COLLECTIONS) - TRANSIENT
     if unknown:
         raise ValueError("Review unrecognized metadata collection(s): " + ", ".join(sorted(unknown)))
     if "accounts" not in names:
         raise ValueError("Missing accounts collection; refusing an empty/uninitialized source")
-    manifest = {"format": 1, "started_at": datetime.now(UTC).isoformat(), "collections": {}}
+    manifest = {"format": 1, "started_at": (started_at or datetime.now(UTC)).isoformat(), "collections": {}}
     with database.client.start_session(snapshot=True) as session, ZipFile(path, "x", ZIP_DEFLATED) as archive:
         for name in COLLECTIONS:
             digest, count = sha256(), 0
+            collection = database.get_collection(name, codec_options=RAW)
             with archive.open(name + ".bson", "w", force_zip64=True) as output:
                 projection = {"poster": 0} if name == "jobs" else None
-                with database.get_collection(name, codec_options=RAW).find(
-                    projection=projection, session=session
-                ).sort("_id", 1) as rows:
+                with collection.find(projection=projection, session=session).sort("_id", 1) as rows:
+                    if verify_source_counts and name in names:
+                        rows.hint("_id_")
                     for row in rows:
                         output.write(row.raw)
                         digest.update(row.raw)
                         count += 1
+            if verify_source_counts:
+                natural_count = collection.count_documents({}, hint={"$natural": 1}, session=session)
+                if natural_count != count:
+                    raise ValueError("MongoDB collection scan and exported count differ for " + name)
             manifest["collections"][name] = {"count": count, "sha256": digest.hexdigest()}
         archive.writestr("manifest.json", json.dumps(manifest, sort_keys=True))
     return manifest
+
+
+def read_manifest(archive):
+    manifest = json.loads(archive.read("manifest.json"))
+    entries = ["manifest.json", *(name + ".bson" for name in COLLECTIONS)]
+    if (manifest.get("format") != 1 or set(manifest["collections"]) != set(COLLECTIONS)
+            or sorted(archive.namelist()) != sorted(entries)):
+        raise ValueError("Unsupported or incomplete archive")
+    if datetime.fromisoformat(manifest["started_at"]).tzinfo is None:
+        raise ValueError("Snapshot time lacks a timezone")
+    return manifest
+
+
+def verify_snapshot(path, captured):
+    """Reopen the completed ZIP and compare its decoded contents to the original snapshot."""
+    with ZipFile(path) as archive:
+        if read_manifest(archive) != captured:
+            raise ValueError("Archived manifest differs from capture")
+        for name in COLLECTIONS:
+            digest, count = sha256(), 0
+            with archive.open(name + ".bson") as source:
+                while header := source.read(4):
+                    size = int.from_bytes(header, "little", signed=True)
+                    if len(header) != 4 or not 5 <= size <= 16 * 1024 * 1024:
+                        raise ValueError("Invalid BSON document size in " + name)
+                    data = header + source.read(size - 4)
+                    try:
+                        decode(data, codec_options=VALIDATION)
+                    except InvalidBSON:
+                        raise ValueError("Invalid BSON document in " + name) from None
+                    digest.update(data)
+                    count += 1
+            if {"count": count, "sha256": digest.hexdigest()} != captured["collections"][name]:
+                raise ValueError("Archived document validation failed for " + name)
 
 
 def restore_isolated(database, path):
@@ -52,13 +93,7 @@ def restore_isolated(database, path):
     if not STAGING_NAME.fullmatch(database.name) or database.list_collection_names():
         raise ValueError("Target must be an empty database named reeldub_restore_<unique suffix>")
     with ZipFile(path) as archive:
-        manifest = json.loads(archive.read("manifest.json"))
-        entries = ["manifest.json", *(name + ".bson" for name in COLLECTIONS)]
-        if (manifest.get("format") != 1 or set(manifest["collections"]) != set(COLLECTIONS)
-                or sorted(archive.namelist()) != sorted(entries)):
-            raise ValueError("Unsupported or incomplete archive")
-        if datetime.fromisoformat(manifest["started_at"]).tzinfo is None:
-            raise ValueError("Snapshot time lacks a timezone")
+        manifest = read_manifest(archive)
         for name in COLLECTIONS:
             target = database.create_collection(name)
             with archive.open(name + ".bson") as input_file:

@@ -86,23 +86,28 @@ def file_checksum(file):
 
 
 def save(uri_file):
-    from snapshot import capture
+    from snapshot import capture, verify_snapshot
 
     status = Path(os.environ["STATE_DIRECTORY"]) / "status.json"
     previous = json.loads(status.read_text()) if status.exists() else {}
     with mongo(uri_file) as client, tempfile.TemporaryDirectory() as folder:
         path = Path(folder) / "snapshot.zip"
-        manifest = capture(client[os.environ["REELDUB_BACKUP_DATABASE"]], path)
-        stamp = datetime.fromisoformat(manifest["started_at"])
-        day = stamp.date().isoformat()
-        category = "daily" if previous.get("last_daily") != day else "quarter-hour"
-        key = f"snapshots/{category}/{stamp:%Y-%m-%dT%H-%M-%SZ}-{uuid4().hex}.zip"
+        started_at = datetime.now(UTC)
+        check_day = started_at.date().isoformat()
+        check_source = previous.get("source_counts_checked_on") != check_day
+        manifest = capture(client[os.environ["REELDUB_BACKUP_DATABASE"]], path,
+                           started_at=started_at, verify_source_counts=check_source)
+        verify_snapshot(path, manifest)
+        category = "daily" if previous.get("last_daily") != check_day else "quarter-hour"
+        key = f"snapshots/{category}/{started_at:%Y-%m-%dT%H-%M-%SZ}-{uuid4().hex}.zip"
         with path.open("rb") as stream:
             checksum = file_checksum(stream)
             stream.seek(0)
             put_once(s3(), key, stream, checksum)
-        report = {"key": key, "started_at": manifest["started_at"], "last_daily": day,
-                  "bytes": path.stat().st_size}
+        report = {"key": key, "started_at": manifest["started_at"], "last_daily": check_day,
+                  "source_counts_checked_on": check_day,
+                  "bytes": path.stat().st_size, "verified_collections": len(manifest["collections"]),
+                  "verified_documents": sum(entry["count"] for entry in manifest["collections"].values())}
         pending = status.with_suffix(".tmp")
         pending.write_text(json.dumps(report))
         pending.replace(status)
