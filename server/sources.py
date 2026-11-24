@@ -17,7 +17,7 @@ from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
 from .db import media_db, db, now
-from .source import MAX_SOURCE_SECONDS, TOO_LONG, reel_url
+from .source import MAX_SOURCE_SECONDS, TOO_LONG, reel_links_enabled, reel_url
 
 MAX_BYTES = 80 * 1024 * 1024
 DAILY_REEL_BYTES = 250 * 1024 * 1024
@@ -48,6 +48,11 @@ def intake_post(path, **kwargs):
 
 def public(doc):
     return {"id": str(doc["_id"]), "seconds": doc["seconds"], "title": doc["title"]}
+
+
+def require_reel_links():
+    if not reel_links_enabled():
+        raise HTTPException(403, "This server accepts video files. Choose a video from Photos or Files.")
 
 
 def check_duration(seconds):
@@ -149,6 +154,10 @@ def save(stage, user, file, identity, seconds, title, author=None, *, max_bytes=
 
 
 def upload(stage, user, file, digest, title):
+    identity = "upload:" + digest
+    cached = cached_source(user, identity, MAX_BYTES)
+    if cached:
+        return public(cached)
     file.seek(0)
     try:
         with intake_post("/inspect", data=file, timeout=(4, 35)) as r:
@@ -156,7 +165,7 @@ def upload(stage, user, file, digest, title):
             seconds = r.json()["seconds"]
     except (requests.RequestException, ValueError, KeyError):
         raise HTTPException(503, "Video intake is temporarily unavailable.")
-    return public(save(stage, user, file, "upload:" + digest, seconds, title))
+    return public(save(stage, user, file, identity, seconds, title))
 
 
 def cached_source(user, identity, max_bytes):
@@ -206,6 +215,7 @@ def fetch_reel(stage, user, url, slot, daily):
 
 
 def prepare_reel(user, url, *, daily=False, job_fence=None):
+    require_reel_links()
     url = reel_url(url)
     # String slots share the existing unique (owner, slot) index with numeric import permits.
     # Keep this slot on the ready record so a losing or late writer cannot publish a duplicate.

@@ -10,12 +10,42 @@ from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
 from . import sources, store
-from .languages import default_render_quality
+from .languages import default_render_quality, upload_voice_modes
 from .db import db, now
 
 
 def enabled():
     return os.getenv("REELDUB_CREATOR_MINUTES", "0") == "1"
+
+
+def voice_policy(identity, targets, mode, consent, reference):
+    """Validate voice choices on the server for the authenticated owner's actual source."""
+    if not identity.startswith("upload:"):
+        sources.require_reel_links()
+        if not enabled():
+            raise HTTPException(404, "Choose a video from Photos or Files to request a quote.")
+        if any(value is not None for value in (mode, consent, reference)):
+            raise HTTPException(422, "Choose a video file to select its voice.")
+        return {}
+    mode = mode or "narrator"
+    modes = upload_voice_modes(os.getenv("REELDUB_OUTPUT_PROFILE", "light"))
+    if mode not in modes or any(code not in modes[mode] for code in targets):
+        raise HTTPException(422, "This server does not support the selected voice in that language.")
+    if mode == "narrator":
+        if consent is not None or reference is not None:
+            raise HTTPException(422, "Choose speaker matching before providing voice consent.")
+        return {"voice_mode": mode}
+    if consent not in ("own_voice", "documented_permission"):
+        raise HTTPException(422, "Confirm your permission to match the speaker in this video.")
+    voice = {"voice_mode": mode, "voice_consent": consent, "voice_consent_version": 1}
+    if consent == "documented_permission":
+        reference = (reference or "").strip()
+        if not reference or len(reference) > 160 or not reference.isprintable():
+            raise HTTPException(422, "Enter a short reference to the speaker's documented permission.")
+        voice["consent_reference"] = reference
+    elif reference is not None:
+        raise HTTPException(422, "A release reference applies only to documented speaker permission.")
+    return voice
 
 
 def funding(user, plan, stamp):
@@ -56,7 +86,7 @@ def funding(user, plan, stamp):
     return list(available(monthly)), list(available(sorted(packs)))
 
 
-def existing(user, url, target, trim):
+def existing(user, url, target, trim, voice=None):
     from .api import live_media_query
 
     key = {
@@ -66,6 +96,7 @@ def existing(user, url, target, trim):
         "lab_mode": {"$exists":False},
         "render_quality": default_render_quality(),
         "trimmed": True if trim else {"$ne": True},
+        **(voice or {"voice_mode": {"$exists": False}}),
     }
     return db().jobs.find_one(
         {
@@ -83,10 +114,11 @@ def existing(user, url, target, trim):
     )
 
 
-def quote(user, source_id, targets, trim):
+def quote(user, source_id, targets, trim, mode=None, consent=None, reference=None):
     from .api import daily_limit, tier
 
     source = sources.get(user, source_id)
+    voice = voice_policy(source["identity"], targets, mode, consent, reference)
     stamp = now()
     plan = tier(user)
     trimmed = trim and source["seconds"] > 60
@@ -94,11 +126,12 @@ def quote(user, source_id, targets, trim):
     day = stamp.date().isoformat()
     occupied = set(db().jobs.distinct("slot", {"owner": user, "day": day}))
     slots = sum(i not in occupied for i in range(daily_limit(user, plan) or 0))
-    monthly, pack = funding(user, plan, stamp) if plan != "admin" else ([], [])
+    commerce = enabled()
+    monthly, pack = funding(user, plan, stamp) if commerce and plan != "admin" else ([], [])
     m, p = len(monthly), len(pack)
     lines = []
     for target in targets:
-        job = existing(user, source["identity"], target, trimmed)
+        job = existing(user, source["identity"], target, trimmed, voice)
         line = {
             "target": target,
             "free": 0,
@@ -112,7 +145,7 @@ def quote(user, source_id, targets, trim):
         if not job:
             if plan == "admin":
                 line["unlimited"] = True
-            elif duration <= 60 and slots:
+            elif slots and (not commerce or duration <= 60):
                 line["free"] = 1
                 slots -= 1
             else:
@@ -131,7 +164,10 @@ def quote(user, source_id, targets, trim):
         "lines": lines,
         "day": day,
         "expires": stamp + timedelta(minutes=15),
+        **voice,
     }
+    if "voice_consent" in voice:
+        record["voice_consented_at"] = stamp
     db().quotes.insert_one(record)
     return {
         "id": record["_id"],
@@ -171,6 +207,14 @@ def confirm(user, quote_id):
     if any(x["missing"] for x in record["lines"]):
         raise HTTPException(402, "There is not enough time in your balance.")
     source = sources.get(user, str(record["source"]))
+    if source["identity"].startswith("upload:") and "voice_mode" not in record:
+        raise HTTPException(409, "Review the video and choose a voice again.")
+    voice = voice_policy(source["identity"], [line["target"] for line in record["lines"]],
+                         record.get("voice_mode"), record.get("voice_consent"), record.get("consent_reference"))
+    if "voice_consent" in voice and (
+        record.get("voice_consent_version") != voice["voice_consent_version"] or not record.get("voice_consented_at")
+    ):
+        raise HTTPException(409, "Review the voice permission for this video again.")
     plan = tier(user)
 
     limit = daily_limit(user, plan) or 0
@@ -182,7 +226,7 @@ def confirm(user, quote_id):
         target = line["target"]
         for attempt in range(8):
             stamp = now()
-            cached = existing(user, source["identity"], target, record["trimmed"])
+            cached = existing(user, source["identity"], target, record["trimmed"], voice)
             if cached:
                 from .api import live_media_query
 
@@ -219,6 +263,8 @@ def confirm(user, quote_id):
             # Preserve historical Light keys. A Studio Best render can coexist with a legacy copy.
             if quality:
                 identity += (quality,)
+            if voice:
+                identity += (tuple(sorted(voice.items())),)
             render_key = sha256(repr(identity).encode()).hexdigest()
             job = {
                 "_id": line["request"],
@@ -241,7 +287,10 @@ def confirm(user, quote_id):
                 "priority": int(plan != "free" or line["pack"] > 0),
                 "queue_seq": next_position(),
                 "day": record["day"],
+                **voice,
             }
+            if "voice_consent" in voice:
+                job["voice_consented_at"] = record["voice_consented_at"]
             if quality:
                 job["render_quality"] = quality
             if line["free"]:
@@ -251,6 +300,8 @@ def confirm(user, quote_id):
                     raise HTTPException(409, "The daily allowance changed. Review the cost again.")
                 job["slot"] = slot
             if line["monthly"] or line["pack"]:
+                if not enabled():
+                    raise HTTPException(409, "The server's funding options changed. Review the quote again.")
                 if (
                     record["seconds"] <= 60
                     and len(db().jobs.distinct("slot", {"owner": user, "day": record["day"]})) < limit

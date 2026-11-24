@@ -21,8 +21,6 @@ struct JobView: View {
     @State private var sharing: ShareFile?
     @State private var problem: String?
     @State private var project: ProjectInput?
-    @State private var showBalance = false
-    @State private var retrying = false
     @State private var importedFile: URL?
     @State private var confirmSkip = false
     private var job: Job { studio.jobs.first { $0.id == initial.id } ?? initial }
@@ -34,11 +32,11 @@ struct JobView: View {
         GeometryReader { viewport in
             details(in: viewport.size)
         }
-        .background(Palette.canvas).navigationTitle("Reel details").navigationBarTitleDisplayMode(.inline)
+        .background(Palette.canvas).navigationTitle("Video details").navigationBarTitleDisplayMode(.inline)
             .sheet(item: $project, onDismiss: {
                 if let importedFile { try? FileManager.default.removeItem(at: importedFile); self.importedFile = nil }
             }) { input in
-                if let api=studio.api { QuoteSheet(api:api,input:input,languages:studio.account?.output_languages ?? ["en"],target:job.target,trim:job.trimmed ?? false,liveOffers:studio.account?.purchase_preflight == true,plans:AnyView(CloudPlanSheet(studio:studio))) { _ in Task { await studio.refresh() } } }
+                if let api=studio.api { QuoteSheet(api:api,input:input,voiceModes:studio.account?.upload_voice_modes ?? [:],target:job.target,trim:job.trimmed ?? false,creatorMinutes:studio.account?.creator_minutes == true,liveOffers:studio.account?.purchase_preflight == true,plans:AnyView(CloudPlanSheet(studio:studio))) { _ in Task { await studio.refresh() } } }
             }
             .confirmationDialog("Join the end of the priority line?", isPresented: $confirmSkip, titleVisibility: .visible) {
                 Button("Use 1 queue pass") {
@@ -145,6 +143,11 @@ struct JobView: View {
                 }
                 Text(job.displayTitle).font(.custom("InstrumentSerif-Italic", size: 35, relativeTo: .title))
                 if let author = job.author, !author.isEmpty { Text(author).font(.subheadline).foregroundStyle(.secondary) }
+                if let mode = job.voice_mode {
+                    Label(mode == "match" ? "AI-translated audio · Matched speaker" : "AI-translated audio · Narrator",
+                          systemImage: "waveform")
+                        .font(.subheadline).foregroundStyle(.secondary)
+                }
                 if let recovery = job.recoveryNotice {
                     Label(recovery, systemImage: "arrow.clockwise")
                         .font(.body).padding(14).frame(maxWidth: .infinity, alignment: .leading)
@@ -181,18 +184,16 @@ struct JobView: View {
                     }
                 }
                 if job.state == "failed" || expired {
-                    if !Job.isReel(job.url) && job.source_id == nil {
+                    if Job.isReel(job.url) || job.source_id == nil {
                         VideoImportButton(receive: { movie in
                             importedFile = movie.file
                             project = .file(movie.file, movie.title)
                         }, failed: { problem = $0 }, title: "Choose video again")
                     } else {
-                        Button(expired ? "Translate again" : "Try again", systemImage: "arrow.clockwise") { Task { await retry() } }
-                            .buttonStyle(.bordered).disabled(retrying)
+                        Button(expired ? "Translate again" : "Try again", systemImage: "arrow.clockwise") {
+                            if let source = job.source_id { project = .source(source) }
+                        }.buttonStyle(.bordered)
                     }
-                }
-                if showBalance, studio.connection?.isHosted == true {
-                    BalanceOptions(live: studio.account?.purchase_preflight == true, plans: AnyView(CloudPlanSheet(studio: studio)))
                 }
                 if let problem { Text(problem).font(.footnote).foregroundStyle(.secondary) }
                 Divider()
@@ -205,29 +206,6 @@ struct JobView: View {
                 }
             }.padding(DubVideoFrame.inset).frame(maxWidth: DubVideoFrame.contentWidth).frame(maxWidth: .infinity)
         }
-    }
-
-    private func retry() async {
-        guard !retrying else { return }
-        if studio.account?.creator_minutes == true || !Job.isReel(job.url) {
-            openRetryQuote()
-            return
-        }
-        retrying = true
-        defer { retrying = false }
-        do {
-            try await studio.submit(job.url, target: job.target)
-            problem = "A new attempt is in your Dubs."
-        } catch let error as ServiceError where error.status == 428 {
-            openRetryQuote()
-        } catch {
-            showBalance = (error as? ServiceError)?.needsBalance == true
-            problem = error.localizedDescription
-        }
-    }
-    private func openRetryQuote() {
-        if Job.isReel(job.url) { project = .reel(job.url) }
-        else if let source = job.source_id { project = .source(source) }
     }
 
     private func play() async {

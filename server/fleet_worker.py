@@ -19,6 +19,7 @@ import requests
 from .gpu import lock_dir, pipeline_slot
 from .source import MAX_SOURCE_SECONDS, TOO_LONG
 from .worker import LeaseLost, process
+from .upload_voice import VOICE_ERRORS
 
 
 class VideoBody:
@@ -75,7 +76,8 @@ class Coordinator:
 
     def claim(self, slot, request_id):
         sent = time.monotonic()
-        with self.request("POST", f"/v1/slots/{slot}/claim", json={"request_id": request_id}) as r:
+        with self.request("POST", f"/v1/slots/{slot}/claim",
+                          json={"request_id": request_id, "upload_voice_protocol": 1}) as r:
             if r.status_code == 204:
                 return None
             r.raise_for_status()
@@ -149,7 +151,7 @@ class AssignedJob:
         limits = {"source_language": 24, "first_caption": 240, "asr_model": 120,
                   "translation_model": 120, "voice_model": 120}
         metadata = {**{k: str(metadata[k])[:limit] for k, limit in limits.items() if metadata.get(k)},
-                    **{k: metadata[k] for k in ("media_seconds", "audio_mix_version") if k in metadata}}
+                    **{k: metadata[k] for k in ("media_seconds", "audio_mix_version", "rendered_voice_mode") if k in metadata}}
         details = base64.urlsafe_b64encode(json.dumps(metadata, ensure_ascii=True, separators=(",", ":")).encode()).decode()
         with self.coordinator.request("PUT", self.path + "/result", headers={
                 **self.headers, "Content-Type": "application/octet-stream", "X-ReelDub-Details": details},
@@ -166,6 +168,9 @@ class AssignedJob:
             reason = "translation"
         if message == TOO_LONG:
             reason = "duration"
+        for key, explanation in VOICE_ERRORS.items():
+            if message == explanation:
+                reason = key
         with self.coordinator.request("POST", self.path + "/failure", headers=self.headers,
                                       json={"stage": stage, "reason": reason}) as r:
             r.raise_for_status()
@@ -176,7 +181,9 @@ def preflight():
     cache = Path(os.getenv("XDG_CACHE_HOME", Path.home() / ".cache"))
     hub = Path(os.getenv("HF_HUB_CACHE", Path(os.getenv("HF_HOME", cache / "huggingface")) / "hub"))
     files = [root / ".qwen-venv/ready", root / ".venv/bin/python", root / ".qwen-venv/bin/python",
-             cache / "local-reeldub/segmentation.onnx", cache / "bandit-infer/checkpoint-multi.ckpt",
+             cache / "local-reeldub/kokoro-v1.0.fp16.onnx", cache / "local-reeldub/voices-v1.0.bin",
+             cache / "local-reeldub/segmentation.onnx", cache / "local-reeldub/wespeaker_en_voxceleb_resnet34.onnx",
+             cache / "bandit-infer/checkpoint-multi.ckpt",
              cache / "reeldub/index-translate/translation.gguf", cache / "reeldub/index-translate/llama-b12532/llama-server"]
     if os.environ.get("REELDUB_ENGINE") == str(root / "deploy/fleet/isolated-engine.sh"):
         files.append(cache / "reeldub/index-translate/llama-b12532/llama-completion")

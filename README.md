@@ -2,22 +2,21 @@
 
 # ReelDub
 
-Paste an Instagram Reel link and get a dubbed MP4 in your chosen language. ReelDub downloads the video, identifies speakers, translates what they say, voices each line, and places it on the original timeline. The MP4 includes switchable captions in the output language.
-
-**All AI runs on your computer.** Setup downloads model weights. Link inputs contact the video platform. Once setup finishes, local video files can be dubbed offline.
+Share a video from Photos or Files to get a dubbed MP4 with switchable captions. Choose a standard narrator or use speech from the video to match an authorized speaker. ReelDub runs the speech and translation models on the connected server. A self-hosted installation downloads its model weights during setup.
 
 On iPhone, open **Dubs** to download finished videos for offline playback and sharing. **Select** lets you delete several finished or failed dubs together. After the first device confirms its download, the server keeps a copy for 24 hours. Requesting the same Reel again within that window renews it and uses no additional translation credit. Choose **Remove from Library** to remove one or more entries and free their device storage, even offline. ReelDub syncs removals when the server is reachable. Copies exported to Photos or Files stay there, and the private server cache expires on its normal schedule.
 
-The Creator review build accepts private MP4/MOV uploads from **Dubs → + → Photos or Files** and Instagram Reel links from the share sheet. Select the output languages, review the server’s duration quote, then confirm. Free includes five single-language dubs of up to 60 seconds a day. Creator adds 120 minutes per billing month and priority. A one-time pack adds 15 minutes. Minutes are metered by the second. Self-hosted processing is unlimited. See [the product guide](PRODUCT.md) for setup and [the hosted database setup](HOSTING.md) for the private metadata deployment.
-
+Authenticated MP4/MOV uploads are available with the ordinary daily allowance, independently of Creator billing. Each upload must have audio and fit within two minutes and 80 MiB. The server quotes the cost for each language before you commit. On servers with Creator billing enabled, the included daily slot covers up to 60 seconds or you can use available minutes for a longer dub. [Product and queue guide](PRODUCT.md) · [Hosted database setup](HOSTING.md)
 
 ## Use ReelDub on iPhone
 
 On first launch, tap **Continue with Apple** to create an account or sign in to the preconfigured ReelDub Cloud service. The same button handles returning users. In **Use my own server**, you can test your address and connection key for free. The official iOS app unlocks private-server connections for a one-time purchase ($4.99 in the U.S.). On a new phone, sign in to the same App Store account, tap **Restore Purchases**, and enter your server details. The server and CLI are open source.
 
-ReelDub Cloud uses **Best** for new dubs from the app and share sheet. Best translates dialogue in context and matches each speaker’s voice when the output language supports it. Hindi uses a preset voice.
+In **Photos** or **Files**, select one video, tap **Share → ReelDub**, then **Upload and review**. If ReelDub is hidden, open **More** in the share sheet. In the app you can also use **Dubs → Add video**. Choose the voice and language, check the quote, then confirm. Turn on captions or unmute from the video details screen.
 
-Share an Instagram Reel up to two minutes long to **ReelDub**, or paste its link in the library. Choose the output language and confirm. Follow its place in the queue, the current render stage and elapsed time. Use the speaker button under the player to listen in Silent Mode or mute a dub. Captions start on when available, and ReelDub remembers both playback controls. Shared MP4 files include a selectable subtitle track. If a translation misses the meaning, open **Report an issue** on that dub and include a timestamp.
+**Narrator** uses a preset voice. **Match speaker** is available on compatible Studio workers and requires affirmative permission for the current video. Choose *Only my voice* for your own single-speaker clip. If you hold written authorization from every speaker to synthesize and export the translated speech, enter a reference to that release. The server records the declaration with the quote and job. The app displays the languages available for each voice mode.
+
+For an uploads-only deployment, set `REELDUB_REEL_LINKS=0` for the API, operator and intake. Older clients can still read their libraries. Update the API, fleet coordinator and GPU workers together before enabling uploads for customers.
 
 **Help & FAQ** is available before sign-in and in Account. Signed-in Cloud users can suggest other types of videos from that screen. Their latest answer appears in the administrator’s account detail view.
 

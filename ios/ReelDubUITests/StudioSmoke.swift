@@ -424,14 +424,9 @@ final class StudioSmoke: XCTestCase {
         let app = XCUIApplication()
         let job = try connectToPlaybackLibrary(app)
         app.buttons["add-reel"].tap()
-        let composer = app.textFields["new-dub"]
-        XCTAssertTrue(composer.waitForExistence(timeout: 5))
-        composer.tap()
-        if !app.keyboards.firstMatch.waitForExistence(timeout: 2) { composer.tap() }
-        composer.typeText("example")
-        app.buttons["confirm-dub"].tap()
-        XCTAssertTrue(app.staticTexts["reel-link-error"].waitForExistence(timeout: 4))
-        app.buttons["Clear link"].tap()
+        let upload = app.buttons["choose-video"]
+        let update = app.staticTexts["This server needs an update to accept video uploads."]
+        XCTAssertTrue(upload.waitForExistence(timeout: 3) || update.exists)
         app.buttons["Close"].tap()
         if !job.isHittable { app.swipeDown() }
         job.tap()

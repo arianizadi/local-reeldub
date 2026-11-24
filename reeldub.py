@@ -15,6 +15,7 @@ from faster_whisper import WhisperModel
 from server.progress import report
 from server.gpu import transcription_device
 from server.languages import LANGUAGES
+from server.upload_voice import VOICE_ERRORS
 from server.source import inspect_video, reel_url
 from server.download import download_reel
 from clean_background import leakage_regions, matching_dialogue, merge_regions, suppress_unresolved
@@ -93,6 +94,9 @@ def run(args):
         os.environ["REELDUB_TTS_BATCH_SIZE"] = str(args.voice_batch or os.getenv("REELDUB_TTS_BATCH_SIZE") or 2)
     matched_default = (APP / ".qwen-venv/ready").is_file() and output.matched
     match = matched_default if args.voice_mode == "auto" else args.voice_mode == "match"
+    if args.upload_voice:
+        # A quality or experiment preset must never select the voice for an upload.
+        match = args.upload_voice in ("own_voice", "documented_permission")
     if match and not output.matched:
         raise ValueError(f"{output.name} uses a preset voice. Select --voice-mode auto.")
     if not match and not output.voices:
@@ -139,7 +143,11 @@ def run(args):
                                                              contextual, target, bed, beam)
         if bed is not None:
             regions = merge_regions(leakage_regions(bed) + confirmed, len(bed) / 16000)
-            if regions:
+            if regions and args.upload_voice:
+                # Use the Bandit bed and suppress residual speech without invoking
+                # the legacy HDemucs scientific-use checkpoint for uploads.
+                suppress_unresolved(folder / "background.wav", regions)
+            elif regions:
                 print("Cleaning residual voices from the background…", flush=True)
                 (folder / "leakage.json").write_text(json.dumps(regions))
                 subprocess.run([worker, APP / "clean_background.py", folder], check=True)
@@ -164,8 +172,14 @@ def run(args):
             raise ValueError("No translatable speech detected.")
         gc.collect()
         print("Identifying speakers and timing lines…", flush=True)
-        speech = mono(analysis_audio, "speech.f32") if analysis_audio != source else audio
-        turns = identify_turns(speech)
+        turns = []
+        if args.upload_voice != "narrator":
+            speech = mono(analysis_audio, "speech.f32") if analysis_audio != source else audio
+            turns = identify_turns(speech)
+        if args.upload_voice == "own_voice" and len({turn.speaker for turn in turns}) != 1:
+            raise ValueError(VOICE_ERRORS["single_speaker"])
+        if args.upload_voice == "documented_permission" and not turns:
+            raise ValueError(VOICE_ERRORS["unclear_speaker"])
         candidates = assign_lines(segments, turns)
         english_cues = assign_lines(drafts, turns)
         # Direct translation can hear a vocalization the native pass omitted, anywhere on the timeline.
@@ -184,10 +198,15 @@ def run(args):
             print("Translating the source transcript in context…", flush=True)
             script = folder / "lines.json"
             script.write_text(json.dumps(lines, ensure_ascii=False))
-            translated = subprocess.run([worker, APP / "translate_lines.py", folder, language, target])
+            translation = [worker, APP / "translate_lines.py", folder, language, target]
+            if args.upload_voice:
+                translation.append("--index-only")
+            translated = subprocess.run(translation)
             if translated.returncode == 0:
                 lines = json.loads(script.read_text())
             elif target != "en":
+                if args.upload_voice:
+                    raise ValueError(VOICE_ERRORS["upload_translation"])
                 raise ValueError(f"The translator could not complete the {output.name} dialogue.")
             else:
                 # Whisper already produced a direct English pass with its own word timings.
@@ -196,13 +215,14 @@ def run(args):
                     raise ValueError("Neither translator produced an English dub.")
                 print("Using the timed English translation from Whisper.", flush=True)
         if match:
-            write_references(lines, turns, analysis_audio, folder)
+            write_references(lines, turns, analysis_audio, folder, require_isolated=bool(args.upload_voice))
         print(f"Synthesizing {output.name} voices…", flush=True)
         synthesize(lines, folder, match, target, args.lab_runtime)
         print("Mixing soundtrack…", flush=True)
         mix(lines, source, folder)
         print("Encoding video…", flush=True)
-        render(media, lines, folder, target)
+        voice_label = ("Matched speaker" if match else "Narrator") if args.upload_voice else None
+        render(media, lines, folder, target, voice_label=voice_label)
         metadata_file = os.getenv("REELDUB_METADATA_FILE")
         if metadata_file:
             path = Path(metadata_file)
@@ -214,6 +234,8 @@ def run(args):
                                "Same language" if language == target else f"Whisper {args.model}"),
                            voice_model=f"Qwen3-TTS-12Hz-{os.getenv('REELDUB_QWEN_SIZE', '1.7B')}-Base" if match else "Kokoro v1.0",
                            audio_mix_version=2)
+            if args.upload_voice:
+                details["rendered_voice_mode"] = "match" if match else "narrator"
             path.write_text(json.dumps(details, ensure_ascii=False))
         os.link(folder / "finished.mp4", dest)  # Publish atomically without overwriting another job.
         print(dest)
@@ -238,6 +260,8 @@ def main():
     parser.add_argument("--background", choices=["separate", "stereo"], default="separate" if studio else "stereo")
     parser.add_argument("--translation", choices=["context", "whisper"], default="context" if studio else "whisper")
     parser.add_argument("--voice-mode", choices=["auto", "preset", "match"], default="auto")
+    parser.add_argument("--upload-voice", choices=["narrator", "own_voice", "documented_permission"],
+                        help="Render a user-supplied video in the confirmed voice mode and consent scope")
     try:
         run(parser.parse_args())
     except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as error:

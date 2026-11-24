@@ -21,15 +21,20 @@ def main():
     from transformers.models.whisper.tokenization_whisper import LANGUAGES
     lang = LANGUAGES.get(sys.argv[2], sys.argv[2]).title()
     target = OUTPUTS[sys.argv[3] if len(sys.argv) > 3 else "en"].name
+    index_only = "--index-only" in sys.argv[4:]
     if index.SERVER.is_file() and index.WEIGHTS.is_file():
         try:
             index.translate(lines, lang, target)
         except (OSError, ValueError, RuntimeError, KeyError, IndexError, TypeError, HTTPException) as exc:
+            if index_only:
+                raise RuntimeError("The upload translation model is unavailable.") from exc
             print(f"Index translation unavailable ({type(exc).__name__}). Retrying with Gemma.", flush=True)
         else:
             path.write_text(json.dumps(lines, ensure_ascii=False))
             path.with_name("translator.txt").write_text("IndexTeam/Index-Translate-9B-Q5_K_M")
             return
+    if index_only:
+        raise RuntimeError("The upload translation model is not installed.")
     weights = snapshot_download(MODEL, local_files_only=True)
     from transformers import AutoModelForCausalLM, AutoTokenizer
     import torch

@@ -84,7 +84,7 @@ def source_input_options():
     return ["-protocol_whitelist", "file", "-f", "mov"] if os.getenv("REELDUB_SERVICE_LIMITS") else []
 
 
-def render(media, lines, folder, target="en"):
+def render(media, lines, folder, target="en", *, voice_label=None):
     tag = "language=" + LANGUAGES[target].mp4
     captions = folder / f"{target}.srt"
     captions.write_text("".join(
@@ -96,4 +96,6 @@ def render(media, lines, folder, target="en"):
        "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2", "-c:v", "libx264", "-crf", "19", "-preset", "fast",
        "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-c:s", "mov_text",
        "-metadata:s:a:0", tag, "-metadata:s:s:0", tag,
+       *(["-metadata", f"comment=AI-translated audio · {voice_label}",
+          "-metadata:s:a:0", f"handler_name=AI-translated audio · {voice_label}"] if voice_label else []),
        "-disposition:s:0", "default", "-movflags", "+faststart", folder / "finished.mp4")

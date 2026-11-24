@@ -195,10 +195,20 @@ extension StoreCatalogTests {
             try await Task.sleep(for: .milliseconds(500))
         }
         XCTAssertEqual(offer.product?.displayPrice, "$4.99")
-        if mode == "owned" {
-            _ = try await session.buyProduct(identifier: SelfHostEntitlement.productID)
+        // The external share fixture runs in the extension, where StoreKit reads the app's cached verification.
+        if mode == "owned", let raw = ProcessInfo.processInfo.environment["REELDUB_SHARE_QA_SERVER"],
+           let url = URL(string: raw), url.scheme == "http", url.host == "127.0.0.1",
+           let key = ProcessInfo.processInfo.environment["REELDUB_SHARE_QA_KEY"] {
+            #if targetEnvironment(simulator)
+            let purchased = try await offer.purchase { UUID() }
+            XCTAssertTrue(purchased)
+            XCTAssertTrue(SelfHostEntitlement.isCached)
+            try Connection(base: url, token: key).save()
+            #endif
+        } else {
+            if mode == "owned" { _ = try await session.buyProduct(identifier: SelfHostEntitlement.productID) }
+            // The UI must recover from Apple's transactions, without a previous device's local cache.
+            SelfHostEntitlement.clear()
         }
-        // The UI must recover from Apple's transactions, without a previous device's local cache.
-        SelfHostEntitlement.clear()
     }
 }

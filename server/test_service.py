@@ -16,6 +16,17 @@ from .worker import LEASE, RenderLease, claim, quality_options
 
 
 class WorkerLeaseTests(unittest.TestCase):
+    def test_upload_voice_persists_through_best_and_overrides_lab_defaults(self):
+        legacy = {"url": "upload:abc", "render_quality": "best", "lab_mode": "fast", "lab_voice": "small"}
+        self.assertEqual(quality_options(legacy), ["--quality", "best", "--upload-voice", "narrator"])
+        for consent in ("own_voice", "documented_permission"):
+            job = {**legacy, "voice_mode": "match", "voice_consent": consent, "voice_consent_version": 1}
+            self.assertEqual(quality_options(job), ["--quality", "best", "--upload-voice", consent])
+        for fields in ({}, {"voice_consent": "own_voice"}, {"voice_consent": True, "voice_consent_version": 1},
+                       {"voice_consent": "own_voice", "voice_consent_version": True}):
+            with self.subTest(fields=fields), self.assertRaisesRegex(RuntimeError, "requires consent"):
+                quality_options({**legacy, "voice_mode": "match", **fields})
+
     def test_new_best_jobs_use_preset_and_lab_runs_keep_their_own_options(self):
         self.assertEqual(quality_options({"render_quality":"best"}), ["--quality","best"])
         self.assertEqual(quality_options({}), [])

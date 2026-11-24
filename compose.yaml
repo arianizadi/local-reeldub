@@ -21,6 +21,8 @@ services:
     restart: unless-stopped
   intake:
     build: {context: ., target: intake}
+    environment:
+      REELDUB_REEL_LINKS: ${REELDUB_REEL_LINKS:-1}
     networks: [intake, fetch]
     read_only: true
     tmpfs: ["/tmp:size=768m,mode=1777"]
@@ -35,6 +37,7 @@ services:
       MONGO_URI: ${REELDUB_MONGO_URI:-mongodb://reeldub:${MONGO_PASSWORD}@mongo:27017/reeldub}
       REELDUB_OUTPUT_PROFILE: ${REELDUB_OUTPUT_PROFILE:-light}
       REELDUB_CREATOR_MINUTES: ${REELDUB_CREATOR_MINUTES:-1}
+      REELDUB_REEL_LINKS: ${REELDUB_REEL_LINKS:-1}
       REELDUB_ACCESS_MODE: operator
       SELF_HOST_KEY: ${SELF_HOST_KEY}
       APPLE_CLIENT_ID: ""
@@ -53,6 +56,7 @@ services:
     environment:
       MONGO_URI: ${REELDUB_WORKER_MONGO_URI:-mongodb://worker:${MONGO_WORKER_PASSWORD:-}@mongo:27017/reeldub}
       WORKER_PROCESSES: ${WORKER_PROCESSES:-1}
+      REELDUB_REEL_LINKS: ${REELDUB_REEL_LINKS:-1}
       REELDUB_MODEL: ${REELDUB_MODEL:-small}
     volumes: [model-cache:/home/reel/.cache]
     networks: [database, web]

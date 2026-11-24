@@ -6,6 +6,7 @@ __pycache__/
 .DS_Store
 
 *.mp4
+!deploy/qa/share-fixture/clip.mp4
 *.mkv
 *.mov
 *.webm

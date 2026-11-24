@@ -1,4 +1,5 @@
 import CoreMedia
+import UniformTypeIdentifiers
 import XCTest
 @testable import ReelDub
 
@@ -10,6 +11,58 @@ final class TransportPolicyTests: XCTestCase {
         }
         // Files without readable duration metadata still go through the server's media inspection.
         XCTAssertNoThrow(try DubGuidance.checkDuration(.indefinite))
+    }
+
+    func testSharedMovieOwnsAValidatedCopyAfterProviderReturns() async throws {
+        let sample = try XCTUnwrap(Bundle(for: type(of: self)).url(forResource: "clip", withExtension: "mp4"))
+        let provider = NSItemProvider()
+        provider.suggestedName = "Original clip.mp4"
+        provider.registerFileRepresentation(forTypeIdentifier: UTType.mpeg4Movie.identifier, fileOptions: [], visibility: .all) { completion in
+            completion(sample, false, nil)
+            return nil
+        }
+        let movie = try await ImportedMovie.shared(from: provider)
+        defer { movie.remove() }
+        XCTAssertEqual(movie.title, "Original clip")
+        XCTAssertNotEqual(movie.file, sample)
+        XCTAssertEqual(try Data(contentsOf: movie.file), try Data(contentsOf: sample))
+        movie.remove()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: movie.file.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: sample.path))
+    }
+
+    func testFileURLProviderImportsFilesMovieAndRejectsAnInternetLink() async throws {
+        let sample = try XCTUnwrap(Bundle(for: type(of: self)).url(forResource: "clip", withExtension: "mp4"))
+        let provider = NSItemProvider(item: sample as NSURL, typeIdentifier: UTType.fileURL.identifier)
+        let movie = try await ImportedMovie.shared(from: provider)
+        defer { movie.remove() }
+        XCTAssertEqual(try Data(contentsOf: movie.file), try Data(contentsOf: sample))
+
+        let webpage = try XCTUnwrap(URL(string: "https://example.invalid/movie.mp4"))
+        let link = NSItemProvider(item: webpage as NSURL, typeIdentifier: UTType.url.identifier)
+        do {
+            _ = try await ImportedMovie.shared(from: link)
+            XCTFail("A link is not a shared movie")
+        } catch { XCTAssertEqual(error.localizedDescription, ImportedMovie.typeError) }
+    }
+
+    func testMovieImportRejectsEmptyDisguisedAndOversizedFiles() async throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".mp4")
+        defer { try? FileManager.default.removeItem(at: url) }
+        for (bytes, issue) in [(Data(), "This video is empty."), (Data("text".utf8), ImportedMovie.typeError)] {
+            try bytes.write(to: url)
+            do {
+                _ = try await ImportedMovie.copy(url)
+                XCTFail("Invalid video was accepted")
+            } catch { XCTAssertEqual(error.localizedDescription, issue) }
+        }
+        let large = try FileHandle(forWritingTo: url)
+        try large.truncate(atOffset: UInt64(ImportedMovie.maxBytes + 1))
+        try large.close()
+        do {
+            _ = try await ImportedMovie.copy(url)
+            XCTFail("Oversize video was accepted")
+        } catch { XCTAssertEqual(error.localizedDescription, ImportedMovie.sizeError) }
     }
 
     func testRecoveryMessagesDistinguishWaitingFromAConfirmedHandoff() throws {

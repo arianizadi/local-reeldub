@@ -9,6 +9,7 @@ import sherpa_onnx as so
 import soundfile as sf
 
 from server.languages import LANGUAGES
+from server.upload_voice import VOICE_ERRORS
 from server.progress import report
 from assets import CACHE, SPEAKER
 
@@ -61,7 +62,7 @@ def assign_lines(segments, turns):
     return lines
 
 
-def write_references(lines, turns, source, folder):
+def write_references(lines, turns, source, folder, *, require_isolated=False):
     # Anchor the reference to the actual utterance. A single speaker label may span
     # distinct voices after an off-screen cut or a diarization mistake.
     with sf.SoundFile(source) as stream:
@@ -69,6 +70,8 @@ def write_references(lines, turns, source, folder):
         for i, line in enumerate(lines):
             left, right = line["start"], line["end"]
             own = [t for t in turns if t.speaker == line["speaker"] and t.start < right and t.end > left]
+            if require_isolated and not own:
+                raise ValueError(VOICE_ERRORS["unclear_speaker"])
             if own:
                 best = max(own, key=lambda t: min(t.end, right) - max(t.start, left))
                 # Very short words benefit from adjacent speech within the same turn.
@@ -87,6 +90,8 @@ def write_references(lines, turns, source, folder):
                         if b > t.end:
                             remaining.append((max(a, t.end), b))
                     spans = remaining
+            if require_isolated and not any(b - a >= 0.25 for a, b in spans):
+                raise ValueError(VOICE_ERRORS["unclear_speaker"])
             left, right = max(spans or [(left, right)], key=lambda span: span[1] - span[0])
             stream.seek(min(len(stream), max(0, round(left * rate))))
             ref = stream.read(max(1, round(min(8, right - left) * rate)), always_2d=True, dtype="float32")

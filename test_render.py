@@ -10,9 +10,25 @@ import soundfile as sf
 
 from clean_background import leakage_regions, matching_dialogue, suppress_unresolved
 from render import mix, RATE
+from voices import write_references
 
 
 class SoundtrackTest(unittest.TestCase):
+    def test_matching_needs_isolated_speech_from_the_attributed_speaker(self):
+        line = {"start": 0, "end": 1, "speaker": 0}
+        speaker = SimpleNamespace(start=0, end=1, speaker=0)
+        overlap = SimpleNamespace(start=0, end=.9, speaker=1)
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp)
+            source = folder / "source.wav"
+            sf.write(source, np.zeros(RATE), RATE)
+            for turns in ([], [overlap], [speaker, overlap]):
+                with self.subTest(turns=turns), self.assertRaisesRegex(ValueError, "Choose a narrator"):
+                    write_references([line], turns, source, folder, require_isolated=True)
+                self.assertFalse((folder / "reference-0.wav").exists())
+            write_references([line], [speaker], source, folder, require_isolated=True)
+            self.assertEqual(sf.info(folder / "reference-0.wav").frames, RATE)
+
     @patch("faster_whisper.vad.get_speech_timestamps")
     def test_cleanup_merges_close_speech_and_respects_track_bounds(self, detect):
         audio = np.zeros(2 * 16000, dtype="float32")

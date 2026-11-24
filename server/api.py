@@ -20,6 +20,7 @@ from psycopg_pool import PoolTimeout
 from fastapi.responses import JSONResponse
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import PlainTextResponse, Response, StreamingResponse
+from fastapi.concurrency import contextmanager_in_threadpool
 from pydantic import BaseModel, Field
 from pymongo import ReturnDocument
 from pymongo.errors import ConnectionFailure, DuplicateKeyError, ExecutionTimeout, WTimeoutError
@@ -29,7 +30,7 @@ from .wakeup import next_hour, notify
 from .db import separate_metadata, uses_postgres, media_db, db, now, setup_indexes
 from . import console, checkout, erasure, erasure_journal, store, store_history, minutes, sources, launch_metrics
 from .source import TOO_LONG, reel_url
-from .languages import default_render_quality, outputs
+from .languages import default_render_quality, outputs, upload_voice_modes
 
 MEDIA_WINDOW = timedelta(hours=24)
 LIMITS = {"free": 5, "paid": 50, "admin": None}
@@ -42,6 +43,7 @@ def hash_value(value):
 
 
 def canonical_url(value):
+    sources.require_reel_links()
     try:
         return reel_url(value)
     except ValueError as exc:
@@ -261,7 +263,9 @@ def privacy():
 
 ReelDub uses your Apple sign-in identifier and the email Apple shares to manage your account. Hosted account and job records are stored on our private servers. Video and poster bytes stay in our private media cache. Offsite account database backups, when enabled, are encrypted and expire after seven days. Video and poster files are excluded. Deletion receipts allow us to remove deleted accounts when restoring a backup.
 
-When uploads are enabled, ReelDub stores private source files temporarily, normally for 24 hours, and while confirmed work needs them. ReelDub fetches submitted Reel URLs from Instagram and processes the audio and video on its render workers. Cloudflare routes hosted requests. Your account can access your job history, reports and videos. The service administrator can review submitted Reel links, titles, language choices, issue reports, account contact information and processing statistics for support and moderation. A minimal suspension record may be retained to enforce a ban. Sharing a video exports a copy to the destination you choose. After the app confirms a download, the server keeps the video for 24 hours from the last eligible request. Undelivered videos expire after seven days. Removing a dub hides it from your library, revokes playback links and clears its issue report. A private cached copy can be reused by your account until its deadline. Saved dubs remain on your device until removed.
+ReelDub stores uploaded video and audio privately for processing, normally for 24 hours and while confirmed work needs them. Servers with Reel links enabled also fetch submitted URLs from Instagram. ReelDub processes audio and video on its render workers. Cloudflare routes hosted requests. Your account can access your job history, reports and videos. The service administrator can review submitted Reel links, titles, language choices, issue reports, account contact information and processing statistics for support and moderation. A minimal suspension record may be retained to enforce a ban. Sharing a video exports a copy to the destination you choose. After the app confirms a download, the server keeps the video for 24 hours from the last eligible request. Undelivered videos expire after seven days. Removing a dub hides it from your library, revokes playback links and clears its issue report. A private cached copy can be reused by your account until its deadline. Saved dubs remain on your device until removed.
+
+For an uploaded video you can choose a synthetic narrator or opt in to matching the voices in the clip. Matching uses audio from that video to generate translated speech. ReelDub records the signed-in account’s consent declaration, its date and policy version, the source and target language, and the release reference provided for other speakers. Use a short reference that lets you find the permission document. Keep personal details out of that field. These records are part of private job metadata and its backups.
 
 Apple processes App Store payments. ReelDub stores verified transaction identifiers, products, subscription expiration or revocation, and credit usage to deliver purchases across devices. ReelDub does not receive your payment card details. Job deletion preserves the minimum purchase and quota records needed to prevent duplicate spending.
 
@@ -286,7 +290,11 @@ def me(user=Depends(restricted_owner), checkout_version: str = Header(default=""
         result["admin_console"] = console.permitted(user)
         if result["admin_console"]:
             result["lab_runtimes"] = console.runtimes()
-        result["output_languages"] = outputs(os.getenv("REELDUB_OUTPUT_PROFILE", "light"))
+        profile = os.getenv("REELDUB_OUTPUT_PROFILE", "light")
+        result["output_languages"] = outputs(profile)
+        result["video_uploads"] = True
+        result["upload_voice_modes"] = upload_voice_modes(profile)
+        result["reel_links"] = sources.reel_links_enabled()
         result["library_id"] = account.get("library_id", hash_value(user))
         result["email"] = account.get("email")
         result.update(store.balances(user))
@@ -339,6 +347,9 @@ class QuoteRequest(BaseModel):
     source_id: str = Field(min_length=24, max_length=24)
     targets: list[str] = Field(min_length=1, max_length=11)
     trim: bool = False
+    voice_mode: Literal["narrator", "match"] | None = None
+    voice_consent: Literal["own_voice", "documented_permission"] | None = None
+    consent_reference: str | None = Field(default=None, max_length=160)
     model_config = {"extra":"forbid"}
 
 
@@ -356,40 +367,42 @@ def stage_reel(body: ReelSource, user=Depends(owner)):
 
 @app.post("/v1/sources/upload")
 async def stage_upload(request: Request, user=Depends(owner)):
-    await run_in_threadpool(creator_access,user)
     await run_in_threadpool(limit_writes,user,"intake",12)
-    if request.headers.get("content-type","").split(";")[0] not in ("video/mp4","video/quicktime","application/octet-stream"):
+    if request.headers.get("content-type","").split(";")[0].strip().lower() not in (
+        "video/mp4", "video/quicktime", "video/x-m4v", "application/octet-stream"
+    ):
         raise HTTPException(415,"Choose an MP4 or MOV file.")
     title=unquote(request.headers.get("x-video-title",""))[:140].strip() or "Imported video"
-    with sources.admission(user) as stage, TemporaryFile() as file:
-        digest=hashlib.sha256()
-        async for part in request.stream():
-            if file.tell()+len(part)>sources.MAX_BYTES:
-                raise HTTPException(413,"Choose a file under 80 MiB.")
-            digest.update(part)
-            file.write(part)
-        return await run_in_threadpool(sources.upload,stage,user,file,digest.hexdigest(),title)
+    async with contextmanager_in_threadpool(sources.admission(user)) as stage:
+        with TemporaryFile() as file:
+            digest = hashlib.sha256()
+            async for part in request.stream():
+                if file.tell() + len(part) > sources.MAX_BYTES:
+                    raise HTTPException(413, "Choose a file of 80 MiB or less.")
+                digest.update(part)
+                await run_in_threadpool(file.write, part)
+            if not file.tell():
+                raise HTTPException(422, "Choose a playable MP4 or MOV with audio.")
+            return await run_in_threadpool(sources.upload, stage, user, file, digest.hexdigest(), title)
 
 
 @app.get("/v1/sources/{source_id}")
 def source_info(source_id: str, user=Depends(owner)):
-    creator_access(user)
     return sources.public(sources.get(user, source_id))
 
 
 @app.post("/v1/quotes")
 def create_quote(body: QuoteRequest,user=Depends(owner)):
-    creator_access(user)
     limit_writes(user,"quote",60)
     targets=list(dict.fromkeys(body.targets))
     if len(targets)!=len(body.targets) or any(t not in outputs(os.getenv("REELDUB_OUTPUT_PROFILE","light")) for t in targets):
         raise HTTPException(422,"Select supported output languages once each.")
-    return minutes.quote(user,body.source_id,targets,body.trim)
+    return minutes.quote(user, body.source_id, targets, body.trim, body.voice_mode,
+                         body.voice_consent, body.consent_reference)
 
 
 @app.post("/v1/quotes/{quote_id}/confirm")
 def confirm_quote(quote_id: UUID,user=Depends(owner)):
-    creator_access(user)
     limit_writes(user,"confirm",60)
     try:
         return {"jobs": minutes.confirm(user,str(quote_id)), "remaining": [], "detail": None}
@@ -635,7 +648,7 @@ def summary(job, before=None):
                 title=job.get("title"), author=job.get("author"), has_poster=job.get("has_poster", False),
                 available_on_server=media_available(job), cache_expires=job.get("media_expires"),
                 source_id=str(job["source_file"]) if job.get("source_file") else None, trimmed=job.get("trimmed",False),
-                render_quality=job.get("render_quality"), lab_mode=job.get("lab_mode"), lab_runtime=job.get("lab_runtime"), voice_batch=job.get("voice_batch"), target_language=job.get("target_language", "en"), source_language=job.get("source_language"), first_caption=job.get("first_caption"))
+                voice_mode=job.get("voice_mode"), render_quality=job.get("render_quality"), lab_mode=job.get("lab_mode"), lab_runtime=job.get("lab_runtime"), voice_batch=job.get("voice_batch"), target_language=job.get("target_language", "en"), source_language=job.get("source_language"), first_caption=job.get("first_caption"))
 
 
 def enqueue_render(job, plan, limit):
@@ -644,6 +657,17 @@ def enqueue_render(job, plan, limit):
         raise HTTPException(409, "Your daily allowance reset. Review this dub again.")
     if "quoted_seconds" in job:
         sources.check_duration(job["quoted_seconds"])
+    if job.get("url", "").startswith("upload:"):
+        if not job.get("voice_mode") or not job.get("source_file"):
+            raise HTTPException(428, "Choose a voice and confirm the video before rendering.")
+        voice = minutes.voice_policy(job["url"], [job["target_language"]], job["voice_mode"],
+                                     job.get("voice_consent"), job.get("consent_reference"))
+        if "voice_consent" in voice and (job.get("voice_consent_version") != voice["voice_consent_version"]
+                                       or not job.get("voice_consented_at")):
+            raise HTTPException(428, "Review the voice permission before rendering.")
+        if limit and db().jobs.count_documents({"owner": job["owner"], "day": job["day"], "state": "failed"},
+                                               limit=limit * 2) >= limit * 2:
+            raise HTTPException(429, "Too many failed renders today. Try again after midnight UTC.")
     if plan != "admin":
         slot = job.get("slot")
         daily = type(slot) is int and 0 <= slot < limit

@@ -1,11 +1,16 @@
 """Shared input rules for the service, intake and isolated render engine."""
 import json
+import os
 import re
 import subprocess
 from decimal import Decimal, InvalidOperation
 
 MAX_SOURCE_SECONDS = 120
 TOO_LONG = "This video is longer than 2 minutes. Choose a shorter video."
+
+
+def reel_links_enabled():
+    return os.getenv("REELDUB_REEL_LINKS", "1") == "1"
 
 
 class VideoTooLong(ValueError):

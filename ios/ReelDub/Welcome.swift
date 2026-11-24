@@ -57,7 +57,7 @@ struct Welcome: View {
                     Text("Reels, in your language.")
                         .font(typeSize.isAccessibilitySize ? .system(.title, design: .serif) : .system(size: headline, weight: .medium, design: .serif)).tracking(-1)
                         .fixedSize(horizontal: false, vertical: true).padding(.top, 14)
-                    Text("Share a Reel from Instagram. Choose a dub language and hear it with the original background sound.")
+                    Text("Share a video from Photos or Files. Hear it in another language with a narrator or an authorized speaker match.")
                         .font(.body).foregroundStyle(.white.opacity(0.76)).fixedSize(horizontal: false, vertical: true).padding(.top, 12)
                     Spacer(minLength: 34)
                     VStack(alignment: .leading, spacing: 12) {
@@ -186,8 +186,9 @@ struct ReelDubHelp: View {
         NavigationStack {
             List {
                 Section("Making a dub") {
-                    answer("How do I translate a Reel?", "In Instagram, tap Share, choose ReelDub, pick a language and confirm. You can also paste the Reel link in ReelDub. Open Dubs to follow its progress.")
-                    answer("How long can my video be?", "Choose a video up to 2 minutes long. If yours is longer, choose a shorter Reel or trim your own video before importing it.")
+                    answer("How do I translate a video?", "In Photos or Files, share a video to ReelDub. You can also choose Add video in Dubs. Choose a voice and language, review the cost and confirm.")
+                    answer("When can I match a voice?", "Choose Only my voice for a video where you are the sole speaker. For other speakers, keep their written authorization to synthesize and export the translated speech and enter its reference. The narrator works without matching a voice.")
+                    answer("How long can my video be?", "Choose a video up to 2 minutes long. If yours is longer, trim the video before importing it.")
                     answer("Which languages can I choose?", "ReelDub detects the spoken language. The Dub language menu lists the output languages your connected server supports.")
                     answer("What if the translation sounds wrong?", DubGuidance.accuracy + " Open the dub, tap Report an issue and include the words you heard and the time they occurred.")
                     answer("How do sound and captions work?", "Tap the speaker button under the video to mute or unmute it. You can listen in Silent Mode. Use your iPhone’s volume buttons to adjust the level. Captions start on when a track is available. The subtitle switch remembers your choice.")

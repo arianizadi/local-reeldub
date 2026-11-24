@@ -118,6 +118,8 @@ def predicate(query):
                     terms.append(S("{} {} {}").format(field, S(sign), literal(value)))
                 elif op == "$regex" and key == "owner" and value == "^apple:":
                     terms.append(S("starts_with(doc->>'owner','apple:')"))
+                elif op == "$regex" and key == "url" and value == "^https://":
+                    terms.append(S("starts_with(doc->>'url','https://')"))
                 else:
                     raise ValueError(f"Unsupported metadata predicate {op}")
     return together(terms, " AND ")

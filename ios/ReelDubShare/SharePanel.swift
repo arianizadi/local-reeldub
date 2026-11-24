@@ -1,106 +1,99 @@
 import SwiftUI
 
 struct SharePanel: View {
-    let link: String?
+    @ObservedObject var attachment: SharedMovieRequest
     let close: () -> Void
-    @State private var requestID = UUID()
     @State private var connection = Connection.read()
-    @State private var busy = false
-    @State private var preferredLanguage = OutputLanguage.read()
     @State private var account: Account?
     @State private var profileAttempt = 0
-    @State private var showBalance = false
     @State private var selfHostLocked = false
-    private var creator: Bool { account?.creator_minutes == true }
-    @State private var project: ProjectInput?
-    private var languages: [String] { account?.output_languages ?? connection?.outputLanguages ?? ["en"] }
-    private var target: String { OutputLanguage.selected(preferredLanguage, supported: languages) }
     @State private var results: [Job] = []
-    private var success: Bool { !results.isEmpty }
     @State private var message: String?
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    private var validLink: String? { link.flatMap { Job.isReel($0) ? $0 : nil } }
 
     var body: some View {
         ScrollView {
-          VStack(alignment: .leading, spacing: 19) {
-            HStack {
-                Label("ReelDub", systemImage: "waveform").font(.headline)
-                Spacer()
-                if !success { Button("Cancel", action: close).disabled(busy) }
-            }
-            if success {
-                ShareConfirmation(jobs: results, close: close, balanceAPI: connection.map { API(connection: $0) })
-            } else if selfHostLocked {
-                Text("Self-host unlock needed").font(.title.bold())
-                Text("Open ReelDub, choose Use my own server, and unlock or restore your purchase. Then share this Reel again.").foregroundStyle(.secondary)
-                Button("Done", action: close)
-            } else if let validLink, let connection {
-                Text("Translate this Reel?").font(.system(.largeTitle, design: .serif, weight: .semibold))
-                Text(validLink).font(.subheadline).foregroundStyle(.secondary).lineLimit(2)
-                Text("Up to 2 minutes. " + DubGuidance.accuracy).font(.footnote).foregroundStyle(.secondary)
-                Label(connection.isHosted ? "ReelDub Cloud" : (connection.base.host() ?? "Your server"), systemImage: "cloud")
-                    .font(.subheadline.weight(.medium))
-                if languages.count > 1 { OutputLanguagePicker(supported: languages, preference: $preferredLanguage).disabled(busy) }
-                if account == nil && message != nil {
-                    Button("Check account again") { profileAttempt += 1 }
+            VStack(alignment: .leading, spacing: 18) {
+                HStack {
+                    Label("ReelDub", systemImage: "waveform").font(.headline)
+                    Spacer()
+                    if results.isEmpty { Button("Cancel", action: close) }
                 }
-                if showBalance && connection.isHosted {
-                    BalanceOptions(live: account?.purchase_preflight == true)
-                }
-                Button {
-                    guard account != nil, !busy else { return }
-                    if creator { project = .reel(validLink); return }
-                    Task {
-                        busy = true
-                        message = nil
-                        defer { busy = false }
-                        do {
-                            results = [try await API(connection: connection).submit(validLink, id: requestID, target: target)]
-                        } catch is SessionError {
-                            self.connection = nil
-                            message = "Your session ended. Sign in again in ReelDub."
-                        } catch let error as ServiceError where error.status == 428 {
-                            project = .reel(validLink)
-                        } catch {
-                            showBalance = (error as? ServiceError)?.needsBalance == true
-                            message = error.localizedDescription
+                if !results.isEmpty {
+                    ShareConfirmation(jobs: results, close: close, balanceAPI: connection.map { API(connection: $0) })
+                } else if attachment.provider == nil {
+                    Text("Share one video").font(.title.bold())
+                    Text("Choose a video in Photos or Files, then share it to ReelDub.").foregroundStyle(.secondary)
+                    Button("Close", action: close)
+                } else if let connection {
+                    if selfHostLocked {
+                        Text("Self-host unlock needed").font(.title.bold())
+                        Text("Open ReelDub to unlock or restore your private-server connection, then share this video again.")
+                            .foregroundStyle(.secondary)
+                    } else if let account {
+                        if account.video_uploads == true, !(account.upload_voice_modes ?? [:]).isEmpty {
+                            Text("Translate this video").font(.system(.largeTitle, design: .serif, weight: .semibold))
+                            if let name = attachment.provider?.suggestedName, !name.isEmpty {
+                                Label((name as NSString).lastPathComponent, systemImage: "film")
+                                    .font(.subheadline.weight(.medium)).lineLimit(2)
+                            }
+                            Text("Upload to " + (connection.isHosted ? "ReelDub Cloud" : (connection.base.host() ?? "your server")) + " to choose a language and voice.")
+                                .foregroundStyle(.secondary)
+                            if attachment.loading {
+                                ProgressView("Preparing video…")
+                            } else {
+                                Button(action: attachment.prepare) {
+                                    Text("Upload and review").font(.headline).frame(maxWidth: .infinity, minHeight: 45)
+                                }
+                                .buttonStyle(.borderedProminent).foregroundStyle(Palette.onAction)
+                            }
+                            if let issue = attachment.error { Text(issue).font(.footnote).foregroundStyle(.red) }
+                        } else {
+                            Text("Video uploads unavailable").font(.title.bold())
+                            Text("This server needs support for video uploads and voice choices.").foregroundStyle(.secondary)
                         }
+                    } else if let message {
+                        Text(message).foregroundStyle(.secondary)
+                        Button("Check account again") { profileAttempt += 1 }
+                    } else {
+                        ProgressView("Checking account…")
                     }
-                } label: {
-                    Text(account == nil ? (message == nil ? "Checking account…" : "Account unavailable") : busy ? "Queuing…" : (creator ? "Review translation" : "Translate to " + OutputLanguage.name(target))).font(.headline).foregroundStyle(Palette.onAction).frame(maxWidth: .infinity, minHeight: 45)
-                }.buttonStyle(.borderedProminent).disabled(busy || account == nil)
-            } else {
-                Text(connection == nil ? "Sign in to ReelDub first" : "Share a Reel link").font(.title.bold())
-                Text(connection == nil ? "Open ReelDub to sign in or connect your own server, then share this Reel again." : "Choose Share on an individual Instagram Reel.").foregroundStyle(.secondary)
-                Button("Close", action: close)
-            }
-            if let message { Text(message).font(.footnote).foregroundStyle(.red) }
-            Spacer(minLength: 0)
-          }.padding(24)
-        }.tint(Palette.action)
-            .sheet(item:$project) { input in
-                if let connection { QuoteSheet(api:API(connection:connection),input:input,languages:languages,target:target,liveOffers:account?.purchase_preflight == true) { jobs in results=jobs } }
-            }
-            .onChange(of: target) { _, _ in requestID = UUID() }
-            .task(id: profileAttempt) {
-                guard let connection else { return }
-                if !connection.isHosted, !(await SelfHostEntitlement.current()) {
-                    selfHostLocked = true
-                    return
-                }
-                message = nil
-                do {
-                    let data = try await API(connection: connection).data("v1/me")
-                    account = try JSONDecoder().decode(Account.self, from: data)
-                } catch is SessionError {
-                    self.connection = nil
-                    message = "Your session ended. Sign in again in ReelDub."
-                } catch {
-                    if !Task.isCancelled { message = "Couldn’t check your account. Try again when connected." }
+                } else {
+                    Text("Sign in to ReelDub first").font(.title.bold())
+                    Text(message ?? "Open ReelDub to sign in or connect your own server, then share this video again.")
+                        .foregroundStyle(.secondary)
+                    Button("Close", action: close)
                 }
             }
-            .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: success)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(24)
+        }
+        .tint(Palette.action)
+        .sheet(item: $attachment.project, onDismiss: attachment.discard) { input in
+            if let connection, let account {
+                QuoteSheet(api: API(connection: connection), input: input, voiceModes: account.upload_voice_modes ?? [:],
+                           target: OutputLanguage.read(), creatorMinutes: account.creator_minutes == true,
+                           liveOffers: account.purchase_preflight == true) { jobs in
+                    results = jobs
+                }
+            }
+        }
+        .task(id: profileAttempt) {
+            guard attachment.provider != nil, let connection else { return }
+            if !connection.isHosted, !(await SelfHostEntitlement.current()) {
+                selfHostLocked = true
+                return
+            }
+            message = nil
+            do {
+                let data = try await API(connection: connection).data("v1/me")
+                account = try JSONDecoder().decode(Account.self, from: data)
+            } catch is SessionError {
+                self.connection = nil
+                message = "Your session ended. Open ReelDub to sign in again."
+            } catch {
+                if !Task.isCancelled { message = "Couldn’t check your account. Try again when connected." }
+            }
+        }
     }
 }
 

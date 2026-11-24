@@ -26,12 +26,14 @@
 		<key>NSExtensionAttributes</key>
 		<dict>
 			<key>NSExtensionActivationRule</key>
-			<dict>
-				<key>NSExtensionActivationSupportsText</key>
-				<true/>
-				<key>NSExtensionActivationSupportsWebURLWithMaxCount</key>
-				<integer>1</integer>
-			</dict>
+			<string>
+				extensionItems.@count == 1 AND SUBQUERY(extensionItems, $item,
+					$item.attachments.@count == 1 AND SUBQUERY($item.attachments, $attachment,
+						ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.movie"
+						OR ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.file-url"
+					).@count == 1
+				).@count == 1
+			</string>
 		</dict>
 		<key>NSExtensionPointIdentifier</key>
 		<string>com.apple.share-services</string>

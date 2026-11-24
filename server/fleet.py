@@ -24,6 +24,7 @@ from pymongo.errors import DuplicateKeyError
 from starlette.concurrency import run_in_threadpool
 
 from . import fleet_health, sources, worker
+from .upload_voice import upload_mode, voice_scope, VOICE_ERRORS
 from .db import db, media_db, now, separate_metadata, uses_postgres
 from .progress import STEPS, nearby_runtime
 from .source import MAX_SOURCE_SECONDS, TOO_LONG
@@ -116,6 +117,7 @@ class StrictModel(BaseModel):
 
 class Claim(StrictModel):
     request_id: UUID
+    upload_voice_protocol: Literal[1] | None = None
 
 
 class Heartbeat(StrictModel):
@@ -126,7 +128,8 @@ class Heartbeat(StrictModel):
 
 class Failure(StrictModel):
     stage: str = Field(max_length=40)
-    reason: Literal["generic", "no_speech", "download", "translation", "duration"]
+    reason: Literal["generic", "no_speech", "download", "translation", "duration",
+                    "voice_consent", "single_speaker", "unclear_speaker", "upload_translation"]
 
 
 class Infrastructure(StrictModel):
@@ -178,6 +181,7 @@ class Details(StrictModel):
     asr_model: str | None = Field(default=None, max_length=120)
     translation_model: str | None = Field(default=None, max_length=120)
     voice_model: str | None = Field(default=None, max_length=120)
+    rendered_voice_mode: Literal["narrator", "match"] | None = None
     audio_mix_version: int | None = Field(default=None, ge=0, le=1000)
     has_poster: bool | None = None
 
@@ -190,13 +194,20 @@ class Slot:
 
 
 @lru_cache(maxsize=512)
-def slot_state(key):
+def slot_state(key, upload_voice_protocol=None):
     return Slot()
 
 
 def claim_reply(job):
-    return {**{key: job[key] for key in CLAIM_FIELDS if key in job},
-            "lease_remaining_seconds": max(0, min(worker.LEASE.total_seconds(), (job["lease_end"] - now()).total_seconds()))}
+    reply = {key: job[key] for key in CLAIM_FIELDS if key in job}
+    reply["lease_remaining_seconds"] = max(0, min(worker.LEASE.total_seconds(), (job["lease_end"] - now()).total_seconds()))
+    if (mode := upload_mode(job)) is not None:
+        reply["voice_mode"] = mode
+        if mode == "match":
+            # Only the consent scope is needed for single-speaker enforcement.
+            reply["voice_consent"] = job.get("voice_consent")
+            reply["voice_consent_version"] = job.get("voice_consent_version")
+    return reply
 
 
 @contextmanager
@@ -231,7 +242,7 @@ def claim(slot: int, body: Claim, node: Node = Depends(authenticated)):
     slot_key = f"{node.name}:{slot}"
     req = str(body.request_id)
     key = {"_id": slot_key + "/" + req}
-    gate = slot_state(slot_key)
+    gate = slot_state(slot_key, body.upload_voice_protocol)
     store = fleet_health.tickets()
     with gate.lock:
         replay = store.find_one(key)
@@ -261,6 +272,8 @@ def claim(slot: int, body: Claim, node: Node = Depends(authenticated)):
                 existing = db().jobs.find_one(lookup)
                 if (existing and existing["state"] == "running" and not existing.get("deleted")
                         and existing.get("lease") and existing.get("lease_end", now()) > now()):
+                    if not body.upload_voice_protocol and upload_mode(existing) is not None:
+                        return Response(status_code=204)
                     return claim_reply(existing)
                 if existing or replay:
                     # A pending ticket with no surviving assignment means the previous attempt
@@ -276,7 +289,7 @@ def claim(slot: int, body: Claim, node: Node = Depends(authenticated)):
                 if not active and health_doc and health_doc.get("recoveries", 0) and fleet_health.idle_alternative(node):
                     avoid = node.name
                 job = None if active else worker.claim(studio=node.studio, fleet_slot=slot_key, fleet_request=req,
-                                                       avoid_recovery_node=avoid)
+                                                       avoid_recovery_node=avoid, upload_voices=bool(body.upload_voice_protocol))
                 if not job:
                     gate.wake.watch_active_leases()
                     if avoid and db().jobs.find_one({"state": "queued", "deleted": {"$ne": True},
@@ -310,6 +323,17 @@ def current_job(scope=Depends(requested_fence)):
     job = db().jobs.find_one(scope)
     if not job:
         raise HTTPException(409, "Worker lease unavailable.")
+    if upload_mode(job) is not None:
+        if job.get("fleet_upload_voice_protocol") != 1:
+            # A node assigned by the previous coordinator may still hold a valid
+            # lease. Transfer its reservation to a worker that respects consent.
+            fleet_health.recover(job, "upload_voice_upgrade")
+            raise HTTPException(409, "Upload reassigned to a compatible worker.")
+        try:
+            voice_scope(job)
+        except RuntimeError as exc:
+            failure(Failure(stage="Starting", reason="voice_consent"), fence(job))
+            raise HTTPException(409, VOICE_ERRORS["voice_consent"]) from exc
     return job
 
 
@@ -424,7 +448,8 @@ def failure(body: Failure, scope=Depends(requested_fence)):
     if body.stage not in STAGES:
         raise HTTPException(422, "Invalid render stage.")
     diagnostic = {"generic": "", "download": "", "no_speech": "no translatable speech detected",
-                  "translation": "neither translator produced an english dub", "duration": TOO_LONG.lower()}[body.reason]
+                  "translation": "neither translator produced an english dub", "duration": TOO_LONG.lower(),
+                  **{key: message.lower() for key, message in VOICE_ERRORS.items()}}[body.reason]
     message = worker.render_error("Downloading" if body.reason == "download" else body.stage, diagnostic)
     release = ("slot", "minute_grants", "minute_units", "render_key", "extra_ticket", "skip_ticket",
                "lease", "lease_end", "upload_lease", "upload_until", "upload_token")
@@ -499,6 +524,9 @@ async def result(request: Request, job=Depends(current_job)):
     if request.headers.get("content-type", "").split(";")[0] != "application/octet-stream":
         raise HTTPException(415, "Binary result required.")
     details = result_details(request)
+    expected_voice = upload_mode(job)
+    if expected_voice is not None and details.get("rendered_voice_mode") != expected_voice:
+        raise HTTPException(422, "Rendered voice mode does not match the confirmed job.")
     if not job.get("staged_source") or job.get("staged_lease") != job["lease"]:
         raise HTTPException(422, "Prepare the assigned source first.")
     if job.get("quoted_seconds") and details["media_seconds"] > job["quoted_seconds"] + 1:

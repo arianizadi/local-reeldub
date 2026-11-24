@@ -20,25 +20,106 @@ struct ImportedMovie: Transferable {
   static var transferRepresentation: some TransferRepresentation {
     FileRepresentation(importedContentType: .movie) { item in try await copy(item.file) }
   }
-  static func copy(_ url: URL) async throws -> ImportedMovie {
-    let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
-    guard size > 0 else { throw Problem("This video is empty.") }
-    if let duration = try? await AVURLAsset(url: url).load(.duration) {
-      try DubGuidance.checkDuration(duration)
-    }
-    try Task.checkCancellation()
-    guard size <= 80 * 1024 * 1024 else { throw Problem("Choose a smaller video. The upload limit is about 84 MB.") }
-    let dest = FileManager.default.temporaryDirectory.appending(
-      path: "reeldub-import-" + UUID().uuidString)
-    try FileManager.default.copyItem(at: url, to: dest)
+  static let maxBytes = 80 * 1024 * 1024
+  static let sizeError = "Choose a smaller video. The upload limit is 80 MiB."
+  static let typeError = "Choose a video file from Photos or Files."
+
+  /// NSItemProvider removes its temporary file as soon as its completion block returns.
+  /// Take ownership synchronously here, then inspect the private copy asynchronously.
+  private static func stage(_ url: URL, title: String? = nil) throws -> ImportedMovie {
+    guard url.isFileURL else { throw Problem(typeError) }
+    let scoped = url.startAccessingSecurityScopedResource()
+    defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+    let files = FileManager.default
+    let attributes = try files.attributesOfItem(atPath: url.path)
+    guard attributes[.type] as? FileAttributeType == .typeRegular else { throw Problem(typeError) }
+    guard let size = attributes[.size] as? NSNumber, size.int64Value > 0 else { throw Problem("This video is empty.") }
+    guard size.int64Value <= Int64(maxBytes) else { throw Problem(sizeError) }
+
+    let folder = files.temporaryDirectory.appending(path: "ReelDubImports", directoryHint: .isDirectory)
+    try files.createDirectory(at: folder, withIntermediateDirectories: true,
+                              attributes: [.protectionKey: FileProtectionType.complete])
+    let dest = folder.appendingPathComponent(UUID().uuidString).appendingPathExtension(
+      url.pathExtension.isEmpty ? "mov" : url.pathExtension)
     do {
-      try FileManager.default.setAttributes(
-        [.protectionKey: FileProtectionType.complete], ofItemAtPath: dest.path)
+      try files.copyItem(at: url, to: dest)
+      try files.setAttributes([.protectionKey: FileProtectionType.complete, .creationDate: Date()], ofItemAtPath: dest.path)
+      guard let stagedSize = try dest.resourceValues(forKeys: [.fileSizeKey]).fileSize,
+            stagedSize > 0, stagedSize <= maxBytes else { throw Problem(sizeError) }
     } catch {
-      try? FileManager.default.removeItem(at: dest)
+      try? files.removeItem(at: dest)
       throw error
     }
-    return ImportedMovie(file: dest, title: url.deletingPathExtension().lastPathComponent)
+    let filename = title?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let display = (filename.flatMap { $0.isEmpty ? nil : $0 } ?? url.lastPathComponent) as NSString
+    return ImportedMovie(file: dest, title: (display.lastPathComponent as NSString).deletingPathExtension)
+  }
+
+  func remove() { try? FileManager.default.removeItem(at: file) }
+
+  private func validate() async throws -> ImportedMovie {
+    do {
+      try Task.checkCancellation()
+      let asset = AVURLAsset(url: file)
+      guard let tracks = try? await asset.loadTracks(withMediaType: .video), !tracks.isEmpty else {
+        throw Problem(Self.typeError)
+      }
+      if let duration = try? await asset.load(.duration) { try DubGuidance.checkDuration(duration) }
+      try Task.checkCancellation()
+      return self
+    } catch {
+      remove()
+      throw error
+    }
+  }
+
+  static func copy(_ url: URL) async throws -> ImportedMovie {
+    try await stage(url).validate()
+  }
+
+  static func shared(from provider: NSItemProvider) async throws -> ImportedMovie {
+    let transfer = Progress(totalUnitCount: 1)
+    let title = provider.suggestedName
+    return try await withTaskCancellationHandler {
+      try Task.checkCancellation()
+      let movie: ImportedMovie = try await withCheckedThrowingContinuation { continuation in
+        let finish: @Sendable (URL?, Error?) -> Void = { url, error in
+          do {
+            if transfer.isCancelled { throw CancellationError() }
+            if let error { throw error }
+            guard let url else { throw Problem(typeError) }
+            let owned = try stage(url, title: title)
+            continuation.resume(returning: owned)
+          } catch { continuation.resume(throwing: error) }
+        }
+        let movieType = provider.registeredTypeIdentifiers.first { UTType($0)?.conforms(to: .movie) == true }
+        if let movieType {
+          let request = provider.loadFileRepresentation(forTypeIdentifier: movieType, completionHandler: finish)
+          transfer.addChild(request, withPendingUnitCount: 1)
+          if transfer.isCancelled { request.cancel() }
+        } else if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+          provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, error in
+            finish(item as? URL, error)
+          }
+        } else {
+          continuation.resume(throwing: Problem(typeError))
+        }
+      }
+      return try await movie.validate()
+    } onCancel: { transfer.cancel() }
+  }
+
+  /// The system can terminate a share extension before normal cleanup.
+  static func removeExpiredImports() {
+    let files = FileManager.default
+    let folder = files.temporaryDirectory.appending(path: "ReelDubImports", directoryHint: .isDirectory)
+    let keys: Set<URLResourceKey> = [.creationDateKey]
+    let cutoff = Date().addingTimeInterval(-24 * 3600)
+    guard let urls = try? files.contentsOfDirectory(at: folder, includingPropertiesForKeys: Array(keys)) else { return }
+    for url in urls {
+      guard let created = try? url.resourceValues(forKeys: keys).creationDate, created < cutoff else { continue }
+      try? files.removeItem(at: url)
+    }
   }
 }
 
@@ -70,7 +151,7 @@ struct VideoImportButton: View {
       Button("Files") { showFiles = true }
     }
     .photosPicker(isPresented: $showPhotos, selection: $photo, matching: .videos)
-    .fileImporter(isPresented: $showFiles, allowedContentTypes: [.mpeg4Movie, .quickTimeMovie]) { result in
+    .fileImporter(isPresented: $showFiles, allowedContentTypes: [.movie]) { result in
       do { file = try result.get() }
       catch where (error as NSError).code == NSUserCancelledError { }
       catch { failed(error.localizedDescription) }
@@ -90,9 +171,7 @@ struct VideoImportButton: View {
       defer { self.file = nil }
       do {
         let movie = try await Task.detached(priority: .userInitiated) {
-          let access = file.startAccessingSecurityScopedResource()
-          defer { if access { file.stopAccessingSecurityScopedResource() } }
-          return try await ImportedMovie.copy(file)
+          try await ImportedMovie.copy(file)
         }.value
         complete(movie)
       } catch { if !Task.isCancelled { failed(error.localizedDescription) } }
@@ -100,7 +179,7 @@ struct VideoImportButton: View {
   }
 
   private func complete(_ movie: ImportedMovie) {
-    if Task.isCancelled { try? FileManager.default.removeItem(at: movie.file) }
+    if Task.isCancelled { movie.remove() }
     else { receive(movie) }
   }
 }

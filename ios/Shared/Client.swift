@@ -90,6 +90,7 @@ struct Job: Codable, Identifiable, Hashable {
     let id, url, state, stage, created: String
     let started, finished, error: String?
     let ahead: Int?
+    var voice_mode: String? = nil
     var recovery_count: Int? = nil
     var recovery_switched_server: Bool? = nil
     var recoveryCue: String? {
@@ -146,7 +147,7 @@ struct Job: Codable, Identifiable, Hashable {
     var displayTitle: String {
         if let title, !title.isEmpty { return title }
         if let author, !author.isEmpty { return "Reel by " + author }
-        return "Reel · " + (Self.date(created)?.formatted(.dateTime.month(.abbreviated).day().hour().minute()) ?? "Instagram")
+        return (Self.isReel(url) ? "Reel" : "Video") + (Self.date(created).map { " · " + $0.formatted(.dateTime.month(.abbreviated).day().hour().minute()) } ?? "")
     }
     static func isReel(_ value: String) -> Bool {
         value.range(of: #"(?i)^https://(?:(?:www|m)\.)?instagram\.com/reels?/[A-Za-z0-9_-]{5,32}/?(?:[?#][^\s]*)?$"#, options: .regularExpression) != nil
@@ -197,6 +198,8 @@ struct Account: Codable {
     let output_languages: [String]?
     var lab_runtimes: [String]? = nil
     var admin_console: Bool? = nil
+    var video_uploads: Bool? = nil
+    var upload_voice_modes: [String: [String]]? = nil
     var creator_minutes: Bool? = nil
     var batch_progress: Bool? = nil
     var video_suggestions: Bool? = nil

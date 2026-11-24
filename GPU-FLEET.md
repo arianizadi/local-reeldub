@@ -33,6 +33,10 @@ The hosted beta runs on one RTX 4070 Ti Super with two render slots. Proxmox hos
 
 To rehearse the queue behavior locally, prepare the Docker images listed in the [burst-worker drill](deploy/qa/test_fleet_burst.py), then run `python3 deploy/qa/test_fleet_burst.py` from the repository root. The drill adds a simulated worker while jobs are running, drops the first worker and checks that the original client can retrieve the result with a single allowance charge per submission. Use an actual rental to measure provisioning, media transfer and render time.
 
+## Deploying upload voice choices
+
+Drain any direct database workers running an older engine before enabling uploads. Upgrade the private coordinator, then the GPU workers and their render engines, then enable uploads on the customer API. A GPU worker advertises upload voice protocol version 1 when requesting jobs. Upgraded coordinators reserve uploads for those workers and verify that the rendered voice mode matches the confirmed job. During a rolling upgrade, older fleet workers can finish ordinary Reel-link jobs. Direct workers bypass the coordinator and need the same engine and worker version as the API.
+
 ## Measured on the first GPU
 
 On November 21, 2026, the RTX 4070 Ti Super rendered a 13.42-second Persian clip and a 13.03-second Russian clip to English with the Best preset, Index 9B translation, and matched Qwen 1.7B voices.

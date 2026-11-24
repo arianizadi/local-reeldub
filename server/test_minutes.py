@@ -68,6 +68,70 @@ class CreatorTests(TestCase):
     def confirm(self, q):
         return minutes.confirm(self.owner, q["id"])
 
+    def test_uploaded_daily_allowance_without_storekit_and_private_voice_cache(self):
+        with patch.dict(os.environ, {"REELDUB_CREATOR_MINUTES": "0", "REELDUB_REEL_LINKS": "0"}):
+            src = self.source(120)
+            caps = api.me(self.owner)
+            self.assertTrue(caps["video_uploads"])
+            self.assertFalse(caps["reel_links"])
+            self.assertNotIn("de", caps["upload_voice_modes"]["narrator"])
+            self.assertIn("de", caps["upload_voice_modes"]["match"])
+            with patch.object(minutes, "funding", side_effect=AssertionError("StoreKit should stay idle")):
+                quote = self.quote(src)
+                narrated, = self.confirm(quote)
+                self.assertEqual(narrated["voice_mode"], "narrator")
+                self.assertEqual(self.confirm(self.quote(src))[0]["id"], narrated["id"])
+                with self.assertRaises(HTTPException):
+                    minutes.confirm("apple:other", quote["id"])
+                own = minutes.quote(self.owner, src, ["en"], False, "match", "own_voice")
+                matched, = self.confirm(own)
+                guest = minutes.quote(self.owner, src, ["en"], False, "match", "documented_permission", " release-1 ")
+                approved, = self.confirm(guest)
+                self.assertEqual(len({narrated["id"], matched["id"], approved["id"]}), 3)
+                job = db().jobs.find_one({"_id": approved["id"]})
+                self.assertEqual((job["voice_consent_version"], job["consent_reference"]), (1, "release-1"))
+                self.assertIn("voice_consented_at", job)
+                self.assertNotIn("consent_reference", approved)
+                for _ in range(2):
+                    self.confirm(self.quote(self.source(100)))
+                short = self.quote(self.source(120))
+                self.assertEqual(short["lines"][0]["missing"], 120)
+                with self.assertRaises(HTTPException) as fail:
+                    self.confirm(short)
+                self.assertEqual(fail.exception.status_code, 402)
+
+    def test_upload_matching_requires_appropriate_consent_and_supported_language(self):
+        src = self.source(25)
+        for mode, scope, reference, target in (
+            ("match", None, None, "en"),
+            ("match", "documented_permission", "   ", "en"),
+            ("match", "own_voice", None, "hi"),
+            ("match", "own_voice", "unneeded", "en"),
+            ("narrator", "own_voice", None, "en"),
+            ("narrator", None, None, "de"),
+        ):
+            with self.subTest(mode=mode, consent=scope, reference=reference, target=target):
+                with self.assertRaises(HTTPException) as fail:
+                    minutes.quote(self.owner, src, [target], False, mode, scope, reference)
+                self.assertEqual(fail.exception.status_code, 422)
+        with patch.dict(os.environ, {"REELDUB_OUTPUT_PROFILE": "light"}):
+            with self.assertRaises(HTTPException):
+                minutes.quote(self.owner, src, ["en"], False, "match", "own_voice")
+
+    def test_upload_only_server_rejects_staged_and_direct_reels(self):
+        src = self.source(23)
+        url = "https://www.instagram.com/reel/ArchivedFixture/"
+        db().sources.update_one({"_id": ObjectId(src)}, {"$set": {"identity": url}})
+        quote = self.quote(src)
+        with patch.dict(os.environ, {"REELDUB_REEL_LINKS": "0"}):
+            for attempt in (lambda: self.confirm(quote), lambda: self.quote(src),
+                            lambda: api.submit(api.Submission(url=url, request_id=uuid4()), self.owner),
+                            lambda: api.stage_reel(api.ReelSource(url=url), self.owner)):
+                with self.assertRaises(HTTPException) as rejected:
+                    attempt()
+                self.assertEqual(rejected.exception.status_code, 403)
+        self.assertEqual(db().jobs.count_documents({"owner": self.owner}), 0)
+
     def test_studio_best_reuse_keeps_legacy_jobs_and_funding_separate(self):
         source = self.source(25)
         with patch.dict(os.environ, {"REELDUB_OUTPUT_PROFILE": "light"}):
@@ -241,14 +305,14 @@ class CreatorTests(TestCase):
         self.pay(store.MINUTE_PACK)
         current = self.pay(store.CREATOR)
         source = self.source(120)
-        q = self.quote(source, ("de", "es"))
+        q = self.quote(source, ("fr", "es"))
         self.assertEqual(q["monthly_left"], 6960)
         self.assertEqual(q["pack_left"], 900)
         with ThreadPoolExecutor(max_workers=4) as pool:
             ids = list(pool.map(lambda _: [j["id"] for j in self.confirm(q)], range(4)))
         self.assertTrue(all(x == ids[0] for x in ids))
         self.assertEqual(api.me(self.owner)["monthly_seconds"], 6960)
-        replay = self.quote(source, ("de", "es"))
+        replay = self.quote(source, ("fr", "es"))
         self.assertTrue(all(line["reused"] for line in replay["lines"]))
         current.signedDate = 250
         current.expiresDate = int((now() - timedelta(seconds=1)).timestamp() * 1000)

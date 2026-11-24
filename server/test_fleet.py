@@ -106,7 +106,8 @@ class FleetIntegration(TestCase):
         return requests.request(method, self.base + path, headers={**auth, **(headers or {})}, timeout=12, **kwargs)
 
     def claim(self, node="alpha", request=None, slot=0):
-        return self.req("POST", f"/v1/slots/{slot}/claim", node, json={"request_id": request or str(uuid4())})
+        return self.req("POST", f"/v1/slots/{slot}/claim", node,
+                        json={"request_id": request or str(uuid4()), "upload_voice_protocol": 1})
 
     def test_two_nodes_claim_distinct_work_and_retries_cannot_reserve_extra_jobs(self):
         best = self.queue(1, priority=1, render_quality="best")
@@ -234,7 +235,12 @@ class FleetIntegration(TestCase):
                                  "expires": now() + timedelta(hours=1)})
         self.bucket.put(b"sample input", _id=source)
         request_id = str(uuid4())
+        # Even without an explicit voice mode, historical uploads must never go to a cloning-only worker.
+        self.assertEqual(self.req("POST", "/v1/slots/0/claim", json={"request_id": str(uuid4())}).status_code, 204)
         job = self.claim(request=request_id).json()
+        self.assertEqual(job["voice_mode"], "narrator")
+        self.assertNotIn("voice_consent", job)
+        self.assertEqual(self.req("POST", "/v1/slots/0/claim", json={"request_id": request_id}).status_code, 204)
         path = "/v1/jobs/" + job["_id"]
         lease = job["lease"]
         self.assertEqual(self.req("GET", path + "/source", "beta", lease).status_code, 409)
@@ -251,16 +257,46 @@ class FleetIntegration(TestCase):
         video = b"\x00\x00\x00\x18ftypisom" + b"sample" * 10
         def send(data):
             return self.req("PUT", path + "/result", lease=lease, headers=head, data=data)
+        body = len(poster).to_bytes(4, "big") + poster + video
+        self.assertEqual(send(body).status_code, 422)
+        def report_voice(mode):
+            head["X-ReelDub-Details"] = base64.urlsafe_b64encode(
+                json.dumps({**details, "rendered_voice_mode": mode}).encode()).decode()
+        report_voice("match")
+        self.assertEqual(send(body).status_code, 422)
+        report_voice("narrator")
         self.assertEqual(send(bytes(4) + bytes(16)).status_code, 422)
-        done = send(len(poster).to_bytes(4, "big") + poster + video)
+        done = send(body)
         self.assertEqual(done.status_code, 204, done.text)
         final = db().jobs.find_one({"_id": job["_id"]})
         self.assertEqual((final["state"], final["title"], final["author"]), ("done", "Original title", "Fixture creator"))
         self.assertEqual((final["audio_mix_version"], final["source_language"]), (2, "ru"))
+        self.assertEqual(final["rendered_voice_mode"], "narrator")
         stored = self.bucket.get(final["artifact"])
         self.assertEqual((stored.poster, stored.read()), (poster, video))
         self.assertEqual(self.claim(request=request_id).status_code, 204)
         self.assertEqual(self.req("POST", path + "/heartbeat", lease=lease, json={}).status_code, 409)
+
+    def test_matching_upload_requires_scoped_consent_before_media_transfer(self):
+        self.queue(url="upload:voice", voice_mode="match", minute_units=[str(uuid4())], slot=1)
+        claimed = self.claim().json()
+        result = self.req("GET", f"/v1/jobs/{claimed['_id']}/source", lease=claimed["lease"])
+        self.assertEqual(result.status_code, 409)
+        failed = db().jobs.find_one({"_id": claimed["_id"]})
+        self.assertEqual(failed["state"], "failed")
+        self.assertIn("requires consent", failed["error"])
+        self.assertNotIn("minute_units", failed)
+        self.assertNotIn("slot", failed)
+
+    def test_preupgrade_upload_lease_moves_to_a_compatible_worker_before_source_transfer(self):
+        self.queue(url="upload:legacy", slot=1)
+        job = self.claim().json()
+        db().jobs.update_one({"_id": job["_id"]}, {"$unset": {"fleet_upload_voice_protocol": ""}})
+        result = self.req("GET", f"/v1/jobs/{job['_id']}/source", lease=job["lease"])
+        self.assertEqual(result.status_code, 409)
+        interrupted = db().jobs.find_one({"_id": job["_id"]})
+        self.assertEqual((interrupted["state"], interrupted["recovery_rank"], interrupted["slot"]), ("queued", 1, 1))
+        self.assertEqual(self.claim("beta").json()["voice_mode"], "narrator")
 
     def test_fenced_failure_releases_only_assigned_job_and_expired_worker_cannot_extend(self):
         self.queue(slot=2)

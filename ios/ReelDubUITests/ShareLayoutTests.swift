@@ -10,7 +10,7 @@ final class ShareLayoutTests: XCTestCase {
         continueAfterFailure = false
         let safari = XCUIApplication(bundleIdentifier: "com.apple.mobilesafari")
         safari.open(url)
-        let share = safari.buttons["Share fixture Reel"]
+        let share = safari.buttons["Share fixture video"]
         for title in ["Continue", "Not Now", "Done"] where !share.exists {
             let setup = safari.buttons[title].firstMatch
             if setup.exists && setup.isHittable { setup.tap() }

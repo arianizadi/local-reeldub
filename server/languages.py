@@ -33,3 +33,11 @@ def default_render_quality():
 
 def outputs(profile):
     return list(LANGUAGES) if profile == "studio" else ["en"]
+
+
+def upload_voice_modes(profile):
+    targets = outputs(profile)
+    return {
+        "narrator": [code for code in targets if LANGUAGES[code].voices],
+        "match": [code for code in targets if profile == "studio" and LANGUAGES[code].matched],
+    }

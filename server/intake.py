@@ -13,7 +13,7 @@ from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
 from .download import download_reel
-from .source import inspect_video, reel_url
+from .source import inspect_video, reel_links_enabled, reel_url
 
 MAX_BYTES = 80 * 1024 * 1024
 DAILY_REEL_BYTES = 250 * 1024 * 1024
@@ -66,6 +66,8 @@ class Reel(BaseModel):
 
 @app.post("/reel")
 def fetch(body: Reel):
+    if not reel_links_enabled():
+        raise HTTPException(403, "This server accepts video files from Photos or Files.")
     if not slots.acquire(False):
         raise HTTPException(429, "Video intake is busy. Try again shortly.")
     tmp = None

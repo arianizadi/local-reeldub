@@ -200,7 +200,7 @@ struct Home: View {
 
     private var addReel: some View {
         Button { sheet = studio.needsSelfHostUnlock ? .selfHost : .composer } label: {
-            Label("Add Reel", systemImage: "plus").font(.headline)
+            Label("Add video", systemImage: "plus").font(.headline)
                 .padding(.horizontal, 14).padding(.vertical, 7)
                 .foregroundStyle(.black).background(leaf, in: Capsule())
                 .frame(minHeight: 44)
@@ -247,8 +247,8 @@ struct Home: View {
                     else if studio.jobs.isEmpty {
                         ContentUnavailableView {
                             Label("Your first dub", systemImage: "film.stack")
-                        } description: { Text("Share a Reel from Instagram or add its link here.") }
-                        actions: { Button("Add Reel") { sheet = studio.needsSelfHostUnlock ? .selfHost : .composer } }
+                        } description: { Text("Choose a video or share one from Photos or Files.") }
+                        actions: { Button("Add video") { sheet = studio.needsSelfHostUnlock ? .selfHost : .composer } }
                     } else {
                         ContentUnavailableView(query.isEmpty ? filter.emptyTitle : "No matching dubs",
                                                systemImage: query.isEmpty ? "tray" : "magnifyingglass")
@@ -408,219 +408,52 @@ struct RDComposer: View {
     let onQueued: () -> Void
 
     @State private var project: ProjectInput?
-    @State private var showBalance = false
     @State private var tempImport: URL?
-    @Environment(\.dynamicTypeSize) private var typeSize
-    @State private var link = ""
-    @State private var preferredLanguage = OutputLanguage.read()
-    private var languages: [String] { studio.account?.output_languages ?? studio.connection?.outputLanguages ?? ["en"] }
     @State private var problem: String?
-    @State private var notice: String?
-    @State private var successes = 0
-    @State private var rejections = 0
-    @FocusState private var focused: Bool
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    private var trimmed: String { link.trimmingCharacters(in: .whitespacesAndNewlines) }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if let problem {
-                Label {
-                    Text(problem).accessibilityIdentifier("reel-link-error")
-                } icon: {
-                    Image(systemName: "exclamationmark.circle.fill")
+        VStack(alignment: .leading, spacing: 16) {
+            if let account = studio.account {
+                if account.video_uploads == true, let modes = account.upload_voice_modes, !(modes["narrator"] ?? []).isEmpty {
+                    Text("Choose a video you have permission to translate. It will upload to your connected server for review.")
+                        .foregroundStyle(.secondary)
+                    VideoImportButton(receive: { movie in
+                        tempImport = movie.file
+                        project = .file(movie.file, movie.title)
+                        problem = nil
+                    }, failed: { problem = $0 }, title: "Choose video")
+                    .buttonStyle(.borderedProminent)
+                    .accessibilityIdentifier("choose-video")
+                    Text("Up to 2 minutes · 80 MiB")
+                        .font(.footnote).foregroundStyle(.secondary)
+                } else {
+                    Label("This server needs an update to accept video uploads.", systemImage: "arrow.triangle.2.circlepath")
                 }
-                .font(.footnote.weight(.medium))
-                .foregroundStyle(.red)
-                .fixedSize(horizontal: false, vertical: true)
-                .transition(.opacity)
-            } else if let notice {
-                Label {
-                    Text(notice).foregroundStyle(.primary)
-                } icon: {
-                    Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-                }
-                .font(.footnote.weight(.medium))
-                .transition(.opacity)
+            } else {
+                Text("Connect to your server to upload a video.").foregroundStyle(.secondary)
+                Button("Check connection") { Task { await studio.refresh() } }
             }
-
-            if languages.count > 1 {
-                OutputLanguagePicker(supported: languages, preference: $preferredLanguage)
-                    .disabled(studio.sending)
-            }
-            if showBalance, studio.connection?.isHosted == true {
-                BalanceOptions(live: studio.account?.purchase_preflight == true, plans: AnyView(CloudPlanSheet(studio: studio)))
-            }
-            field
-            Text("Up to 2 minutes. " + DubGuidance.accuracy)
-                .font(.footnote).foregroundStyle(.secondary)
-            let layout = typeSize.isAccessibilitySize ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8)) : AnyLayout(HStackLayout(spacing: 12))
-            layout {
-                if studio.account?.creator_minutes == true {
-                    VideoImportButton(receive: openImport, failed: reject)
-                        .buttonStyle(.bordered).tint(.primary)
-                }
-                if !typeSize.isAccessibilitySize { Spacer(minLength: 0) }
-                trailing
-            }
+            if let problem { Text(problem).font(.footnote).foregroundStyle(.orange) }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-        .frame(maxWidth: 900)
-        .frame(maxWidth: .infinity)
-        .background(Color(.systemBackground))
-        .overlay(alignment: .top) { Divider() }
-        .animation(reduceMotion ? nil : .snappy(duration: 0.25), value: problem)
-        .animation(reduceMotion ? nil : .snappy(duration: 0.25), value: notice)
-        .animation(reduceMotion ? nil : .snappy(duration: 0.2), value: trimmed.isEmpty)
-        .sensoryFeedback(.success, trigger: successes)
-        .sensoryFeedback(.error, trigger: rejections)
-        .onChange(of: link) { _, value in
-            problem = nil
-            showBalance = false
-            if !value.isEmpty { notice = nil }
-        }
-        .sheet(item:$project,onDismiss:{
-            if let tempImport { try? FileManager.default.removeItem(at:tempImport); self.tempImport=nil }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(18)
+        .sheet(item: $project, onDismiss: {
+            if let tempImport { try? FileManager.default.removeItem(at: tempImport); self.tempImport = nil }
         }) { input in
-            if let api=studio.api {
-                QuoteSheet(api:api,input:input,languages:languages,target:OutputLanguage.selected(preferredLanguage,supported:languages),liveOffers:studio.account?.purchase_preflight == true,plans:AnyView(CloudPlanSheet(studio:studio))) { _ in
-                    link=""; focused=false; notice="Your dubs are in the library."; successes+=1
-                    Task { await studio.refresh() }; onQueued()
+            if let api = studio.api, let account = studio.account {
+                QuoteSheet(api: api, input: input, voiceModes: account.upload_voice_modes ?? [:],
+                           target: OutputLanguage.read(), creatorMinutes: account.creator_minutes == true,
+                           liveOffers: account.purchase_preflight == true,
+                           plans: AnyView(CloudPlanSheet(studio: studio))) { _ in
+                    if let tempImport { try? FileManager.default.removeItem(at: tempImport); self.tempImport = nil }
+                    Task { await studio.refresh() }
+                    onQueued()
                 }
             }
         }
-        .task(id: notice) {
-            guard notice != nil else { return }
-            try? await Task.sleep(for: .seconds(5))
-            if !Task.isCancelled { notice = nil }
+        .onDisappear {
+            if let tempImport, project == nil { try? FileManager.default.removeItem(at: tempImport) }
         }
-    }
-
-    private var field: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "link")
-                .font(.body.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .accessibilityHidden(true)
-            TextField("Reel link", text: $link)
-                .font(.body)
-                .keyboardType(.URL)
-                .textContentType(.URL)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .submitLabel(.go)
-                .focused($focused)
-                .onSubmit(send)
-                .disabled(studio.sending)
-                .accessibilityLabel("Instagram Reel link")
-                .accessibilityIdentifier("new-dub")
-            if !link.isEmpty && !studio.sending {
-                Button {
-                    link = ""
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(.tertiary)
-                        .frame(width: 44, height: 44)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Clear link")
-            }
-        }
-        .padding(.leading, 14)
-        .padding(.trailing, link.isEmpty ? 14 : 0)
-        .frame(minHeight: 50)
-        .background(Color(.tertiarySystemFill), in: Capsule())
-        .overlay {
-            Capsule().strokeBorder(problem == nil ? Color.clear : Color.red.opacity(0.7), lineWidth: 1.5)
-                .allowsHitTesting(false)
-        }
-    }
-
-    @ViewBuilder
-    private var trailing: some View {
-        if trimmed.isEmpty && !studio.sending {
-            PasteButton(payloadType: String.self) { strings in
-                Task { @MainActor in paste(strings) }
-            }
-            .labelStyle(.iconOnly)
-            .buttonBorderShape(.circle)
-            .controlSize(.large)
-            .tint(RD.accent)
-            .transition(.scale(scale: 0.8).combined(with: .opacity))
-        } else {
-            Button(action: send) {
-                ZStack {
-                    Circle().fill(RD.accent)
-                    if studio.sending {
-                        ProgressView().tint(.black)
-                    } else {
-                        Image(systemName: "arrow.up")
-                            .font(.body.weight(.bold))
-                            .foregroundStyle(.black)
-                    }
-                }
-                .frame(width: 50, height: 50)
-            }
-            .buttonStyle(RDPressStyle())
-            .disabled(studio.sending)
-            .accessibilityLabel(studio.sending ? "Sending" : "Dub this Reel")
-            .accessibilityIdentifier("confirm-dub")
-            .transition(.scale(scale: 0.8).combined(with: .opacity))
-        }
-    }
-
-    private func openImport(_ movie: ImportedMovie) {
-        tempImport=movie.file
-        project = .file(movie.file,movie.title)
-        problem=nil
-    }
-
-    private func paste(_ strings: [String]) {
-        if let reel = RDLink.reel(in: strings.joined(separator: " ")) {
-            link = reel
-        } else {
-            reject("Your clipboard doesn’t contain an Instagram Reel link.")
-        }
-    }
-
-    private func send() {
-        guard !studio.sending else { return }
-        guard !trimmed.isEmpty else {
-            reject("Paste a link to an Instagram Reel first.")
-            return
-        }
-        guard let reel = RDLink.reel(in: trimmed) else {
-            reject("That isn’t a Reel link. In Instagram, tap Share on a Reel, then Copy link.")
-            return
-        }
-        if studio.account?.creator_minutes == true { project = .reel(reel); return }
-        Task {
-            do {
-                let job = try await studio.submit(reel, target: OutputLanguage.selected(preferredLanguage, supported: languages))
-                link = ""
-                focused = false
-                successes += 1
-                let status = job.state == "done" ? "Your \(job.targetName) dub is ready." : "Queued for translation."
-                notice = status
-                AccessibilityNotification.Announcement(status).post()
-                onQueued()
-            } catch let error as ServiceError where error.status == 428 {
-                project = .reel(reel)
-            } catch {
-                showBalance = (error as? ServiceError)?.needsBalance == true
-                reject(error.localizedDescription)
-            }
-        }
-    }
-
-    private func reject(_ message: String) {
-        notice = nil
-        problem = message
-        rejections += 1
-        AccessibilityNotification.Announcement(message).post()
     }
 }
 
@@ -1088,7 +921,7 @@ extension Job {
 
     var rdByline: String {
         let name = (author ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty else { return "Instagram Reel" }
+        guard !name.isEmpty else { return Job.isReel(url) ? "Instagram Reel" : "Uploaded video" }
         return name.hasPrefix("@") || name.contains(" ") ? name : "@" + name
     }
 

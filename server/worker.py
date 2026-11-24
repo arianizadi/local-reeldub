@@ -17,6 +17,7 @@ from pymongo.errors import ConnectionFailure, ExecutionTimeout, PyMongoError, WT
 
 from .source import MAX_SOURCE_SECONDS, TOO_LONG, reel_url
 from .languages import outputs
+from .upload_voice import upload_mode, voice_scope, VOICE_ERRORS
 from .db import media_db, QUEUE_ORDER, db, now, uses_postgres
 from .gpu import pipeline_slot
 from .wakeup import Wake
@@ -35,6 +36,9 @@ STAGES = {"Waiting for GPU capacity": "Waiting for GPU", "GPU stage: ": "Process
           "Mixing soundtrack": "Mixing", "Encoding video": "Encoding"}
 
 def render_error(stage, diagnostic):
+    for message in VOICE_ERRORS.values():
+        if message.lower() in diagnostic:
+            return message
     if TOO_LONG.lower() in diagnostic:
         return TOO_LONG
     if stage == "Downloading":
@@ -48,7 +52,7 @@ def render_error(stage, diagnostic):
     return f"The render failed during {stage.lower()}. You can retry or report this Reel."
 
 
-def claim(studio=None, fleet_slot=None, fleet_request=None, avoid_recovery_node=None):
+def claim(studio=None, fleet_slot=None, fleet_request=None, avoid_recovery_node=None, upload_voices=True):
     database = db()
     stamp = now()
     expired = {"state": "running", "fleet_slot": None, "lease_end": {"$lt": stamp}}
@@ -61,12 +65,20 @@ def claim(studio=None, fleet_slot=None, fleet_request=None, avoid_recovery_node=
     # A Light worker cannot fulfill a job that promises a Studio quality preset.
     profile_filter = {} if studio else {"render_quality": None, "lab_mode": None}
     candidate = {**profile_filter, "deleted": {"$ne": True}, "target_language": {"$in": eligible}}
+    if not upload_voices:
+        # Earlier workers don't understand upload voices, including uploaded jobs
+        # that predate the voice_mode field. They may still render ordinary Reels.
+        candidate.update(voice_mode=None, url={"$regex": "^https://"})
+    elif not studio:
+        candidate["voice_mode"] = {"$ne": "match"}
     if avoid_recovery_node:
         candidate["$and"] = [{"$or": [{"recovery_rank": {"$ne": 1}},
                                        {"recovery_from_node": {"$ne": avoid_recovery_node}}]}]
     start = {"state": "running", "stage": "Starting", "progress": 0.01, "estimated_finish": None,
              "lease": str(uuid4()), "lease_end": stamp + LEASE}
     start.update(fleet_slot=fleet_slot, fleet_request=fleet_request, attempt_started=stamp)
+    if fleet_slot:
+        start["fleet_upload_voice_protocol"] = 1 if upload_voices else None
     retryable = {**expired, "deleted": {"$ne": True}, "attempt": {"$lt": MAX_ATTEMPTS}}
     if uses_postgres():
         candidate["$or"] = [{"state": "queued"}, retryable]
@@ -84,6 +96,9 @@ def claim(studio=None, fleet_slot=None, fleet_request=None, avoid_recovery_node=
 
 
 def quality_options(job):
+    if upload_mode(job) is not None:
+        options = ["--quality", job["render_quality"]] if job.get("render_quality") else []
+        return options + ["--upload-voice", voice_scope(job)]
     if mode := job.get("lab_mode"):
         options = ["--quality", mode, "--voice-batch", str(job.get("voice_batch", 2)),
                    "--lab-runtime", job.get("lab_runtime", "standard"),
@@ -172,6 +187,9 @@ def process(job, fleet=None):
     runtime = None
     sampled_duration = None
     try:
+        options = quality_options(job)
+        if not fleet and (job.get("url") or "").startswith("https://") and os.getenv("REELDUB_REEL_LINKS") == "0":
+            raise RuntimeError("Reel links are disabled on this server. Share a video file instead.")
         with tempfile.TemporaryDirectory(prefix="reeldub-job-") as temp:
             dest = Path(temp) / "dub.mp4"
             log = Path(temp) / "render.log"
@@ -207,7 +225,7 @@ def process(job, fleet=None):
                 input_arg=reel_url(job["url"])
             with log.open("w") as writer, log.open() as reader:
                 command = [engine, input_arg, "--target-language", job.get("target_language", "en"), "-o", dest]
-                command += quality_options(job)
+                command += options
                 proc = subprocess.Popen(command, stdout=writer,
                                         stderr=subprocess.STDOUT, start_new_session=True, env=env)
                 deadline = time.monotonic() + int(os.getenv("JOB_TIMEOUT", "1800"))
@@ -271,6 +289,9 @@ def process(job, fleet=None):
                 print(f"Render {job['_id']} exited {proc.returncode} at {stage}", flush=True)
                 if TOO_LONG.lower() in diagnostic:
                     raise RuntimeError(TOO_LONG)
+                for message in VOICE_ERRORS.values():
+                    if message.lower() in diagnostic:
+                        raise RuntimeError(message)
                 if fleet:
                     if any(x in diagnostic for x in ("cuda out of memory", "cuda error", "cuda was explicitly requested", "driver version is insufficient")):
                         raise InfrastructureFailure("gpu_unavailable")
@@ -285,9 +306,12 @@ def process(job, fleet=None):
             seconds = float(subprocess.check_output(["ffprobe", "-v", "error", "-show_entries", "format=duration",
                             "-of", "csv=p=0", dest], text=True, timeout=30).strip())
             details = json.loads(metadata.read_text()) if metadata.is_file() else {}
+            expected_voice = upload_mode(job)
+            if expected_voice is not None and details.get("rendered_voice_mode") != expected_voice:
+                raise RuntimeError("The render engine did not confirm the selected voice mode.")
             details = {k: v for k, v in details.items() if k in
                        {"title", "author", "first_caption", "source_language", "asr_model",
-                        "translation_model", "voice_model", "audio_mix_version"}}
+                        "translation_model", "voice_model", "rendered_voice_mode", "audio_mix_version"}}
             if sampled_duration is not None:
                 details["source_seconds"] = ceil(sampled_duration)
             preview = subprocess.run(["ffmpeg", "-nostdin", "-loglevel", "error", "-ss", str(min(0.65, seconds / 3)),

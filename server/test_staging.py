@@ -1,4 +1,5 @@
 """Owner-scoped staging against disposable metadata/GridFS stores and a private HTTP fixture."""
+import asyncio
 from concurrent.futures import ProcessPoolExecutor
 from datetime import timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -13,7 +14,7 @@ from unittest.mock import Mock, patch
 from uuid import uuid4
 
 from bson import ObjectId
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 import gridfs
 
 from . import api, intake, sources
@@ -182,9 +183,19 @@ class StagingTests(TestCase):
 
     def test_creator_upload_inspects_once_and_keeps_private_bytes(self):
         owner = self.users[0]
-        with sources.admission(owner) as stage:
-            result = sources.upload(stage, owner, BytesIO(self.payload), "fixturehash", "My import")
+
+        def upload():
+            async def receive():
+                return {"type": "http.request", "body": self.payload, "more_body": False}
+            request = Request({"type": "http", "headers": [
+                (b"content-type", b"video/quicktime"), (b"x-video-title", b"My%20import")
+            ]}, receive)
+            return asyncio.run(api.stage_upload(request, owner))
+
+        result = upload()
+        stage = ObjectId(result["id"])
         self.assertEqual(result, {"id": str(stage), "seconds": 17, "title": "My import"})
+        self.assertEqual(upload(), result)
         self.assertEqual(self.fetches, [{"inspect": len(self.payload)}])
         self.assertEqual(self.bucket.get(stage).read(), self.payload)
         with self.assertRaises(HTTPException):
