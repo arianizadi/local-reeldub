@@ -15,7 +15,8 @@ from faster_whisper import WhisperModel
 from server.progress import report
 from server.gpu import transcription_device
 from server.languages import LANGUAGES
-from server.upload_voice import KITTEN_ENGINE, KITTEN_MODEL, VOICE_ERRORS, kitten_ready
+from server.upload_voice import (KITTEN_ENGINE, KITTEN_MATCH, KITTEN_MATCH_MODEL, KITTEN_MODEL,
+                                 VOICE_ERRORS, kitten_match_ready, kitten_ready)
 from server.source import inspect_video, reel_url
 from server.download import download_reel
 from clean_background import leakage_regions, matching_dialogue, merge_regions, suppress_unresolved
@@ -102,6 +103,13 @@ def run(args):
             raise ValueError("KittenTTS requires an English upload in narrator mode.")
         if not kitten_ready():
             raise ValueError("Run ./setup-lab.sh kitten2 before choosing KittenTTS.")
+    if args.match_engine:
+        if not match or args.upload_voice not in ("own_voice", "documented_permission") or target != "en":
+            raise ValueError("Kitten vLLM requires a consented upload for English speaker matching.")
+        if not kitten_match_ready():
+            raise ValueError("Install and validate the Kitten vLLM speaker-matching runtime first.")
+        # References require a transcript in the speaker's original language.
+        args.translation = "context"
     if match and not output.matched:
         raise ValueError(f"{output.name} uses a preset voice. Select --voice-mode auto.")
     if not match and not output.voices:
@@ -220,9 +228,29 @@ def run(args):
                     raise ValueError("Neither translator produced an English dub.")
                 print("Using the timed English translation from Whisper.", flush=True)
         if match:
-            write_references(lines, turns, analysis_audio, folder, require_isolated=bool(args.upload_voice))
+            spans = write_references(lines, turns, analysis_audio, folder, require_isolated=bool(args.upload_voice))
+            if args.match_engine:
+                words = [word for segment in segments for word in (segment.words or [])]
+                missing = []
+                for i, (line, (left, right)) in enumerate(zip(lines, spans, strict=True)):
+                    line["reference_text"] = "".join(word.word for word in words
+                                                     if left <= (word.start + word.end) / 2 < right).strip()
+                    if not line["reference_text"]:
+                        missing.append(i)
+                if missing:
+                    # A short clip may fall between word midpoints. Transcribe its exact
+                    # isolated WAV with the same local multilingual model, once per gap.
+                    verifier = whisper_model(args.model, "cpu")
+                    for i in missing:
+                        heard, _ = verifier.transcribe(str(folder / f"reference-{i}.wav"), language=language,
+                                                       beam_size=beam, condition_on_previous_text=False)
+                        text = "".join(seg.text for seg in heard).strip()
+                        if not text:
+                            raise ValueError(VOICE_ERRORS["unclear_speaker"])
+                        lines[i]["reference_text"] = text
+                    del verifier
         print(f"Synthesizing {output.name} voices…", flush=True)
-        synthesize(lines, folder, match, target, args.lab_runtime, args.narrator_engine)
+        synthesize(lines, folder, match, target, args.lab_runtime, args.narrator_engine, args.match_engine)
         print("Mixing soundtrack…", flush=True)
         mix(lines, source, folder)
         print("Encoding video…", flush=True)
@@ -241,6 +269,8 @@ def run(args):
                            audio_mix_version=2)
             if args.narrator_engine == KITTEN_ENGINE:
                 details["voice_model"] = KITTEN_MODEL
+            if args.match_engine == KITTEN_MATCH:
+                details["voice_model"] = KITTEN_MATCH_MODEL
             if args.upload_voice:
                 details["rendered_voice_mode"] = "match" if match else "narrator"
             path.write_text(json.dumps(details, ensure_ascii=False))
@@ -267,6 +297,7 @@ def main():
     parser.add_argument("--background", choices=["separate", "stereo"], default="separate" if studio else "stereo")
     parser.add_argument("--translation", choices=["context", "whisper"], default="context" if studio else "whisper")
     parser.add_argument("--voice-mode", choices=["auto", "preset", "match"], default="auto")
+    parser.add_argument("--match-engine", choices=[KITTEN_MATCH], help="Use Kitten vLLM for a consented English speaker match")
     parser.add_argument("--narrator-engine", choices=[KITTEN_ENGINE], help="Use the experimental English upload narrator")
     parser.add_argument("--upload-voice", choices=["narrator", "own_voice", "documented_permission"],
                         help="Render a user-supplied video in the confirmed voice mode and consent scope")

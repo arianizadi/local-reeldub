@@ -92,10 +92,11 @@ struct Job: Codable, Identifiable, Hashable {
     let ahead: Int?
     var voice_mode: String? = nil
     var narrator_engine: String? = nil
+    var match_engine: String? = nil
     var dubVoiceLabel: String? {
         switch voice_mode {
-        case "narrator": narrator_engine == "kitten2" ? "KittenTTS 2 narrator" : "Original narrator"
-        case "match": "Matched speaker"
+        case "narrator": narrator_engine == VoiceEngine.kittenNarratorID ? "KittenTTS 2 narrator" : "Original narrator"
+        case "match": match_engine == VoiceEngine.kittenMatchID ? "Matched speaker · KittenTTS 2" : "Matched speaker · Original"
         default: nil
         }
     }
@@ -209,6 +210,7 @@ struct Account: Codable {
     var video_uploads: Bool? = nil
     var upload_voice_modes: [String: [String]]? = nil
     var kitten_narrator_languages: [String]? = nil
+    var kitten_match_languages: [String]? = nil
     var creator_minutes: Bool? = nil
     var batch_progress: Bool? = nil
     var video_suggestions: Bool? = nil

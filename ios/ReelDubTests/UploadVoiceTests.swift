@@ -12,7 +12,7 @@ final class UploadVoiceTests: XCTestCase {
     }
 
     func testNarratorEngineIsOptInAndScopedToAdvertisedLanguages() throws {
-        func request(_ engine: NarratorEngine, target: String = "en", voice: DubVoice = .narrator) -> UploadQuoteRequest? {
+        func request(_ engine: VoiceEngine, target: String = "en", voice: DubVoice = .narrator) -> UploadQuoteRequest? {
             UploadQuoteRequest(source: "clip", targets: [target], supported: ["en", "es"], trim: false,
                                voice: voice, consent: .own, reference: "", agreed: true,
                                engine: engine, kittenLanguages: ["en"])
@@ -28,6 +28,33 @@ final class UploadVoiceTests: XCTestCase {
         XCTAssertNil(testPayload["voice_consent"])
         XCTAssertNil(request(.kitten2, target: "es"))
         XCTAssertNil(request(.kitten2, voice: .match))
+    }
+
+    func testMatchEngineIsScopedToPermissionLanguageAndAccount() throws {
+        func request(_ engine: VoiceEngine = .kitten2, target: String = "en", consent: VoiceConsent? = .own,
+                     reference: String = "", agreed: Bool = true, advertised: [String] = ["en"]) -> UploadQuoteRequest? {
+            UploadQuoteRequest(source: "clip", targets: [target], supported: ["en", "es"], trim: false,
+                               voice: .match, consent: consent, reference: reference, agreed: agreed,
+                               engine: engine, kittenMatchLanguages: advertised)
+        }
+        let original = try XCTUnwrap(request(.original))
+        let kitten = try XCTUnwrap(request(reference: "not sent for my own voice"))
+        XCTAssertNotEqual(original, kitten)
+        XCTAssertNil(original.match_engine)
+        XCTAssertNil(kitten.narrator_engine)
+        XCTAssertNil(kitten.consent_reference)
+        XCTAssertNil(request(target: "es"))
+        XCTAssertNil(request(consent: nil))
+        XCTAssertNil(request(consent: .documented))
+        XCTAssertNil(request(agreed: false))
+        XCTAssertNil(request(advertised: []))
+        let permitted = try XCTUnwrap(request(consent: .documented, reference: " release-42 "))
+        let data = try JSONEncoder().encode(permitted)
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(json["match_engine"] as? String, "kitten2_vllm")
+        XCTAssertEqual(json["voice_consent"] as? String, "documented_permission")
+        XCTAssertEqual(json["consent_reference"] as? String, "release-42")
+        XCTAssertNil(json["narrator_engine"])
     }
 
     func testMatchRequiresCurrentConsentAndAnAvailableLanguage() throws {

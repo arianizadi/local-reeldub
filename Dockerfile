@@ -16,9 +16,9 @@ USER reel
 CMD ["uvicorn","server.intake:app","--host","0.0.0.0","--port","8310","--no-access-log"]
 
 FROM base AS worker
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg curl ca-certificates git libgomp1 && rm -rf /var/lib/apt/lists/* && pip install --no-cache-dir uv
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg curl ca-certificates git libgomp1 build-essential && rm -rf /var/lib/apt/lists/* && pip install --no-cache-dir uv
 COPY --chown=reel:reel . /app
-RUN chown reel:reel /app
+RUN mkdir -p /run/reeldub-match && chown reel:reel /app /run/reeldub-match && chmod 0700 /run/reeldub-match
 USER reel
 ENV HOME=/home/reel UV_LINK_MODE=copy
 RUN mkdir -p /app/.qwen-venv /app/.kitten2 && uv sync --frozen --python /usr/local/bin/python

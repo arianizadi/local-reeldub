@@ -17,7 +17,8 @@ from pymongo.errors import ConnectionFailure, ExecutionTimeout, PyMongoError, WT
 
 from .source import MAX_SOURCE_SECONDS, TOO_LONG, reel_url
 from .languages import outputs
-from .upload_voice import KITTEN_ENGINE, KITTEN_MODEL, VOICE_ERRORS, kitten_ready, upload_mode, voice_scope
+from .upload_voice import (KITTEN_ENGINE, KITTEN_MATCH, VOICE_ERRORS, correct_kitten_model, kitten_match_ready,
+                           kitten_ready, upload_mode, voice_scope)
 from .db import media_db, QUEUE_ORDER, db, now, uses_postgres
 from .gpu import pipeline_slot
 from .wakeup import Wake
@@ -53,7 +54,7 @@ def render_error(stage, diagnostic):
 
 
 def claim(studio=None, fleet_slot=None, fleet_request=None, avoid_recovery_node=None, upload_voices=True,
-          kitten_narrator=None, alternatives=None):
+          kitten_narrator=None, alternatives=None, kitten_match=None):
     database = db()
     stamp = now()
     expired = {"state": "running", "fleet_slot": None, "lease_end": {"$lt": stamp}}
@@ -70,6 +71,10 @@ def claim(studio=None, fleet_slot=None, fleet_request=None, avoid_recovery_node=
         kitten_narrator = kitten_ready()
     if not (studio and upload_voices and kitten_narrator):
         candidate["narrator_engine"] = None
+    if kitten_match is None:
+        kitten_match = kitten_match_ready(require_service=True)
+    if not (studio and upload_voices and kitten_match):
+        candidate["match_engine"] = None
     if not upload_voices:
         # Earlier workers don't understand upload voices, including uploaded jobs
         # that predate the voice_mode field. They may still render ordinary Reels.
@@ -80,6 +85,8 @@ def claim(studio=None, fleet_slot=None, fleet_request=None, avoid_recovery_node=
         eligible_recovery = [{"recovery_rank": {"$ne": 1}}, {"recovery_from_node": {"$ne": avoid_recovery_node}}]
         if alternatives is not None and KITTEN_ENGINE not in alternatives:
             eligible_recovery.append({"narrator_engine": KITTEN_ENGINE})
+        if alternatives is not None and KITTEN_MATCH not in alternatives:
+            eligible_recovery.append({"match_engine": KITTEN_MATCH})
         candidate["$and"] = [{"$or": eligible_recovery}]
     start = {"state": "running", "stage": "Starting", "progress": 0.01, "estimated_finish": None,
              "lease": str(uuid4()), "lease_end": stamp + LEASE}
@@ -111,6 +118,10 @@ def quality_options(job):
             if engine != KITTEN_ENGINE or scope != "narrator" or job.get("target_language", "en") != "en":
                 raise ValueError("Unsupported upload narrator.")
             options += ["--narrator-engine", engine]
+        if engine := job.get("match_engine"):
+            if engine != KITTEN_MATCH or scope not in ("own_voice", "documented_permission") or job.get("target_language", "en") != "en":
+                raise ValueError("Unsupported upload speaker match.")
+            options += ["--match-engine", engine]
         return options
     if mode := job.get("lab_mode"):
         options = ["--quality", mode, "--voice-batch", str(job.get("voice_batch", 2)),
@@ -209,6 +220,8 @@ def process(job, fleet=None):
             names = {"PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "CUDA_VISIBLE_DEVICES",
                      "LD_LIBRARY_PATH", "HF_HOME", "XDG_CACHE_HOME", "REELDUB_GPU_LOCK_DIR", "REELDUB_LANDRUN",
                      "OMP_NUM_THREADS", "MKL_NUM_THREADS", "REELDUB_TTS_BATCH_SIZE"}
+            if job.get("match_engine") == KITTEN_MATCH:
+                names.add("REELDUB_KITTEN_MATCH_SPOOL")
             env = {k: v for k, v in os.environ.items() if k in names}
             if not job.get("priority") and os.getenv("REELDUB_FREE_CPU_OVERFLOW") == "1":
                 env["REELDUB_FREE_CPU_ASR"] = "1"
@@ -272,7 +285,7 @@ def process(job, fleet=None):
                                     sampled_duration = seconds
                                     try:
                                         rows = jobs.find({"state": "done", "lab_mode": job.get("lab_mode"),
-                                                          "narrator_engine": job.get("narrator_engine"),
+                                                          "narrator_engine": job.get("narrator_engine"), "match_engine": job.get("match_engine"),
                                                           "render_quality": job.get("render_quality"), "media_seconds": {"$exists": True}},
                                                          {"media_seconds": 1, "started": 1, "finished": 1,
                                                           "attempt": 1, "target_language": 1}).sort("finished", -1).limit(40)
@@ -323,8 +336,8 @@ def process(job, fleet=None):
             expected_voice = upload_mode(job)
             if expected_voice is not None and details.get("rendered_voice_mode") != expected_voice:
                 raise RuntimeError("The render engine did not confirm the selected voice mode.")
-            if (job.get("narrator_engine") == KITTEN_ENGINE) != (details.get("voice_model") == KITTEN_MODEL):
-                raise RuntimeError("The render engine did not confirm the selected narrator.")
+            if not correct_kitten_model(job, details.get("voice_model")):
+                raise RuntimeError("The render engine did not confirm the selected voice model.")
             details = {k: v for k, v in details.items() if k in
                        {"title", "author", "first_caption", "source_language", "asr_model",
                         "translation_model", "voice_model", "rendered_voice_mode", "audio_mix_version"}}

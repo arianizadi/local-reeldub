@@ -10,7 +10,7 @@ from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
 from . import console, sources, store
-from .upload_voice import KITTEN_ENGINE
+from .upload_voice import KITTEN_ENGINE, KITTEN_MATCH
 from .languages import default_render_quality, upload_voice_modes
 from .db import db, now
 
@@ -19,19 +19,20 @@ def enabled():
     return os.getenv("REELDUB_CREATOR_MINUTES", "0") == "1"
 
 
-def kitten_permitted(user):
-    if os.getenv("REELDUB_KITTEN_NARRATOR") != "1" or os.getenv("REELDUB_OUTPUT_PROFILE") != "studio":
+def kitten_permitted(user, *, match=False):
+    flag = "REELDUB_KITTEN_MATCH" if match else "REELDUB_KITTEN_NARRATOR"
+    if os.getenv(flag) != "1" or os.getenv("REELDUB_OUTPUT_PROFILE") != "studio":
         return False
     return console.permitted(user) or (os.getenv("REELDUB_ACCESS_MODE") == "operator" and user == "self-host")
 
 
-def voice_policy(identity, targets, mode, consent, reference, narrator_engine=None, user=None):
+def voice_policy(identity, targets, mode, consent, reference, narrator_engine=None, user=None, match_engine=None):
     """Validate voice choices on the server for the authenticated owner's actual source."""
     if not identity.startswith("upload:"):
         sources.require_reel_links()
         if not enabled():
             raise HTTPException(404, "Choose a video from Photos or Files to request a quote.")
-        if any(value is not None for value in (mode, consent, reference, narrator_engine)):
+        if any(value is not None for value in (mode, consent, reference, narrator_engine, match_engine)):
             raise HTTPException(422, "Choose a video file to select its voice.")
         return {}
     mode = mode or "narrator"
@@ -43,6 +44,11 @@ def voice_policy(identity, targets, mode, consent, reference, narrator_engine=No
             raise HTTPException(403, "This narrator is unavailable for your account.")
         if mode != "narrator" or any(code != "en" for code in targets):
             raise HTTPException(422, "KittenTTS is available for English narration only.")
+    if match_engine is not None:
+        if match_engine != KITTEN_MATCH or not kitten_permitted(user, match=True):
+            raise HTTPException(403, "This speaker-matching engine is unavailable for your account.")
+        if mode != "match" or any(code != "en" for code in targets):
+            raise HTTPException(422, "Kitten vLLM supports English speaker matching only.")
     if mode == "narrator":
         if consent is not None or reference is not None:
             raise HTTPException(422, "Choose speaker matching before providing voice consent.")
@@ -50,6 +56,8 @@ def voice_policy(identity, targets, mode, consent, reference, narrator_engine=No
     if consent not in ("own_voice", "documented_permission"):
         raise HTTPException(422, "Confirm your permission to match the speaker in this video.")
     voice = {"voice_mode": mode, "voice_consent": consent, "voice_consent_version": 1}
+    if match_engine:
+        voice["match_engine"] = match_engine
     if consent == "documented_permission":
         reference = (reference or "").strip()
         if not reference or len(reference) > 160 or not reference.isprintable():
@@ -108,7 +116,7 @@ def existing(user, url, target, trim, voice=None):
         "lab_mode": {"$exists":False},
         "render_quality": default_render_quality(),
         "trimmed": True if trim else {"$ne": True},
-        "narrator_engine": None,
+        "narrator_engine": None, "match_engine": None,
         **(voice or {"voice_mode": {"$exists": False}}),
     }
     return db().jobs.find_one(
@@ -127,11 +135,11 @@ def existing(user, url, target, trim, voice=None):
     )
 
 
-def quote(user, source_id, targets, trim, mode=None, consent=None, reference=None, narrator_engine=None):
+def quote(user, source_id, targets, trim, mode=None, consent=None, reference=None, narrator_engine=None, match_engine=None):
     from .api import daily_limit, tier
 
     source = sources.get(user, source_id)
-    voice = voice_policy(source["identity"], targets, mode, consent, reference, narrator_engine, user)
+    voice = voice_policy(source["identity"], targets, mode, consent, reference, narrator_engine, user, match_engine)
     stamp = now()
     plan = tier(user)
     trimmed = trim and source["seconds"] > 60
@@ -224,7 +232,7 @@ def confirm(user, quote_id):
         raise HTTPException(409, "Review the video and choose a voice again.")
     voice = voice_policy(source["identity"], [line["target"] for line in record["lines"]],
                          record.get("voice_mode"), record.get("voice_consent"), record.get("consent_reference"),
-                         record.get("narrator_engine"), user)
+                         record.get("narrator_engine"), user, record.get("match_engine"))
     if "voice_consent" in voice and (
         record.get("voice_consent_version") != voice["voice_consent_version"] or not record.get("voice_consented_at")
     ):

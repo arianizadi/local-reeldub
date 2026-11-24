@@ -13,7 +13,7 @@ from pymongo.errors import AutoReconnect, DuplicateKeyError
 from .db import db, media_db, now
 from .wakeup import notify
 from .worker import MAX_ATTEMPTS
-from .upload_voice import KITTEN_ENGINE
+from .upload_voice import KITTEN_ENGINE, KITTEN_MATCH
 
 
 SUSPECT = timedelta(seconds=35)
@@ -62,11 +62,11 @@ def status(doc, stamp, *, enabled=True):
     return "online"
 
 
-def health(node, ready, preflight, reason, kitten_narrator=False):
+def health(node, ready, preflight, reason, kitten_narrator=False, kitten_match=False):
     table, stamp = media_db().fleet_nodes, now()
     key = {"_id": node.name}
     observed = {"last_seen": stamp, "slots": node.slots, "enabled": node.enabled, "studio": node.studio,
-                "kitten_narrator": bool(node.studio and kitten_narrator)}
+                "kitten_narrator": bool(node.studio and kitten_narrator), "kitten_match": bool(node.studio and kitten_match)}
     old = table.find_one_and_update(key, {"$set": observed, "$setOnInsert": {"ready": False}}, upsert=True)
     if old and old.get("last_seen", stamp - OFFLINE) <= stamp - OFFLINE:
         # A late keepalive cannot silently restore a node that was offline.
@@ -124,7 +124,7 @@ def idle_alternative_engines(node):
              "last_seen": {"$gt": stamp - SUSPECT}, "last_preflight": {"$gt": stamp - PREFLIGHT_AGE}}
     if node.studio:
         query["studio"] = True
-    candidates = list(media_db().fleet_nodes.find(query, {"slots": 1, "kitten_narrator": 1}))
+    candidates = list(media_db().fleet_nodes.find(query, {"slots": 1, "kitten_narrator": 1, "kitten_match": 1}))
     if not candidates:
         return set()
     names = [row["_id"] for row in candidates]
@@ -135,6 +135,8 @@ def idle_alternative_engines(node):
             engines.add(None)  # The existing Studio/Light compatibility filter applies to ordinary jobs.
             if row.get("kitten_narrator"):
                 engines.add(KITTEN_ENGINE)
+            if row.get("kitten_match"):
+                engines.add(KITTEN_MATCH)
     return engines
 
 

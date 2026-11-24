@@ -13,6 +13,26 @@ args=(--best-effort --rox /usr --ro /etc --ro /sys --rw /proc --rox "$repo" --rw
 for path in "$repo"/{.tools,.venv,.qwen-venv,.omni-venv,.tts-graph,.kitten2} "$HOME/.cache/bandit-infer" "$HOME/.cache/reeldub/index-translate" "$HOME/.cache/local-reeldub" "$HOME/.cache/torch" "$HOME/.cache/huggingface/hub"; do
   [[ ! -e $path ]] || args+=(--rox "$(realpath "$path")")
 done
+# Only the match subprocess receives a private filesystem handoff to the offline
+# model service. The outer worker needs the same access to create its nested sandbox.
+match_spool=false
+if [[ $mode == worker ]]; then
+    match_spool=true
+elif [[ $mode == engine ]]; then
+    previous=""
+    for arg in "$@"; do
+        if [[ $previous == --match-engine && $arg == kitten2_vllm ]]; then match_spool=true; break; fi
+        previous=$arg
+    done
+fi
+if [[ $match_spool == true && -n ${REELDUB_KITTEN_MATCH_SPOOL:-} ]]; then
+    if [[ $REELDUB_KITTEN_MATCH_SPOOL == /* && -d $REELDUB_KITTEN_MATCH_SPOOL ]]; then
+        args+=(--rw "$(realpath "$REELDUB_KITTEN_MATCH_SPOOL")" --env REELDUB_KITTEN_MATCH_SPOOL)
+    elif [[ $mode == engine ]]; then
+        echo "The private speaker-matching service is unavailable." >&2
+        exit 1
+    fi
+fi
 gpu_paths=(/dev/nvidiactl /dev/nvidia-uvm /dev/nvidia-uvm-tools /dev/nvidia-modeset /dev/nvidia-caps /dev/dri)
 # A nested sandbox can open GPU devices but cannot enumerate the host's /dev directory.
 for info in /proc/driver/nvidia/gpus/*/information; do

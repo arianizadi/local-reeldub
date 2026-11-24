@@ -19,7 +19,7 @@ import requests
 from .gpu import lock_dir, pipeline_slot
 from .source import MAX_SOURCE_SECONDS, TOO_LONG
 from .worker import LeaseLost, process
-from .upload_voice import VOICE_ERRORS, kitten_ready
+from .upload_voice import VOICE_ERRORS, kitten_match_ready, kitten_ready
 
 
 class VideoBody:
@@ -79,6 +79,8 @@ class Coordinator:
         body = {"request_id": request_id, "upload_voice_protocol": 1}
         if kitten_ready():
             body["kitten_narrator"] = True
+        if kitten_match_ready(require_service=True):
+            body["kitten_match"] = True
         with self.request("POST", f"/v1/slots/{slot}/claim", json=body) as r:
             if r.status_code == 204:
                 return None
@@ -251,6 +253,8 @@ def report_health(coordinator):
             status = {"ready": reason is None, "preflight": checked}
             if kitten_ready():
                 status["kitten_narrator"] = True
+            if kitten_match_ready(require_service=True):
+                status["kitten_match"] = True
             if reason:
                 status["reason"] = reason
             with coordinator.request("POST", "/v1/slots/0/health", json=status) as r:

@@ -1,0 +1,53 @@
+[Unit]
+Description=ReelDub offline Kitten speaker matching
+After=local-fs.target
+RequiresMountsFor=@REPO@
+
+[Service]
+Type=simple
+User=@USER@
+Group=@GROUP@
+WorkingDirectory=@REPO@
+ExecStart=/usr/bin/python3 @REPO@/deploy/fleet/match-runner.py --serve
+Environment=REELDUB_KITTEN_MATCH_SPOOL=/run/reeldub-match
+Environment=HOME=/var/cache/reeldub-match XDG_CACHE_HOME=/var/cache/reeldub-match
+Environment=VLLM_CACHE_ROOT=/var/cache/reeldub-match/vllm TRITON_CACHE_DIR=/var/cache/reeldub-match/triton TORCHINDUCTOR_CACHE_DIR=/var/cache/reeldub-match/inductor
+Environment=TMPDIR=/tmp
+Environment=PYTHONDONTWRITEBYTECODE=1
+RuntimeDirectory=reeldub-match
+RuntimeDirectoryMode=0700
+CacheDirectory=reeldub-match
+CacheDirectoryMode=0700
+UMask=0077
+PrivateNetwork=yes
+PrivateIPC=yes
+PrivateTmp=yes
+ProtectHome=tmpfs
+ProtectSystem=strict
+BindReadOnlyPaths=@REPO@ @RUNTIME@
+TemporaryFileSystem=/run
+BindPaths=/run/reeldub-match
+NoNewPrivileges=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectProc=invisible
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6
+IPAddressDeny=any
+IPAddressAllow=localhost
+DevicePolicy=closed
+DeviceAllow=/dev/nvidiactl rw
+DeviceAllow=/dev/nvidia0 rw
+DeviceAllow=/dev/nvidia-uvm rw
+DeviceAllow=/dev/nvidia-uvm-tools rw
+DeviceAllow=/dev/nvidia-modeset rw
+DeviceAllow=/dev/nvidia-caps/nvidia-cap1 rw
+DeviceAllow=/dev/nvidia-caps/nvidia-cap2 rw
+TasksMax=512
+MemoryMax=24G
+Restart=on-failure
+RestartSec=15s
+TimeoutStopSec=15s
+[Install]
+WantedBy=multi-user.target

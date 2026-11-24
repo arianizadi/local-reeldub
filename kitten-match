@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# The caller owns the GPU stage and supplies a job-private directory with isolated WAVs.
+set -euo pipefail
+repo=$(cd "$(dirname "$0")" && pwd -P)
+kitten="$repo/.kitten2"
+folder=$(cd "${1:?Expected a job directory}" && pwd -P)
+export HF_HOME="$kitten/hf" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+export VLLM_NO_USAGE_STATS=1 DO_NOT_TRACK=1 VLLM_WORKER_MULTIPROC_METHOD=spawn
+export OMP_NUM_THREADS=4 OPENBLAS_NUM_THREADS=4 MKL_NUM_THREADS=4
+export TORCHINDUCTOR_COMPILE_THREADS=2 MAX_JOBS=2 VLLM_LOGGING_LEVEL=WARNING
+export PATH="$kitten/vllm-env/bin:$PATH"
+export VLLM_CACHE_ROOT="${VLLM_CACHE_ROOT:-$folder/vllm-cache}"
+export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$folder/cache}"
+export TRITON_CACHE_DIR="${TRITON_CACHE_DIR:-$folder/triton}"
+export TORCHINDUCTOR_CACHE_DIR="${TORCHINDUCTOR_CACHE_DIR:-$folder/inductor}"
+# Qwen uses a different PyTorch CUDA build. Preserve unrelated driver locations.
+IFS=: read -ra search <<< "${LD_LIBRARY_PATH:-}"
+unset LD_LIBRARY_PATH
+for path in "${search[@]}"; do
+    if [[ -n $path && $path != */.qwen-venv/* ]]; then
+        export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:+$LD_LIBRARY_PATH:}$path"
+    fi
+done
+if [[ -f "$kitten/system-cudnn/libcudnn_graph.so.9" ]]; then
+    export LD_LIBRARY_PATH="$kitten/system-cudnn${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    export LD_PRELOAD="$kitten/system-cudnn/libcudnn.so.9:$kitten/system-cudnn/libcudnn_graph.so.9"
+fi
+exec "$kitten/vllm-env/bin/python" "$repo/kitten_voice.py" --match "$folder"

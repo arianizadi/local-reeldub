@@ -3,13 +3,14 @@ import os
 from itertools import groupby
 from pathlib import Path
 import subprocess
+import sys
 
 import numpy as np
 import sherpa_onnx as so
 import soundfile as sf
 
 from server.languages import LANGUAGES
-from server.upload_voice import KITTEN_ENGINE, KITTEN_ROOT, VOICE_ERRORS
+from server.upload_voice import KITTEN_ENGINE, KITTEN_MATCH, KITTEN_ROOT, VOICE_ERRORS
 from server.progress import report
 from assets import CACHE, SPEAKER
 
@@ -65,6 +66,7 @@ def assign_lines(segments, turns):
 def write_references(lines, turns, source, folder, *, require_isolated=False):
     # Anchor the reference to the actual utterance. A single speaker label may span
     # distinct voices after an off-screen cut or a diarization mistake.
+    bounds = []
     with sf.SoundFile(source) as stream:
         rate = stream.samplerate
         for i, line in enumerate(lines):
@@ -95,13 +97,32 @@ def write_references(lines, turns, source, folder, *, require_isolated=False):
             left, right = max(spans or [(left, right)], key=lambda span: span[1] - span[0])
             stream.seek(min(len(stream), max(0, round(left * rate))))
             ref = stream.read(max(1, round(min(8, right - left) * rate)), always_2d=True, dtype="float32")
+            bounds.append((left, left + len(ref) / rate))
             if len(ref) < rate // 4:
                 # The speaker encoder needs a valid window even for an isolated interjection.
                 ref = np.pad(ref, ((0, rate // 4 - len(ref)), (0, 0)))
             sf.write(folder / f"reference-{i}.wav", ref.mean(axis=1), rate)
+    return bounds
 
 
-def synthesize(lines, folder, match, target="en", runtime="standard", narrator_engine=None):
+def synthesize(lines, folder, match, target="en", runtime="standard", narrator_engine=None, match_engine=None):
+    if match_engine is not None:
+        if match_engine != KITTEN_MATCH or not match or target != "en" or narrator_engine is not None:
+            raise ValueError("Unsupported speaker-matching engine.")
+        from server.gpu import stage
+        refs = [{"text": line["text"], "reference_text": line["reference_text"]} for line in lines]
+        (folder / "lines.json").write_text(json.dumps(refs))
+        root = Path(__file__).resolve().parent
+        if os.getenv("REELDUB_KITTEN_MATCH_SPOOL"):
+            command = [sys.executable, root / "deploy/fleet/match-runner.py"]
+        elif os.getenv("REELDUB_SERVICE_LIMITS") or os.getenv("REELDUB_OFFLINE_ENGINE"):
+            raise RuntimeError("The private Kitten speaker-matching service is unavailable.")
+        else:
+            command = [root / "kitten-match"]
+        with stage("exclusive"):
+            print("GPU stage: Voicing", flush=True)
+            subprocess.run([*command, folder], check=True)
+        return
     if narrator_engine is not None:
         if narrator_engine != KITTEN_ENGINE or match or target != "en":
             raise ValueError("Unsupported narrator selection.")

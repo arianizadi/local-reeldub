@@ -109,6 +109,24 @@ class FleetIntegration(TestCase):
         return self.req("POST", f"/v1/slots/{slot}/claim", node,
                         json={"request_id": request or str(uuid4()), "upload_voice_protocol": 1})
 
+    def test_clone_requires_its_own_worker_capability_and_rejects_original_engine_result(self):
+        queued = self.queue(url="upload:clone", voice_mode="match", voice_consent="own_voice", voice_consent_version=1,
+                            match_engine="kitten2_vllm")
+        claim = {"request_id": str(uuid4()), "upload_voice_protocol": 1, "kitten_narrator": True}
+        self.assertEqual(self.req("POST", "/v1/slots/0/claim", json=claim).status_code, 204)
+        claim.update(request_id=str(uuid4()), kitten_match=True)
+        self.assertEqual(self.req("POST", "/v1/slots/0/claim", node="beta", json=claim).status_code, 204)
+        job = self.req("POST", "/v1/slots/0/claim", json=claim).json()
+        self.assertEqual((job["_id"], job["match_engine"], job["voice_consent"]),
+                         (queued["_id"], "kitten2_vllm", "own_voice"))
+        self.assertEqual(self.req("POST", "/v1/slots/0/claim", json=claim | {"kitten_match": False}).status_code, 204)
+        details = {"media_seconds": 5, "rendered_voice_mode": "match", "voice_model": "Qwen3-TTS-12Hz-1.7B-Base"}
+        headers = {"Content-Type": "application/octet-stream", "X-ReelDub-Details":
+                   base64.urlsafe_b64encode(json.dumps(details).encode()).decode()}
+        result = self.req("PUT", "/v1/jobs/" + job["_id"] + "/result", lease=job["lease"], headers=headers, data=b"")
+        self.assertEqual(result.status_code, 422)
+        self.assertIn("model", result.json()["detail"])
+
     def test_kitten_narration_requires_a_ready_studio_worker_and_matching_result(self):
         original = self.queue(url="upload:kitten", voice_mode="narrator", narrator_engine="kitten2")
         self.assertEqual(self.claim().status_code, 204)

@@ -36,3 +36,20 @@ For a private GPU Compose installation, set `REELDUB_KITTEN_NARRATOR=1` in the i
 Kitten uses the packed flagship model, default decoder and stable Bella voice. It reads the translated text for English narration. Voice models, the isolated interpreter and the pinned decoder stay on the worker under `.kitten2`. To compare voices on an iPhone, share the same video from Photos or Files twice, select Narrator, and confirm one dub with each engine. Each result has its own engine label and cache entry. [KittenML model card](https://huggingface.co/KittenML/kitten-tts-2)
 
 KittenML allows private evaluation. Before offering the self-hosted flagship commercially, register with KittenML if the company and its affiliates are under both of its revenue and funding thresholds, or arrange a commercial agreement. The iOS app includes the attribution and license. [KittenML commercial terms and registration](https://kittenml.com/license/)
+
+### Private English speaker matching with Kitten vLLM
+
+For an opt-in, self-hosted evaluation on a compatible NVIDIA Linux machine, run `./start-local.sh --kitten-match`. On first launch the Studio worker downloads the pinned model and CUDA 12.9 vLLM runtime, creates a synthetic test reference, and exercises speaker matching. The `kitten-env` volume retains the verified installation. The separate `kitten-match` container uses `network_mode: none`, has read-only model files, and exchanges only the selected reference clips, source transcript, translated text and returned WAVs with the worker. Model startup requires GPU memory beyond the ordinary CPU narrator.
+
+On the private fleet, run the matching service in a loopback-only network namespace. Create a persistent mode-0700 spool on the private worker filesystem, set `REELDUB_KITTEN_MATCH_SPOOL` to its absolute path for the service and GPU slot units, and start `python deploy/fleet/match-runner.py --serve` in that namespace. The spool must be accessible before the slot unit starts so its filesystem sandbox can grant access. Then run `./setup-lab.sh kitten-match` with the same spool setting. If the path was missing when a slot started, restart that slot once idle after creating the spool. Without a running matching service the slot can continue ordinary dubs. A fresh service heartbeat and the successful synthesis marker enable the worker capability. Set `REELDUB_KITTEN_MATCH=1` on the Studio API for the hosted Apple administrator or private operator. During the upload review, choose Match speaker, confirm the corresponding permission, select Original or Kitten vLLM, and confirm an English dub. Results and retries retain the consent scope and chosen engine.
+
+On a systemd fleet host, the GPU operator can generate the matching service definition after installing the offline runtime. Run the generator as the render user and install the unit as administrator.
+
+```sh
+python3 deploy/fleet/prepare-match-service.py > "$HOME/reeldub-kitten-match.service"
+sudo install -o root -g root -m 0644 "$HOME/reeldub-kitten-match.service" /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now reeldub-kitten-match.service
+```
+
+The unit binds the resolved runtime path at installation. Regenerate the unit when moving the model directory. Set `REELDUB_KITTEN_MATCH_SPOOL=/run/reeldub-match` in each GPU worker unit, then restart its idle slots after the sidecar's heartbeat appears. The service consumes bounded audio bundles through the private spool, starts a model process per job, and uses a loopback-only network namespace for vLLM's local process communication. Cancelling the renderer releases its lease and stops the model process.

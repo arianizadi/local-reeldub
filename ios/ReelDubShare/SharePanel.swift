@@ -72,6 +72,7 @@ struct SharePanel: View {
             if let connection, let account {
                 QuoteSheet(api: API(connection: connection), input: input, voiceModes: account.upload_voice_modes ?? [:],
                            kittenLanguages: account.kitten_narrator_languages ?? [],
+                           kittenMatchLanguages: account.kitten_match_languages ?? [],
                            target: OutputLanguage.read(), creatorMinutes: account.creator_minutes == true,
                            liveOffers: account.purchase_preflight == true) { jobs in
                     results = jobs

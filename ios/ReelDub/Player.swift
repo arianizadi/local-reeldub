@@ -28,6 +28,12 @@ struct JobView: View {
     private var originalURL: URL? { Job.isReel(job.url) ? URL(string: job.url) : nil }
     private var expired: Bool { studio.isExpired(job) }
 
+    private var comparisonEngine: VoiceEngine? {
+        guard !expired, job.state == "done", job.voice_mode == "match", job.source_id != nil,
+              studio.account?.kitten_match_languages?.contains(job.target) == true else { return nil }
+        return job.match_engine == VoiceEngine.kittenMatchID ? .original : .kitten2
+    }
+
     var body: some View {
         GeometryReader { viewport in
             details(in: viewport.size)
@@ -36,7 +42,15 @@ struct JobView: View {
             .sheet(item: $project, onDismiss: {
                 if let importedFile { try? FileManager.default.removeItem(at: importedFile); self.importedFile = nil }
             }) { input in
-                if let api=studio.api { QuoteSheet(api:api,input:input,voiceModes:studio.account?.upload_voice_modes ?? [:],kittenLanguages:studio.account?.kitten_narrator_languages ?? [],target:job.target,trim:job.trimmed ?? false,creatorMinutes:studio.account?.creator_minutes == true,liveOffers:studio.account?.purchase_preflight == true,plans:AnyView(CloudPlanSheet(studio:studio))) { _ in Task { await studio.refresh() } } }
+                if let api = studio.api {
+                    QuoteSheet(api: api, input: input, voiceModes: studio.account?.upload_voice_modes ?? [:],
+                               kittenLanguages: studio.account?.kitten_narrator_languages ?? [],
+                               kittenMatchLanguages: studio.account?.kitten_match_languages ?? [],
+                               target: job.target, trim: job.trimmed ?? false, compareMatchUsing: comparisonEngine,
+                               creatorMinutes: studio.account?.creator_minutes == true,
+                               liveOffers: studio.account?.purchase_preflight == true,
+                               plans: AnyView(CloudPlanSheet(studio: studio))) { _ in Task { await studio.refresh() } }
+                }
             }
             .confirmationDialog("Join the end of the priority line?", isPresented: $confirmSkip, titleVisibility: .visible) {
                 Button("Use 1 queue pass") {
@@ -147,6 +161,15 @@ struct JobView: View {
                     Label("AI-translated audio · " + voice,
                           systemImage: "waveform")
                         .font(.subheadline).foregroundStyle(.secondary)
+                }
+                if let comparisonEngine, let sourceID = job.source_id {
+                    Button {
+                        player?.pause()
+                        project = .source(sourceID)
+                    } label: {
+                        Label(comparisonEngine == .kitten2 ? "Compare with KittenTTS 2" : "Compare with Original",
+                              systemImage: "waveform")
+                    }
                 }
                 if let recovery = job.recoveryNotice {
                     Label(recovery, systemImage: "arrow.clockwise")

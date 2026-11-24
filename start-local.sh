@@ -8,16 +8,19 @@ if [[ ! -e .env ]]; then
     printf 'MONGO_ROOT_PASSWORD=%s\nMONGO_PASSWORD=%s\nSELF_HOST_KEY=%s\n' "$(openssl rand -hex 32)" "$(openssl rand -hex 32)" "$(openssl rand -hex 32)" > .env
   )
 fi
-if [[ $# -gt 1 || ( $# -eq 1 && "$1" != "--studio" ) ]]; then
-  echo "Usage: ./start-local.sh [--studio]" >&2
+if [[ $# -gt 1 || ( $# -eq 1 && "$1" != "--studio" && "$1" != "--kitten-match" ) ]]; then
+  echo "Usage: ./start-local.sh [--studio|--kitten-match]" >&2
   exit 2
 fi
 if ! grep -q '^MONGO_WORKER_PASSWORD=' .env; then
   printf '\nMONGO_WORKER_PASSWORD=%s\n' "$(openssl rand -hex 32)" >> .env
 fi
 compose=(docker compose)
-if [[ "${1:-}" == "--studio" ]]; then
+if [[ "${1:-}" == "--studio" || "${1:-}" == "--kitten-match" ]]; then
   compose+=(-f compose.yaml -f compose.gpu.yaml)
+fi
+if [[ "${1:-}" == "--kitten-match" ]]; then
+  compose+=(-f compose.kitten-match.yaml)
 fi
 "${compose[@]}" up -d --wait mongo
 "${compose[@]}" exec -T mongo sh /opt/reeldub/configure-worker.sh

@@ -68,6 +68,37 @@ class CreatorTests(TestCase):
     def confirm(self, q):
         return minutes.confirm(self.owner, q["id"])
 
+    def test_kitten_match_requires_its_own_feature_and_consent_and_keeps_distinct_jobs(self):
+        source = self.source(15)
+        self.enterContext(patch.dict(os.environ, {"REELDUB_ACCESS_MODE": "hosted", "ADMIN_APPLE_SUB": self.owner[6:],
+                                                  "REELDUB_KITTEN_MATCH": "1", "REELDUB_KITTEN_NARRATOR": "0"}))
+        self.assertEqual(api.me(self.owner)["kitten_match_languages"], ["en"])
+        self.assertNotIn("kitten_match_languages", api.me("apple:other"))
+        self.assertNotIn("kitten_narrator_languages", api.me(self.owner))
+
+        def request(**overrides):
+            fields = dict(source_id=source, targets=["en"], voice_mode="match", match_engine="kitten2_vllm",
+                          voice_consent="own_voice")
+            return api.create_quote(api.QuoteRequest(**(fields | overrides)), self.owner)
+
+        for invalid in (dict(voice_mode="narrator"), dict(targets=["fr"]), dict(voice_consent=None),
+                        dict(voice_consent="documented_permission"), dict(narrator_engine="kitten2")):
+            with self.assertRaises(HTTPException):
+                request(**invalid)
+        quote = request()
+        with patch.dict(os.environ, {"REELDUB_KITTEN_MATCH": "0", "REELDUB_KITTEN_NARRATOR": "1"}):
+            with self.assertRaises(HTTPException) as revoked:
+                self.confirm(quote)
+            self.assertEqual(revoked.exception.status_code, 403)
+        match, = self.confirm(quote)
+        original, = self.confirm(request(match_engine=None))
+        documented, = self.confirm(request(voice_consent="documented_permission", consent_reference="Release 17"))
+        self.assertEqual(match["match_engine"], "kitten2_vllm")
+        self.assertIsNone(original.get("match_engine"))
+        self.assertEqual(len({original["id"], match["id"], documented["id"]}), 3)
+        self.assertEqual(self.confirm(request())[0]["id"], match["id"])
+        self.assertEqual(self.confirm(request(match_engine=None))[0]["id"], original["id"])
+
     def test_kitten_narrator_is_a_private_english_choice_with_independent_cache(self):
         source = self.source(10)
         self.enterContext(patch.dict(os.environ, {"REELDUB_ACCESS_MODE": "hosted", "ADMIN_APPLE_SUB": self.owner[6:],
