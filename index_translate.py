@@ -1,5 +1,6 @@
 """Run the local Index translator over standard I/O or a per-render Unix socket."""
 from contextlib import contextmanager, nullcontext
+from difflib import SequenceMatcher
 import hashlib
 from http.client import HTTPConnection, HTTPException
 import json
@@ -9,6 +10,7 @@ import platform
 import shutil
 import socket
 import subprocess
+import unicodedata
 import tarfile
 import tempfile
 import time
@@ -142,13 +144,30 @@ def offline_completion(instruction, schema):
     return json.loads(output.removesuffix(end_marker))
 
 
+def completion(path, instruction, schema):
+    if path is None:
+        return offline_completion(instruction, schema)
+    answer = request(path, "/v1/chat/completions", {
+        "messages": [{"role": "user", "content": instruction}], "temperature": 0,
+        "max_tokens": MAX_TOKENS, "chat_template_kwargs": {"enable_thinking": False},
+        "response_format": {"type": "json_schema", "json_schema": {
+            "name": "translation", "strict": True, "schema": schema}}})
+    choice = answer["choices"][0]
+    if choice["finish_reason"] != "stop":
+        raise ValueError("The local translation stopped before the end of the response.")
+    return json.loads(choice["message"]["content"])
+
+
+def translation_session():
+    return nullcontext() if os.environ.get("REELDUB_OFFLINE_ENGINE") == "1" else runtime()
+
+
 def translate(lines, source_language, target):
     pending = [i for i, line in enumerate(lines) if not line.get("english")]
     if not pending:
         return
     results = []
-    offline = os.environ.get("REELDUB_OFFLINE_ENGINE") == "1"
-    with (nullcontext() if offline else runtime()) as path:
+    with translation_session() as path:
         for offset in range(0, len(pending), 12):
             batch = pending[offset:offset + 12]
             original = [lines[i]["text"] for i in batch]
@@ -157,24 +176,78 @@ def translate(lines, source_language, target):
                            "Return only the JSON array.\n\n" + json.dumps(original, ensure_ascii=False))
             schema = {"type": "array", "minItems": len(batch), "maxItems": len(batch),
                       "items": {"type": "string", "minLength": 1}}
-            if offline:
-                translated = offline_completion(instruction, schema)
-            else:
-                answer = request(path, "/v1/chat/completions", {
-                    "messages": [{"role": "user", "content": instruction}], "temperature": 0,
-                    "max_tokens": MAX_TOKENS, "chat_template_kwargs": {"enable_thinking": False},
-                    "response_format": {"type": "json_schema", "json_schema": {
-                        "name": "dialogue", "strict": True, "schema": schema}}})
-                choice = answer["choices"][0]
-                if choice["finish_reason"] != "stop":
-                    raise ValueError("The local translation stopped before the end of the response.")
-                translated = json.loads(choice["message"]["content"])
+            translated = completion(path, instruction, schema)
             if (not isinstance(translated, list) or len(translated) != len(batch)
                     or not all(isinstance(x, str) and x.strip() for x in translated)):
                 raise ValueError("The local translation did not preserve all dialogue lines.")
             results.extend(translated)
     for i, text in zip(pending, results, strict=True):
         lines[i]["text"] = text.strip()
+
+
+def translated_tracks(tracks, target, source_language=None):
+    """Keep only legible text that needs a replacement in the selected language."""
+    originals = list(dict.fromkeys(t["text"] for t in tracks if any(c.isalpha() for c in t["text"])))
+    if not originals:
+        return []
+    replacements = {}
+    # Index was trained with Chinese instruction templates. Audio is only a hint:
+    # one video can contain a foreign sign, a local message and English UI.
+    from server.languages import LANGUAGES
+    language_names = {"en": "英语", "zh": "中文", "fr": "法语", "de": "德语", "it": "意大利语",
+                      "ja": "日语", "ko": "韩语", "pt": "葡萄牙语", "ru": "俄语", "es": "西班牙语",
+                      "fa": "波斯语", "ar": "阿拉伯语", "ur": "乌尔都语", "hi": "印地语"}
+    target_name = next((language_names[code] for code, lang in LANGUAGES.items()
+                        if lang.name == target and code in language_names), target)
+    audio_hint = (f"视频的对白语言可能是{language_names.get(source_language, source_language)}，但"
+                  if source_language else "")
+
+    def normalized(value):
+        return "".join(c for c in unicodedata.normalize("NFKC", value).casefold() if c.isalnum())
+
+    with translation_session() as path:
+        for i in range(0, len(originals), 10):
+            batch = originals[i:i + 10]
+            instruction = (
+                f"请将以下屏幕文字翻译成自然简洁的{target_name}，并且严格遵循所有约束要求。\n"
+                f"〖源文〗{json.dumps(batch, ensure_ascii=False)}\n"
+                f"〖约束要求〗{audio_hint}请独立判断每条文字的实际语言。理解口语和习语的真实含义，"
+                "保留原文的语气、情感和否定，不要逐字直译，不要编造原文没有的动作、感官或信息。"
+                f"对原本就是{target_name}的文字、无须翻译的名称和商标、无法识别的杂乱 OCR，返回空字符串。"
+                "保持相同顺序，每项输出一个字符串。只输出 JSON 数组，不要有任何额外说明。")
+            schema = {"type": "array", "minItems": len(batch), "maxItems": len(batch),
+                      "items": {"type": "string"}}
+            values = completion(path, instruction, schema)
+            if not isinstance(values, list) or len(values) != len(batch) or not all(isinstance(v, str) for v in values):
+                raise ValueError("The local translator returned incomplete on-screen text.")
+            for original, value in zip(batch, values, strict=True):
+                value = " ".join(value.split())
+                if (value and len(value) <= max(64, len(original) * 5)
+                        and any(c.isalpha() for c in value) and normalized(original) != normalized(value)):
+                    replacements[original] = value
+    # A moving target-language label can be misread during a zoom. A correction
+    # by one character is never sufficient evidence by itself to discard a real
+    # translation. Require the corrected label at that location in nearby frames.
+    unchanged = {}
+    for track in tracks:
+        if track["text"] not in replacements and "box" in track:
+            unchanged.setdefault(normalized(track["text"]), []).append(track)
+    result = []
+    for track in tracks:
+        value = replacements.get(track["text"])
+        if not value:
+            continue
+        before, after = normalized(track["text"]), normalized(value)
+        neighbors = unchanged.get(after)
+        if neighbors and "box" in track and len(after) >= 4:
+            edits = sum(max(b-a, d-c) for op, a, b, c, d in SequenceMatcher(None, before, after).get_opcodes()
+                        if op != "equal")
+            if edits == 1 and any(max(track["start"], other["start"]) - min(track["end"], other["end"]) <= .5
+                                  and max(abs(a-b) for a, b in zip(track["box"], other["box"])) < .12
+                                  for other in neighbors):
+                continue
+        result.append({**track, "translation": value})
+    return result
 
 
 if __name__ == "__main__":

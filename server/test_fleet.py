@@ -107,7 +107,7 @@ class FleetIntegration(TestCase):
 
     def claim(self, node="alpha", request=None, slot=0):
         return self.req("POST", f"/v1/slots/{slot}/claim", node,
-                        json={"request_id": request or str(uuid4()), "upload_voice_protocol": 1, "match_quality_protocol": 1})
+                        json={"request_id": request or str(uuid4()), "upload_voice_protocol": 1, "match_quality_protocol": 1, "screen_text_protocol": 1})
 
     def test_clone_requires_its_own_worker_capability_and_rejects_original_engine_result(self):
         queued = self.queue(url="upload:clone", voice_mode="match", voice_consent="own_voice", voice_consent_version=1,
@@ -239,7 +239,7 @@ class FleetIntegration(TestCase):
             path = "/v1/jobs/" + job["_id"]
             source = self.req("GET", path + "/source", "rental", job["lease"])
             self.assertEqual((source.status_code, source.content), (200, b"fixture source"))
-            details = base64.b64encode(b'{"media_seconds":1,"source_language":"en","voice_model":"Qwen3-TTS-12Hz-1.7B-Base","rendered_voice_mode":"match"}').decode()
+            details = base64.b64encode(b'{"media_seconds":1,"source_language":"en","voice_model":"Qwen3-TTS-12Hz-1.7B-Base","rendered_voice_mode":"match","screen_text_version":1,"screen_text_count":0}').decode()
             result = self.req("PUT", path + "/result", "rental", job["lease"], headers={
                 "Content-Type": "application/octet-stream", "X-ReelDub-Details": details},
                 data=bytes(4) + video)

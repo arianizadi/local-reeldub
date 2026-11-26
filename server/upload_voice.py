@@ -43,6 +43,24 @@ def correct_kitten_model(job, model):
     return model not in (KITTEN_MODEL, KITTEN_MATCH_MODEL)
 
 
+def render_mismatch(job, details):
+    version = details.get("screen_text_version")
+    count = details.get("screen_text_count")
+    if job.get("required_screen_text_version") and (
+        version != job["required_screen_text_version"] or type(count) is not int or count < 0
+    ):
+        return "The render engine did not confirm the on-screen text pass."
+    expected = upload_mode(job)
+    if (expected == "match" and details.get("rendered_voice_mode") == "text_only" and version == 1
+            and type(count) is int and count > 0 and not details.get("voice_model")):
+        return None
+    if expected is not None and details.get("rendered_voice_mode") != expected:
+        return "The render engine did not confirm the selected voice mode."
+    if not correct_kitten_model(job, details.get("voice_model")):
+        return "Rendered voice model does not match the confirmed narrator or speaker matcher."
+    return None
+
+
 VOICE_ERRORS = {
     "voice_consent": "Match the speaker requires consent for this video. Confirm permission from each speaker.",
     "single_speaker": "ReelDub could not isolate one speaker for your own voice. Try a clip with clearer dialogue.",

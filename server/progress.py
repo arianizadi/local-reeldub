@@ -6,7 +6,7 @@ from statistics import median
 # A stage boundary indicates completed work. Synthesis reports actual completed lines.
 STEPS = {"Starting": .01, "Downloading": .02, "Separating audio": .07, "Transcribing": .20,
          "Cleaning background voices": .30, "Identifying voices": .36, "Translating": .43,
-         "Voicing": .58, "Mixing": .90, "Encoding": .94, "Saving": .98}
+         "Voicing": .58, "Mixing": .89, "Reading on-screen text": .90, "Translating on-screen text": .92, "Encoding": .94, "Saving": .98}
 PREFIX = "REELDUB_PROGRESS "
 
 

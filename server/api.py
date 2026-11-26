@@ -29,6 +29,7 @@ from .wakeup import next_hour, notify
 from .db import separate_metadata, uses_postgres, media_db, db, now, setup_indexes
 from . import sources
 from .video_url import video_url
+from .source import SCREEN_TEXT_VERSION
 from .languages import LANGUAGES
 from .upload_voice import KITTEN_MATCH
 
@@ -243,7 +244,7 @@ async def stage_upload(request: Request, user=Depends(owner)):
                 digest.update(part)
                 await run_in_threadpool(file.write, part)
             if not file.tell():
-                raise HTTPException(422, "Choose a playable MP4 or MOV with audio.")
+                raise HTTPException(422, "Choose a playable MP4 or MOV.")
             return await run_in_threadpool(sources.upload, stage, user, file, digest.hexdigest(), title)
 
 
@@ -322,6 +323,7 @@ def summary(job, before=None):
                 available_on_server=media_available(job), cache_expires=job.get("media_expires"),
                 source_id=str(job["source_file"]) if job.get("source_file") else None, trimmed=job.get("trimmed",False),
                 voice_mode=job.get("voice_mode"), match_engine=job.get("match_engine"),
+                screen_text_count=job.get("screen_text_count"), screen_text_engine=job.get("screen_text_engine"),
                 quality=job.get("render_quality"), quality_requested=job.get("quality_requested"),
                 quality_fallback=job.get("quality_fallback"),
                 render_quality=job.get("render_quality"), lab_mode=job.get("lab_mode"), lab_runtime=job.get("lab_runtime"), voice_batch=job.get("voice_batch"), target_language=job.get("target_language", "en"), source_language=job.get("source_language"), first_caption=job.get("first_caption"))
@@ -367,6 +369,7 @@ def submit(body: Submission, user=Depends(owner)):
     # not reuse a Qwen fallback when someone requests Fast again.
     cache = {"owner": user, "url": identity, "target_language": target, "voice_mode": "match",
              "quality_requested": requested, "render_quality": effective, "match_engine": engine,
+             "screen_text_version": SCREEN_TEXT_VERSION,
              **live_media_query(stamp, include_cache=True),
              "$and": [{"$or": [{"deleted": {"$ne": True}}, {"cache_retained": True}]}]}
     try:
@@ -379,7 +382,7 @@ def submit(body: Submission, user=Depends(owner)):
             return summary(cached)
         job = dict(_id=str(uuid4()), owner=user, request_id=request_id, request_keys=[request_id],
                    url=identity, target_language=target, voice_mode="match", quality_requested=requested,
-                   render_quality=effective, state="queued", stage="Queued", created=stamp,
+                   render_quality=effective, required_screen_text_version=SCREEN_TEXT_VERSION, state="queued", stage="Queued", created=stamp,
                    priority=0, queue_seq=next_position(), attempt=0)
         if engine:
             job["match_engine"] = engine

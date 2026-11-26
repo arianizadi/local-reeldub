@@ -76,7 +76,7 @@ class Coordinator:
 
     def claim(self, slot, request_id):
         sent = time.monotonic()
-        body = {"request_id": request_id, "upload_voice_protocol": 1, "match_quality_protocol": 1}
+        body = {"request_id": request_id, "upload_voice_protocol": 1, "match_quality_protocol": 1, "screen_text_protocol": 1}
         if kitten_match_ready(require_service=True):
             body["kitten_match"] = True
         with self.request("POST", f"/v1/slots/{slot}/claim", json=body) as r:
@@ -151,9 +151,10 @@ class AssignedJob:
 
     def publish(self, path, metadata, poster):
         limits = {"source_language": 24, "first_caption": 240, "asr_model": 120,
-                  "translation_model": 120, "voice_model": 120}
+                  "translation_model": 120, "voice_model": 120, "screen_text_engine": 120}
         metadata = {**{k: str(metadata[k])[:limit] for k, limit in limits.items() if metadata.get(k)},
-                    **{k: metadata[k] for k in ("media_seconds", "audio_mix_version", "rendered_voice_mode") if k in metadata}}
+                    **{k: metadata[k] for k in ("media_seconds", "audio_mix_version", "rendered_voice_mode",
+                                               "screen_text_version", "screen_text_count") if k in metadata}}
         details = base64.urlsafe_b64encode(json.dumps(metadata, ensure_ascii=True, separators=(",", ":")).encode()).decode()
         with self.coordinator.request("PUT", self.path + "/result", headers={
                 **self.headers, "Content-Type": "application/octet-stream", "X-ReelDub-Details": details},

@@ -84,6 +84,19 @@ class SelfHostQueue(TestCase):
         with patch.dict(os.environ, {"REELDUB_KITTEN_MATCH": "0"}):
             self.assertEqual(self.submit(quality="fast")["quality"], "best")
 
+    def test_previous_audio_only_cache_is_available_but_a_new_share_runs_ocr(self):
+        old = self.submit(quality="best")
+        db().jobs.update_one({"_id": old["id"]}, {"$set": {"state": "done", "artifact": "test-only"},
+                                                   "$unset": {"required_screen_text_version": ""}})
+        fresh = self.submit(quality="best")
+        self.assertNotEqual(old["id"], fresh["id"])
+        self.assertEqual(api.job_status(old["id"], self.user)["state"], "done")
+        self.assertIsNone(worker.claim(studio=True, screen_text=False))
+        self.assertEqual(worker.claim(studio=True)["_id"], fresh["id"])
+        db().jobs.update_one({"_id": fresh["id"]}, {"$set": {"state": "done", "artifact": "new-file",
+                                                             "screen_text_version": 1, "screen_text_count": 0}})
+        self.assertEqual(self.submit(quality="best")["id"], fresh["id"])
+
     def test_failed_kitten_requeues_once_and_cannot_be_cached_as_kitten(self):
         job = self.submit(quality="fast")
         self.assertEqual(job["quality"], "fast")
@@ -94,7 +107,7 @@ class SelfHostQueue(TestCase):
         stored = db().jobs.find_one({"_id": job["id"]})
         self.assertEqual((stored["quality_requested"], stored["render_quality"], stored["state"]), ("fast", "best", "queued"))
         self.assertNotIn("match_engine", stored)
-        db().jobs.update_one({"_id": job["id"]}, {"$set": {"state": "done", "artifact": "test-only"}})
+        db().jobs.update_one({"_id": job["id"]}, {"$set": {"state": "done", "artifact": "test-only", "screen_text_version": 1}})
         self.assertNotEqual(self.submit(quality="fast")["id"], job["id"])
         with patch.dict(os.environ, {"REELDUB_KITTEN_MATCH": "0"}):
             self.assertEqual(self.submit(quality="fast")["id"], job["id"])

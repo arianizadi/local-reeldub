@@ -1,4 +1,5 @@
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import gc
 import json
 import os
@@ -13,11 +14,13 @@ import numpy as np
 from faster_whisper import WhisperModel
 
 from server.progress import report
-from server.gpu import transcription_device
+from server.gpu import stage, transcription_device
+from index_translate import translated_tracks
+from screen_ocr import detect_tracks
 from server.languages import LANGUAGES
 from server.upload_voice import (KITTEN_MATCH, KITTEN_MATCH_MODEL,
                                  VOICE_ERRORS, kitten_match_ready)
-from server.source import inspect_video
+from server.source import SCREEN_TEXT_VERSION, inspect_video
 from server.video_url import video_url
 from server.download import download_reel
 from clean_background import leakage_regions, matching_dialogue, merge_regions, suppress_unresolved
@@ -90,6 +93,47 @@ def timed_lines(candidates, duration):
     return lines
 
 
+def has_audio_stream(media, remote):
+    audio = subprocess.check_output(["ffprobe", "-v", "error", *source_input_options(remote),
+                                     "-select_streams", "a:0", "-show_entries", "stream=index",
+                                     "-of", "csv=p=0", media], timeout=30)
+    return bool(audio.strip())
+
+
+def translate_screen(tracks, language, target):
+    if not tracks:
+        return []
+    print("Translating on-screen text…", flush=True)
+    with stage("translation"):
+        return translated_tracks(tracks, LANGUAGES[target].name, language)
+
+
+def save_render(folder, dest, tracks, **metadata):
+    if filename := os.getenv("REELDUB_METADATA_FILE"):
+        path = Path(filename)
+        details = json.loads(path.read_text()) if path.is_file() else {}
+        engine = folder / "screen-ocr-engine.txt"
+        if engine.is_file():
+            details["screen_text_engine"] = engine.read_text().strip()[:120]
+        details.update(metadata, screen_text_version=SCREEN_TEXT_VERSION, screen_text_count=len(tracks))
+        path.write_text(json.dumps(details, ensure_ascii=False))
+    os.link(folder / "finished.mp4", dest)
+    print(dest)
+
+
+def text_only(media, folder, dest, language, target, remote):
+    print("Reading on-screen text…", flush=True)
+    regions = detect_tracks(media, folder, source_language=language, remote=remote)
+    tracks = translate_screen(regions, language, target)
+    if not tracks:
+        raise ValueError("No translatable speech or on-screen text detected.")
+    print("Encoding video…", flush=True)
+    render(media, [], folder, target, remote=remote, screen_tracks=tracks)
+    save_render(folder, dest, tracks, rendered_voice_mode="text_only",
+                first_caption=tracks[0]["translation"][:240],
+                translation_model="IndexTeam/Index-Translate-9B-Q5_K_M")
+
+
 def run(args):
     value = args.input or input("Paste a public video link (or a video path): ").strip()
     target = args.target_language
@@ -122,9 +166,16 @@ def run(args):
             if media.stat().st_size > 250 * 1024 * 1024:
                 raise ValueError("Choose a video under 250 MiB.")
             report(duration=float(inspect_video(media)))
+        if not has_audio_stream(media, remote):
+            return text_only(media, folder, dest, args.language, target, remote)
         source = folder / "source.wav"
         ff(*source_input_options(remote), "-i", media, *source_time_limit(), "-map", "0:a:0", "-vn", "-ac", "2", "-ar", str(RATE),
            "-c:a", "pcm_s16le", "-rf64", "auto", source)
+        # Muted uploads sometimes carry a full PCM track of digital silence.
+        import soundfile as sf
+        with sf.SoundFile(source) as samples:
+            if not any(np.abs(block).max() > 1e-4 for block in samples.blocks(blocksize=65536)):
+                return text_only(media, folder, dest, args.language, target, remote)
         analysis_audio = source
         worker = APP / ".qwen-venv/bin/python"
         if args.background == "separate":
@@ -148,12 +199,16 @@ def run(args):
             if regions:
                 suppress_unresolved(folder / "background.wav", regions)
         if not (segments or drafts):
-            raise ValueError("No translatable speech detected.")
+            return text_only(media, folder, dest, language, target, remote)
         gc.collect()
         print("Identifying speakers and timing lines…", flush=True)
         speech = mono(analysis_audio, "speech.f32") if analysis_audio != source else audio
         turns = identify_turns(speech)
         if not turns:
+            # Whisper can hallucinate dialogue over music. Only keep the original
+            # soundtrack when there is neither a speaker turn nor confident speech.
+            if all(getattr(s, "no_speech_prob", 0) >= 0.6 for s in [*segments, *drafts]):
+                return text_only(media, folder, dest, language, target, remote)
             raise ValueError(VOICE_ERRORS["unclear_speaker"])
         candidates = assign_lines(segments, turns)
         english_cues = assign_lines(drafts, turns)
@@ -205,26 +260,25 @@ def run(args):
                 for i in missing:
                     lines[i]["reference_text"] = transcribe_reference(verifier, speech, spans[i], language, beam)
                 del verifier
-        print(f"Synthesizing {output.name} voices…", flush=True)
-        synthesize(lines, folder, target, args.lab_runtime, args.match_engine)
-        print("Mixing soundtrack…", flush=True)
-        mix(lines, source, folder)
+        # OCR uses the CPU. Let it read the picture while the selected voice engine
+        # owns the GPU, then acquire the translation slot for any detected passages.
+        with ThreadPoolExecutor(max_workers=1) as reader:
+            regions = reader.submit(detect_tracks, media, folder, source_language=language, remote=remote)
+            print(f"Synthesizing {output.name} voices…", flush=True)
+            synthesize(lines, folder, target, args.lab_runtime, args.match_engine)
+            print("Mixing soundtrack…", flush=True)
+            mix(lines, source, folder)
+            print("Reading on-screen text…", flush=True)
+            tracks = translate_screen(regions.result(), language, target)
         print("Encoding video…", flush=True)
-        render(media, lines, folder, target, voice_label="Matched speaker", remote=remote)
-        metadata_file = os.getenv("REELDUB_METADATA_FILE")
-        if metadata_file:
-            path = Path(metadata_file)
-            details = json.loads(path.read_text()) if path.is_file() else {}
-            translator = folder / "translator.txt"
-            details.update(source_language=language, first_caption=lines[0]["text"].strip()[:240],
-                           asr_model=f"Whisper {args.model}",
-                           translation_model=translator.read_text() if translator.exists() else (
-                               "Same language" if language == target else f"Whisper {args.model}"),
-                           voice_model=KITTEN_MATCH_MODEL if args.match_engine else "Qwen3-TTS-12Hz-1.7B-Base",
-                           rendered_voice_mode="match", audio_mix_version=2)
-            path.write_text(json.dumps(details, ensure_ascii=False))
-        os.link(folder / "finished.mp4", dest)  # Publish atomically without overwriting another job.
-        print(dest)
+        render(media, lines, folder, target, voice_label="Matched speaker", remote=remote, screen_tracks=tracks)
+        translator = folder / "translator.txt"
+        save_render(folder, dest, tracks, source_language=language, first_caption=lines[0]["text"].strip()[:240],
+                    asr_model=f"Whisper {args.model}",
+                    translation_model=translator.read_text() if translator.exists() else (
+                        "Same language" if language == target else f"Whisper {args.model}"),
+                    voice_model=KITTEN_MATCH_MODEL if args.match_engine else "Qwen3-TTS-12Hz-1.7B-Base",
+                    rendered_voice_mode="match", audio_mix_version=2)
 
 
 def main():

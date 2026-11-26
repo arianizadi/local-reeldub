@@ -10,7 +10,7 @@ landrun=${REELDUB_LANDRUN:-$HOME/.local/opt/reeldub-host/landrun}
 python3 -c 'import ctypes,platform; assert platform.machine() in ("x86_64","aarch64") and ctypes.CDLL(None).syscall(444,0,0,1)>=6'
 args=(--best-effort --rox /usr --ro /etc --ro /sys --rw /proc --rox "$repo" --rw "$TMPDIR" --rw "$REELDUB_GPU_LOCK_DIR"
       --ro /dev/urandom --ro /dev/random --rw /dev/null --rw /dev/zero --rw /dev/shm)
-for path in "$repo"/{.tools,.venv,.qwen-venv,.omni-venv,.tts-graph,.kitten2} "$HOME/.cache/bandit-infer" "$HOME/.cache/reeldub/index-translate" "$HOME/.cache/local-reeldub" "$HOME/.cache/torch" "$HOME/.cache/huggingface/hub"; do
+for path in "$repo"/{.tools,.venv,.qwen-venv,.screen-ocr,.omni-venv,.tts-graph,.kitten2} "$HOME/.cache/bandit-infer" "$HOME/.cache/reeldub/index-translate" "$HOME/.cache/local-reeldub" "$HOME/.cache/torch" "$HOME/.cache/huggingface/hub"; do
   [[ ! -e $path ]] || args+=(--rox "$(realpath "$path")")
 done
 # Only the match subprocess receives a private filesystem handoff to the offline
@@ -41,7 +41,7 @@ for info in /proc/driver/nvidia/gpus/*/information; do
     [[ ! $minor =~ ^[0-9]+$ ]] || gpu_paths+=("/dev/nvidia$minor")
 done
 for path in "${gpu_paths[@]}"; do [[ ! -e $path ]] || args+=(--rw "$path"); done
-for name in HOME PATH LANG LC_ALL TMPDIR CUDA_VISIBLE_DEVICES REELDUB_LANDRUN LD_LIBRARY_PATH HF_HOME XDG_CACHE_HOME OMP_NUM_THREADS MKL_NUM_THREADS PYTHONUNBUFFERED HF_HUB_OFFLINE REELDUB_GPU_LOCK_DIR REELDUB_TTS_BATCH_SIZE REELDUB_FREE_CPU_ASR REELDUB_METADATA_FILE REELDUB_SERVICE_LIMITS REELDUB_STAGED_INPUT REELDUB_MAX_SECONDS; do
+for name in HOME PATH LANG LC_ALL TMPDIR CUDA_VISIBLE_DEVICES REELDUB_LANDRUN LD_LIBRARY_PATH HF_HOME XDG_CACHE_HOME OMP_NUM_THREADS MKL_NUM_THREADS PYTHONUNBUFFERED HF_HUB_OFFLINE REELDUB_GPU_LOCK_DIR REELDUB_TTS_BATCH_SIZE REELDUB_FREE_CPU_ASR REELDUB_METADATA_FILE REELDUB_SERVICE_LIMITS REELDUB_STAGED_INPUT REELDUB_MAX_SECONDS REELDUB_OCR_LANGUAGES; do
   [[ ! -v $name ]] || args+=(--env "$name")
 done
 args+=(--env PYTHONDONTWRITEBYTECODE=1 --env "CUDA_CACHE_PATH=$TMPDIR/cuda-cache" --env "TRITON_CACHE_DIR=$TMPDIR/triton" --env "TORCHINDUCTOR_CACHE_DIR=$TMPDIR/inductor" --env "MPLCONFIGDIR=$TMPDIR/matplotlib" --env "NUMBA_CACHE_DIR=$TMPDIR/numba")

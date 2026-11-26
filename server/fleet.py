@@ -24,7 +24,7 @@ from pymongo.errors import DuplicateKeyError
 from starlette.concurrency import run_in_threadpool
 
 from . import fleet_health, sources, worker
-from .upload_voice import KITTEN_ENGINE, KITTEN_MATCH, VOICE_ERRORS, correct_kitten_model, upload_mode, voice_scope
+from .upload_voice import KITTEN_ENGINE, KITTEN_MATCH, VOICE_ERRORS, render_mismatch, upload_mode, voice_scope
 from .db import db, media_db, now, separate_metadata, uses_postgres
 from .progress import STEPS, nearby_runtime
 from .source import MAX_SOURCE_SECONDS, SOURCE_ERRORS, TOO_LONG
@@ -61,7 +61,7 @@ MAX_VIDEO = 500 * 1024 * 1024
 MAX_POSTER = 512_000
 STAGES = set(STEPS) | {"Waiting for GPU", "Processing"}
 CLAIM_FIELDS = ("_id", "lease", "lease_end", "priority", "target_language", "render_quality",
-                "lab_mode", "lab_runtime", "lab_separation", "lab_voice", "voice_batch", "quoted_seconds", "narrator_engine", "match_engine", "quality_requested")
+                "lab_mode", "lab_runtime", "lab_separation", "lab_voice", "voice_batch", "quoted_seconds", "narrator_engine", "match_engine", "quality_requested", "required_screen_text_version")
 claim_capacity = BoundedSemaphore(3)  # Each advisory-lock holder also needs a SQL connection for its claim.
 
 
@@ -119,6 +119,7 @@ class Claim(StrictModel):
     request_id: UUID
     upload_voice_protocol: Literal[1] | None = None
     match_quality_protocol: Literal[1] | None = None
+    screen_text_protocol: Literal[1] | None = None
     kitten_narrator: bool = False
     kitten_match: bool = False
 
@@ -187,7 +188,10 @@ class Details(StrictModel):
     asr_model: str | None = Field(default=None, max_length=120)
     translation_model: str | None = Field(default=None, max_length=120)
     voice_model: str | None = Field(default=None, max_length=120)
-    rendered_voice_mode: Literal["narrator", "match"] | None = None
+    screen_text_engine: str | None = Field(default=None, max_length=120)
+    screen_text_version: Literal[1] | None = None
+    screen_text_count: int | None = Field(default=None, ge=0)
+    rendered_voice_mode: Literal["narrator", "match", "text_only"] | None = None
     audio_mix_version: int | None = Field(default=None, ge=0, le=1000)
     has_poster: bool | None = None
 
@@ -200,7 +204,7 @@ class Slot:
 
 
 @lru_cache(maxsize=512)
-def slot_state(key, upload_voice_protocol=None, kitten_narrator=False, kitten_match=False):
+def slot_state(key, upload_voice_protocol=None, kitten_narrator=False, kitten_match=False, screen_text_protocol=None):
     return Slot()
 
 
@@ -248,7 +252,7 @@ def claim(slot: int, body: Claim, node: Node = Depends(authenticated)):
     slot_key = f"{node.name}:{slot}"
     req = str(body.request_id)
     key = {"_id": slot_key + "/" + req}
-    gate = slot_state(slot_key, body.upload_voice_protocol, body.kitten_narrator, body.kitten_match)
+    gate = slot_state(slot_key, body.upload_voice_protocol, body.kitten_narrator, body.kitten_match, body.screen_text_protocol)
     store = fleet_health.tickets()
     with gate.lock:
         replay = store.find_one(key)
@@ -278,6 +282,8 @@ def claim(slot: int, body: Claim, node: Node = Depends(authenticated)):
                 existing = db().jobs.find_one(lookup)
                 if (existing and existing["state"] == "running" and not existing.get("deleted")
                         and existing.get("lease") and existing.get("lease_end", now()) > now()):
+                    if existing.get("required_screen_text_version") and not body.screen_text_protocol:
+                        return Response(status_code=204)
                     if existing.get("quality_requested") and not body.match_quality_protocol:
                         return Response(status_code=204)
                     if not body.upload_voice_protocol and upload_mode(existing) is not None:
@@ -304,7 +310,8 @@ def claim(slot: int, body: Claim, node: Node = Depends(authenticated)):
                 job = None if active else worker.claim(studio=node.studio, fleet_slot=slot_key, fleet_request=req,
                                                        avoid_recovery_node=avoid, upload_voices=bool(body.upload_voice_protocol),
                                                        kitten_narrator=body.kitten_narrator, kitten_match=body.kitten_match,
-                                                       alternatives=alternatives, match_qualities=bool(body.match_quality_protocol),
+                                                       alternatives=alternatives, screen_text=bool(body.screen_text_protocol),
+                                                       match_qualities=bool(body.match_quality_protocol),
                                                        allow_best_fallback=body.kitten_match or not fleet_health.has_kitten_worker(node.name))
                 if not job:
                     gate.wake.watch_active_leases()
@@ -548,11 +555,8 @@ async def result(request: Request, job=Depends(current_job)):
     if request.headers.get("content-type", "").split(";")[0] != "application/octet-stream":
         raise HTTPException(415, "Binary result required.")
     details = result_details(request)
-    expected_voice = upload_mode(job)
-    if expected_voice is not None and details.get("rendered_voice_mode") != expected_voice:
-        raise HTTPException(422, "Rendered voice mode does not match the confirmed job.")
-    if not correct_kitten_model(job, details.get("voice_model")):
-        raise HTTPException(422, "Rendered voice model does not match the confirmed narrator or speaker matcher.")
+    if problem := render_mismatch(job, details):
+        raise HTTPException(422, problem)
     if not job.get("staged_source") or job.get("staged_lease") != job["lease"]:
         raise HTTPException(422, "Prepare the assigned source first.")
     if job.get("quoted_seconds") and details["media_seconds"] > job["quoted_seconds"] + 1:

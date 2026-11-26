@@ -32,3 +32,5 @@ ios/Config/LocalSigning.xcconfig
 .omni-venv/
 
 .kitten2
+
+.screen-ocr/

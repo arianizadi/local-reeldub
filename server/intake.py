@@ -105,7 +105,7 @@ def fetch(body: Reel):
         raise HTTPException(422, str(error)) from error
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         raise HTTPException(
-            422, "The site could not provide a public video with audio. Try sharing the video file."
+            422, "The site could not provide a public video. Try sharing the video file."
         ) from error
     finally:
         if not handing_off:

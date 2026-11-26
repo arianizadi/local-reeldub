@@ -17,7 +17,7 @@ from pymongo.errors import ConnectionFailure, ExecutionTimeout, PyMongoError, WT
 
 from .source import MAX_SOURCE_SECONDS, SOURCE_ERRORS, TOO_LONG
 from .languages import outputs
-from .upload_voice import (KITTEN_ENGINE, KITTEN_MATCH, VOICE_ERRORS, correct_kitten_model, kitten_match_ready,
+from .upload_voice import (KITTEN_ENGINE, KITTEN_MATCH, VOICE_ERRORS, render_mismatch, kitten_match_ready,
                            kitten_ready, upload_mode, voice_scope)
 from .db import media_db, QUEUE_ORDER, db, now, uses_postgres
 from .gpu import pipeline_slot
@@ -34,6 +34,7 @@ MAX_ATTEMPTS = 3
 STAGES = {"Waiting for GPU capacity": "Waiting for GPU", "GPU stage: ": "Processing", "Downloading video": "Downloading", "Separating original": "Separating audio",
           "Cleaning residual": "Cleaning background voices", "Listening with": "Transcribing", "Identifying speakers": "Identifying voices",
           "Translating the source": "Translating", "Synthesizing ": "Voicing",
+          "Reading on-screen": "Reading on-screen text", "Translating on-screen": "Translating on-screen text",
           "Mixing soundtrack": "Mixing", "Encoding video": "Encoding"}
 
 def render_error(stage, diagnostic):
@@ -46,6 +47,8 @@ def render_error(stage, diagnostic):
         if "can't be seen by certain audiences" in diagnostic:
             return "Instagram restricts who can view this Reel. ReelDub could not download it."
         return "ReelDub could not download this video. Check that the link opens publicly."
+    if "no translatable speech or on-screen text detected" in diagnostic:
+        return "ReelDub could not find speech or readable text to translate."
     if "no translatable speech detected" in diagnostic or "no spoken lines to render" in diagnostic:
         return "ReelDub could not detect speech to dub in this video."
     if "neither translator produced an english dub" in diagnostic:
@@ -54,7 +57,7 @@ def render_error(stage, diagnostic):
 
 
 def claim(studio=None, fleet_slot=None, fleet_request=None, avoid_recovery_node=None, upload_voices=True,
-          kitten_narrator=None, alternatives=None, kitten_match=None, match_qualities=True, allow_best_fallback=True):
+          kitten_narrator=None, alternatives=None, kitten_match=None, match_qualities=True, allow_best_fallback=True, screen_text=True):
     database = db()
     stamp = now()
     expired = {"state": "running", "fleet_slot": None, "lease_end": {"$lt": stamp}}
@@ -73,6 +76,8 @@ def claim(studio=None, fleet_slot=None, fleet_request=None, avoid_recovery_node=
         candidate["narrator_engine"] = None
     if kitten_match is None:
         kitten_match = kitten_match_ready(require_service=True)
+    if not screen_text:
+        candidate["required_screen_text_version"] = None
     if not match_qualities:
         candidate["quality_requested"] = None
     if not (studio and upload_voices and kitten_match):
@@ -236,7 +241,7 @@ def process(job, fleet=None):
         with tempfile.TemporaryDirectory(prefix="reeldub-job-") as temp:
             dest = Path(temp) / "dub.mp4"
             log = Path(temp) / "render.log"
-            names = {"PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "CUDA_VISIBLE_DEVICES",
+            names = {"PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "REELDUB_OCR_LANGUAGES", "CUDA_VISIBLE_DEVICES",
                      "LD_LIBRARY_PATH", "HF_HOME", "XDG_CACHE_HOME", "REELDUB_GPU_LOCK_DIR", "REELDUB_LANDRUN",
                      "REELDUB_MAX_SOURCE_SECONDS", "OMP_NUM_THREADS", "MKL_NUM_THREADS", "REELDUB_TTS_BATCH_SIZE"}
             if job.get("match_engine") == KITTEN_MATCH:
@@ -367,14 +372,12 @@ def process(job, fleet=None):
             seconds = float(subprocess.check_output(["ffprobe", "-v", "error", "-show_entries", "format=duration",
                             "-of", "csv=p=0", dest], text=True, timeout=30).strip())
             details = json.loads(metadata.read_text()) if metadata.is_file() else {}
-            expected_voice = upload_mode(job)
-            if expected_voice is not None and details.get("rendered_voice_mode") != expected_voice:
-                raise RuntimeError("The render engine did not confirm the selected voice mode.")
-            if not correct_kitten_model(job, details.get("voice_model")):
-                raise RuntimeError("The render engine did not confirm the selected voice model.")
+            if issue := render_mismatch(job, details):
+                raise RuntimeError(issue)
             details = {k: v for k, v in details.items() if k in
                        {"title", "author", "first_caption", "source_language", "asr_model",
-                        "translation_model", "voice_model", "rendered_voice_mode", "audio_mix_version"}}
+                        "translation_model", "voice_model", "rendered_voice_mode", "audio_mix_version",
+                        "screen_text_version", "screen_text_count", "screen_text_engine"}}
             if sampled_duration is not None:
                 details["source_seconds"] = ceil(sampled_duration)
             preview = subprocess.run(["ffmpeg", "-nostdin", "-loglevel", "error", "-ss", str(min(0.65, seconds / 3)),

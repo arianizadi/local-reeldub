@@ -60,6 +60,10 @@ For a recoverable single-host backup, wait for active jobs to finish, stop the s
 | Phone cannot connect | Open the same HTTPS address in Safari, check the proxy and verify that the phone can reach the private network. A phone’s `localhost` refers to the phone. |
 | Video link could not download | Check `docker compose logs intake egress`. Only single public videos supported by the installed yt-dlp extractor can be downloaded. A site may require sign-in, cookies or an IP from a particular region. Share your local copy from Photos or Files in the iPhone app. |
 
+## On-screen translation
+
+Compose installs the Tesseract runtime, its language packs and fonts in the worker image. Model setup also prepares the CPU PaddleOCR detector and Arabic-script recognizer in the `screen-ocr-env` volume. The worker mounts that volume read-only. Rebuild on upgrade with `./start-local.sh` so the worker and model setup use the same version. A native Linux installation can run `./setup-screen-ocr.sh` to prepare the optional Paddle models. The standard recognizer remains available if that installation fails. To override its language list, put installed Tesseract codes such as `REELDUB_OCR_LANGUAGES=eng+fas+fra` in the server’s `.env` and restart the worker.
+
 ## Previous hosted deployments
 
 Installing the self-host release does not convert Apple accounts or merge past libraries into a shared operator workspace. Keep a verified backup before modifying a live deployment. The historical account-backed API, StoreKit catalog and hosted Compose overlays were retired. For a clean personal instance, start a separate Compose project with its own generated `.env`, loopback port and volumes, then point the client at the new server.

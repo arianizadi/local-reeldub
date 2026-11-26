@@ -236,7 +236,7 @@ class IntakeTransportTests(TestCase):
             ("120.001", "119", "120.000", TOO_LONG),
             ("119", "120.001", "120", TOO_LONG),
             ("119", "120", "120.001", TOO_LONG),
-            ("N/A", "N/A", "N/A", "Choose a playable MP4 or MOV with audio, up to 4K."),
+            ("N/A", "N/A", "N/A", "Choose a playable MP4 or MOV, up to 4K."),
         ]:
             media = {"format": {"duration": container}, "streams": [
                 {"codec_type": "video", "codec_name": "h264", "width": 16, "height": 16, "duration": video},

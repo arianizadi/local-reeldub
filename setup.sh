@@ -15,8 +15,15 @@ if [[ "$(uname -s):$(uname -m)" != Linux:x86_64 ]] || ! command -v nvidia-smi >/
   echo "Voice matching requires a Linux x86-64 host with a compatible NVIDIA CUDA GPU." >&2
   exit 1
 fi
-for tool in ffmpeg ffprobe curl git; do
+for tool in ffmpeg ffprobe curl git tesseract; do
   command -v "$tool" >/dev/null || { echo "Install $tool and rerun setup." >&2; exit 1; }
+done
+ocr_packs=$(tesseract --list-langs 2>/dev/null)
+for pack in eng fas; do
+  if ! grep -Fxq "$pack" <<<"$ocr_packs"; then
+    echo "Install the Tesseract English and Persian language data. See README.md." >&2
+    exit 1
+  fi
 done
 if [[ "$kitten" == 1 ]] && ! command -v espeak-ng >/dev/null; then
   echo "Install espeak-ng for the synthetic Kitten installation test and rerun setup." >&2
@@ -37,6 +44,9 @@ uv pip install --python .qwen-venv/bin/python 'qwen-tts==0.1.1' 'bandit-infer @ 
 .qwen-venv/bin/python index_translate.py
 .qwen-venv/bin/python separate.py --prepare
 .qwen-venv/bin/python clean_background.py --prepare
+if ! ./setup-screen-ocr.sh; then
+  echo "Paddle OCR setup was unavailable. Tesseract will read on-screen text." >&2
+fi
 touch .qwen-venv/ready
 if [[ "$kitten" == 1 ]]; then ./setup-lab.sh kitten-match; fi
 echo "Models are ready. Run ./dub 'https://www.instagram.com/reel/SHORTCODE/'"

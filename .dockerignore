@@ -13,6 +13,7 @@
 !kitten-match
 !setup.sh
 !setup-lab.sh
+!setup-screen-ocr.sh
 !server/
 !server/**
 !deploy/

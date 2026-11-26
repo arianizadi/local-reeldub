@@ -29,13 +29,16 @@ USER reel
 CMD ["uvicorn","server.intake:app","--host","0.0.0.0","--port","8310","--no-access-log"]
 
 FROM base AS worker
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg sox espeak-ng curl ca-certificates git libgomp1 build-essential && rm -rf /var/lib/apt/lists/* && pip install --no-cache-dir uv
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg sox espeak-ng curl ca-certificates git libgomp1 build-essential \
+    tesseract-ocr tesseract-ocr-fas tesseract-ocr-eng tesseract-ocr-ara tesseract-ocr-rus tesseract-ocr-deu \
+    tesseract-ocr-fra tesseract-ocr-spa tesseract-ocr-ita tesseract-ocr-por tesseract-ocr-chi-sim tesseract-ocr-jpn tesseract-ocr-kor \
+    fonts-noto-core fonts-noto-cjk libgl1 libglib2.0-0 && rm -rf /var/lib/apt/lists/* && pip install --no-cache-dir uv
 COPY --chown=reel:reel pyproject.toml uv.lock ./
-RUN mkdir -p /run/reeldub-match /app/.qwen-venv /app/.kitten2 /home/reel/.cache && chown reel:reel /app /run/reeldub-match /app/.qwen-venv /app/.kitten2 /home/reel/.cache && chmod 0700 /run/reeldub-match
+RUN mkdir -p /run/reeldub-match /app/.qwen-venv /app/.screen-ocr /app/.kitten2 /home/reel/.cache && chown reel:reel /app /run/reeldub-match /app/.qwen-venv /app/.screen-ocr /app/.kitten2 /home/reel/.cache && chmod 0700 /run/reeldub-match
 USER reel
 ENV HOME=/home/reel UV_LINK_MODE=copy UV_PYTHON_DOWNLOADS=never
 RUN uv sync --frozen --python /usr/local/bin/python
-COPY --chown=reel:reel *.py dub kitten-match setup.sh setup-lab.sh ./
+COPY --chown=reel:reel *.py dub kitten-match setup.sh setup-lab.sh setup-screen-ocr.sh ./
 COPY --chown=reel:reel server server
 COPY --chown=reel:reel deploy/fleet deploy/fleet
 CMD ["python", "-m", "server.worker"]

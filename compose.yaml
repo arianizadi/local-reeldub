@@ -101,6 +101,7 @@ services:
     volumes:
       - model-cache:/home/reel/.cache
       - studio-env:/app/.qwen-venv
+      - screen-ocr-env:/app/.screen-ocr
       - kitten-env:/app/.kitten2
       - match-spool:/run/reeldub-match
     networks: [downloads]
@@ -152,6 +153,7 @@ services:
       REELDUB_REEL_LINKS: "1"
       REELDUB_KITTEN_MATCH_SPOOL: /run/reeldub-match
       REELDUB_MAX_SOURCE_SECONDS: ${REELDUB_MAX_SOURCE_SECONDS:-0}
+      REELDUB_OCR_LANGUAGES: ${REELDUB_OCR_LANGUAGES:-}
       WORKER_PROCESSES: ${WORKER_PROCESSES:-1}
       REELDUB_GPU_SCHEDULER: "1"
       REELDUB_GPU_PIPELINE_SLOTS: ${WORKER_PROCESSES:-1}
@@ -159,6 +161,7 @@ services:
     volumes:
       - model-cache:/home/reel/.cache
       - studio-env:/app/.qwen-venv:ro
+      - screen-ocr-env:/app/.screen-ocr:ro
       - kitten-env:/app/.kitten2:ro
       - match-spool:/run/reeldub-match
     networks: [database, intake]
@@ -179,6 +182,7 @@ networks:
 volumes:
   mongo-data: {}
   model-cache: {}
+  screen-ocr-env: {}
   studio-env: {}
   kitten-env: {}
   kitten-compile: {}

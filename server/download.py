@@ -79,13 +79,16 @@ def pack_tracks(tracks, output, max_bytes):
             if kind == "audio" and audio is None:
                 audio = (f"{index}:{stream['index']}", stream.get("codec_name"))
         inputs.extend([*LOCAL_MEDIA, "-i", str(track)])
-    if not video or not audio:
-        raise DownloadError("Choose a recorded video that includes an audio track.")
+    if not video:
+        raise DownloadError("Choose a recorded video.")
     video_codec = ["-c:v", "copy"] if video[1] in ("h264", "hevc", "av1", "vp9", "mpeg4") else [
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-threads", "2"]
-    audio_codec = ["-c:a", "copy"] if audio[1] == "aac" else ["-c:a", "aac", "-b:a", "128k"]
-    subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", *inputs, "-map", video[0], "-map", audio[0],
-                    *video_codec, *audio_codec, "-map_metadata", "-1", "-map_chapters", "-1",
+    audio_args = []
+    if audio:
+        codec = ["-c:a", "copy"] if audio[1] == "aac" else ["-c:a", "aac", "-b:a", "128k"]
+        audio_args = ["-map", audio[0], *codec]
+    subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", *inputs, "-map", video[0], *audio_args,
+                    *video_codec, "-map_metadata", "-1", "-map_chapters", "-1",
                     "-movflags", "+faststart", "-fs", str(max_bytes), "-f", "mp4", output],
                    check=True, timeout=120, stderr=subprocess.DEVNULL)
     if output.stat().st_size >= max_bytes:

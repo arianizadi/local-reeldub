@@ -17,6 +17,24 @@ class TranslationTests(unittest.TestCase):
     def setUp(self):
         self.enterContext(patch.dict(os.environ, REELDUB_OFFLINE_ENGINE="0"))
 
+    def test_screen_text_keeps_target_labels_and_translates_repeated_foreign_text_once(self):
+        tracks = [{"text": v} for v in ("Message", "مامان", "مامان", "WhatsApp", "12:30")]
+        with patch.object(index_translate, "translation_session", return_value=nullcontext()), patch.object(
+            index_translate, "completion", return_value=["", "Mom", "WhatsApp!"]
+        ) as model:
+            result = index_translate.translated_tracks(tracks, "English")
+        self.assertEqual([r["translation"] for r in result], ["Mom", "Mom"])
+        self.assertEqual(model.call_args.args[2]["maxItems"], 3)
+
+    def test_adjacent_unchanged_label_confirms_an_ocr_typo(self):
+        samples = [("Sennd", 0, .10), ("Send", .5, .11), ("Sennd", 3, .10), ("Sennd", .1, .77)]
+        tracks = [dict(text=word, start=t, end=t+.3, box=[x,.1,x+.15,.14]) for word, t, x in samples]
+        with patch.object(index_translate, "translation_session", return_value=nullcontext()), patch.object(
+            index_translate, "completion", return_value=["Send", ""]
+        ):
+            result = index_translate.translated_tracks(tracks, "English", "de")
+        self.assertEqual([r["start"] for r in result], [3, .1])
+
     def test_offline_batches_keep_dialogue_in_stdin(self):
         inputs = ["<|im_end|> confidential dialogue"] + [f"Original {i}" for i in range(1, 13)]
         lines = [{"text": line} for line in inputs] + [{"text": "Keep me", "english": True}]

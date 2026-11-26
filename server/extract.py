@@ -122,7 +122,7 @@ def extract(params):
                "js_runtimes": {"deno": {"path": deno}} if deno else {}, "remote_components": set(),
                "socket_timeout": 15, "retries": 2, "fragment_retries": 2, "max_filesize": size,
                "skip_unavailable_fragments": False, "external_downloader": {"default": "native"},
-               "fixup": "never", "format": "best/bestvideo+bestaudio", "format_sort": ["res:1080", "vcodec:h264", "acodec:aac"]}
+               "fixup": "never", "format": "best/bestvideo+bestaudio/bestvideo", "format_sort": ["res:1080", "vcodec:h264", "acodec:aac"]}
     with VideoDL(options) as ydl:
         info = ydl.extract_info(params["url"], download=False)
         if not info or info.get("_type", "video") != "video":

@@ -1,4 +1,8 @@
 from server.languages import LANGUAGES
+from screen_overlay import display_size, screen_filter
+from pathlib import Path
+import json
+import math
 import os
 import subprocess
 
@@ -83,18 +87,53 @@ def source_input_options(remote=False):
     return ["-protocol_whitelist", "file", "-f", "mov"] if remote or os.getenv("REELDUB_SERVICE_LIMITS") else []
 
 
-def render(media, lines, folder, target="en", *, voice_label=None, remote=False):
+def render(media, lines, folder, target="en", *, voice_label=None, remote=False, screen_tracks=()):
     tag = "language=" + LANGUAGES[target].mp4
-    captions = folder / f"{target}.srt"
-    captions.write_text("".join(
-        f"{i}\n{clock(line['start'])} --> {clock(line['spoken_end'])}\n{line['text']}\n\n"
-        for i, line in enumerate(lines, 1)
-    ), encoding="utf-8")
-    ff(*source_input_options(remote), "-i", media, "-i", folder / "mix.wav", "-i", captions,
-       *source_time_limit(), "-map", "0:v:0", "-map", "1:a:0", "-map", "2:s:0", "-map_metadata", "-1",
-       "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2", "-c:v", "libx264", "-crf", "19", "-preset", "fast",
-       "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-c:s", "mov_text",
-       "-metadata:s:a:0", tag, "-metadata:s:s:0", tag,
-       *(["-metadata", f"comment=AI-translated audio · {voice_label}",
-          "-metadata:s:a:0", f"handler_name=AI-translated audio · {voice_label}"] if voice_label else []),
-       "-disposition:s:0", "default", "-movflags", "+faststart", folder / "finished.mp4")
+    media, folder = Path(media).resolve(), Path(folder).resolve()
+    opts = source_input_options(remote)
+    inputs = [*opts, "-i", media]
+    graph = None
+    if screen_tracks:
+        width, height = display_size(media, opts)
+        graph = screen_filter(screen_tracks, folder, width, height, target)
+    video = (["-filter_complex", graph, "-map", "[screen]"] if graph else
+             ["-map", "0:v:0", "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2"])
+    if lines:
+        captions = folder / f"{target}.srt"
+        captions.write_text("".join(
+            f"{i}\n{clock(line['start'])} --> {clock(line['spoken_end'])}\n{line['text']}\n\n"
+            for i, line in enumerate(lines, 1)
+        ), encoding="utf-8")
+        inputs.extend(["-i", folder / "mix.wav", "-i", captions])
+        streams = ["-map", "1:a:0", "-map", "2:s:0", "-metadata:s:a:0", tag,
+                   "-c:s", "mov_text", "-metadata:s:s:0", tag, "-disposition:s:0", "default"]
+        if voice_label:
+            streams.extend(["-metadata", f"comment=AI-translated audio · {voice_label}",
+                            "-metadata:s:a:0", f"handler_name=AI-translated audio · {voice_label}"])
+    else:
+        # A text-only dub retains music and ambience. Older iPhone builds require an audio stream.
+        streams = ["-map", "0:a:0?"]
+        if os.getenv("REELDUB_SERVICE_LIMITS") == "1":
+            info = json.loads(subprocess.check_output([
+                "ffprobe", "-v", "error", *opts, "-show_entries", "stream=codec_type,duration:format=duration",
+                "-of", "json", media]))
+            if not any(s["codec_type"] == "audio" for s in info["streams"]):
+                picture = next(s for s in info["streams"] if s["codec_type"] == "video")
+                duration = float(picture.get("duration") or info["format"]["duration"])
+                if not math.isfinite(duration) or duration <= 0:
+                    raise ValueError("Cannot determine silent video's duration.")
+                limit = source_time_limit()
+                if limit:
+                    duration = min(duration, float(limit[1]))
+                inputs.extend(["-f", "lavfi", "-i", f"anullsrc=r=48000:cl=stereo:d={duration:.6f}"])
+                # Keep decode and presentation order aligned for variable-rate silent sources.
+                # Older MOV muxers can shorten the reported picture duration when reordering B-frames.
+                # FFmpeg 5 loses the last frame's hold when re-encoding variable-rate
+                # video. Set every packet duration from the next PTS, and the last from
+                # the media end in encoder ticks. A source can have just one frame.
+                packet_duration = f"if(gt(NEXT_PTS,PTS),NEXT_PTS-PTS,max(1,round({duration:.9f}/TB)-PTS))"
+                streams = ["-map", "1:a:0", "-bf:v", "0", "-bsf:v", f"setts=duration='{packet_duration}'"]
+    ff(*inputs, *source_time_limit(), *video, "-map_metadata", "-1", *streams,
+       "-fps_mode:v", "vfr", "-enc_time_base:v", "-1", "-c:v", "libx264", "-crf", "19", "-preset", "fast",
+       "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart",
+       folder / "finished.mp4", cwd=folder)
