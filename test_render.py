@@ -35,15 +35,44 @@ class SoundtrackTest(unittest.TestCase):
         restored, = spoken_segments([seg])
         self.assertEqual((restored.text, restored.start, restored.end), ("The train left.", 5, 8))
 
-    def test_direct_translation_needs_native_or_independent_speaker_support(self):
+    def test_direct_translation_needs_source_words_even_for_voiced_music(self):
+        from faster_whisper.transcribe import Segment, Word
         from reeldub import grounded_drafts
-        intro = dict(start=0, end=3.3)
-        speech = dict(start=3.3, end=6.5)
-        quiet_reply = dict(start=7., end=7.35)
-        turns = [SimpleNamespace(start=3.05,end=6.42), SimpleNamespace(start=3.1,end=3.3),
-                 SimpleNamespace(start=7.,end=7.32)]
-        self.assertEqual(grounded_drafts([intro, speech, quiet_reply], [speech], turns),
-                         [(speech, False), (quiet_reply, True)])
+        def cue(words):
+            timed = [Word(start, end, text, .9) for start, end, text in words]
+            return Segment(0, 0, timed[0].start, timed[-1].end, "".join(w.word for w in timed),
+                           [], 0., 0., 0., timed, 0.)
+        intro = cue([(0, 3.3, "unverified")])
+        hello = cue([(3.3, 3.6, "Hello"), (6.1, 6.5, " there")])
+        quiet_reply = cue([(7., 7.35, "Yes")])
+        outro = cue([(7.31, 7.45, "I"), (7.46, 8.1, " will"), (8.1, 9.9, " go")])
+        native = [dict(start=6., end=6.5), dict(start=7., end=7.35)]
+        turns = [SimpleNamespace(start=0, end=10, speaker=0)]
+        recovered = grounded_drafts([intro, hello, quiet_reply, outro], native, turns, 10)
+        self.assertEqual([(c["text"], c["start"], c["end"]) for c in recovered],
+                         [("Hello there", 6., 6.5), ("Yes", 7., 7.35)])
+
+    def test_retry_recovers_new_source_words_with_original_clock_and_without_context_duplicates(self):
+        from faster_whisper.transcribe import Segment, Word
+        from reeldub import recover_native
+        from unittest.mock import Mock
+        # At 20 s only the direct English decoder reported speech. The retry sees
+        # 8 s of earlier context and repeats a line already known to the renderer.
+        known = [SimpleNamespace(start=17., end=18., words=[])]
+        drafts = [*known, SimpleNamespace(start=20., end=20.42, words=[])]
+        words = [Word(5., 6., " 你好", .99), Word(8., 9., " 再见", .90)]
+        segment = Segment(0, 0, 5, 9, " 你好 再见", [], 0., 0., 0., words, 0.)
+        model = Mock()
+        model.transcribe.return_value = ([segment], None)
+        speech = np.zeros(32 * 16000, dtype=np.float32)
+        recovered, = recover_native(model, speech, "zh", 5, known, drafts)
+        self.assertEqual((recovered.start, recovered.end, recovered.text.strip()), (20., 21., "再见"))
+        self.assertEqual((recovered.words[0].start, recovered.words[0].end), (20., 21.))
+        self.assertEqual(model.transcribe.call_args.kwargs["task"], "transcribe")
+        self.assertEqual(model.transcribe.call_args.kwargs["language"], "zh")
+        model.reset_mock()
+        self.assertEqual(recover_native(model, speech, "zh", 5, known, known), [])
+        model.transcribe.assert_not_called()
 
     def test_kitten_reference_gap_transcribes_the_selected_pcm_window(self):
         from reeldub import transcribe_reference

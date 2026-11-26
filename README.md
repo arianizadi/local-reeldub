@@ -74,9 +74,9 @@ In Instagram, tap **Share → Share to… → ReelDub**. In YouTube, Safari and 
 
 Share a video and select the output language as usual. ReelDub also looks for writing in the picture, including messages, signs and titles. When it can read and translate a passage, it blurs the original and places the translation in the same area for the time it appears. This text is part of the exported picture. The captions switch controls the spoken dialogue separately.
 
-ReelDub generates the dialogue captions locally from the same script as the dubbed voice. It checks for speech before transcribing and filters subtitle bylines that the speech or translation model can invent during quiet passages.
+ReelDub generates dialogue captions and dubbed voices from the same script. When an English line has no matching source-language speech, the worker rechecks that part of the isolated voice track. It skips unconfirmed lines and filters spurious subtitle credits.
 
-The worker detects writing locally, reads each region with multilingual PP-OCRv6, the Arabic-script PP-OCRv5 recognizer or Tesseract, and translates detected passages with Index. Signs, captions and chat messages can be in a different language from the soundtrack. The worker keeps same-language labels, and can translate a silent video containing readable foreign text. Small, fleeting, stylized or moving writing can be missed. Share an older video again to render it with on-screen translation.
+The worker reads writing with multilingual PP-OCRv6, the Arabic-script PP-OCRv5 recognizer or Tesseract, then translates it with Index. It compares readings across frames when lettering is hard to read and uses nearby dialogue to distinguish a written name from an ordinary word. Signs, captions and chat messages can be in a different language from the soundtrack. The worker keeps same-language labels and can translate a silent video containing readable foreign text. Small, fleeting, stylized or moving writing can still be missed. Share an older video again to get a fresh render after a text-recognition update.
 
 ## What runs where?
 

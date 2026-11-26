@@ -14,6 +14,12 @@ from screen_overlay import ass_literal, display_size, label_columns, layout, scr
 
 
 class OverlayMaskTests(unittest.TestCase):
+    def test_short_single_word_stays_whole_as_its_box_moves(self):
+        for box in [(455, 1071, 701, 1265), (491, 1153, 634, 1269)]:
+            _, size, rows = layout("Magnolia", box, 720, 1280, (0, 720))
+            self.assertEqual(rows, ["Magnolia"])
+            self.assertGreater(size, 12)
+
     def test_simultaneous_chat_columns_fit_long_labels(self):
         tracks = [dict(start=0, end=2, box=(.1,.3,.28,.35)), dict(start=1, end=3, box=(.30,.3,.54,.35)),
                   dict(start=3, end=4, box=(.31,.3,.55,.35))]

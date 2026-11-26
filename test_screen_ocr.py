@@ -117,6 +117,57 @@ class ScreenWords(unittest.TestCase):
         self.assertEqual([p["box"] for p in parts], [a, b])
         self.assertEqual([(p["start"], p["end"]) for p in parts], [(1., 1.125), (1.125, 1.25)])
 
+    def test_uncertain_word_uses_nearby_independent_spelling(self):
+        frame = np.zeros((120, 200), np.uint8)
+        box = (.2, .2, .4, .3)
+
+        def resolve(readings, phrase, when):
+            first, *rest = [ocr.Line(text, box, 76, uncertain=True) for text in readings]
+            track = ocr.Track(first, 0, frame)
+            for index, row in enumerate(rest, 1):
+                track.update(row, frame, index / 4)
+            candidates = []
+            self.assertEqual(track.finish(1, candidates), [])
+            tracks = [{"text": phrase, "start": when, "end": when + 1}]
+            ocr.resolve_uncertain(tracks, candidates)
+            return [x["text"] for x in tracks[1:]]
+
+        self.assertEqual(resolve(["ariso", "mariso"], "Marisol is here", 20), ["Marisol"])
+        self.assertEqual(resolve(["ariso", "mariso"], "Marisol is here", 600), [])
+        self.assertEqual(resolve(["Paris", "Paris"], "a parish church", 10), [])
+        self.assertEqual(resolve(["Paris", "Paris"], "Paris is here", 10), ["Paris"])
+
+    def test_verified_reading_survives_later_weak_misreadings(self):
+        frame = np.zeros((120, 200), np.uint8)
+        box = (.2, .2, .4, .3)
+        track = ocr.Track(ocr.Line("Train", box, 98, verified=True), 0, frame)
+        for t in (.25, .5):
+            track.update(ocr.Line("Trail", box, 75, uncertain=True), frame, t)
+        self.assertEqual(track.finish(.75)[0]["text"], "Train")
+
+    def test_equally_uncertain_phrases_need_a_second_reading(self):
+        frame = np.zeros((120, 200), np.uint8)
+        box = (.2, .2, .4, .3)
+        labels = ["ROAD CLOSED", "ROAD CLOSER", "ROAD CLOVER"]
+        track = ocr.Track(ocr.Line(labels[0], box, 80, uncertain=True), 0., frame)
+        for i, text in enumerate(labels[1:], 1):
+            track.update(ocr.Line(text, box, 80, uncertain=True), frame, i / 4)
+        candidates = []
+        track.finish(.75, candidates)
+        regions = []
+        ocr.resolve_uncertain(regions, candidates)
+        self.assertEqual(regions, [])
+
+    def test_spelling_hints_count_frames_and_merge_spacing(self):
+        frame = np.zeros((120, 200), np.uint8)
+        box = (.2, .2, .4, .3)
+        base = "Around the cornet"
+        track = ocr.Track(ocr.Line(base, box, 84, uncertain=True,
+                                   alternatives=("Around thecorner", "Around the corner", "Around the core")), 0, frame)
+        track.update(ocr.Line(base, box, 84, uncertain=True,
+                              alternatives=("Around the corner",)), frame, .25)
+        self.assertEqual(track.regions(base, .5)[0]["alternatives"], ["Around the corner"])
+
     def test_specialized_reader_failure_falls_back_once(self):
         frame = np.full((120, 200), 240, dtype=np.uint8)
         with patch.object(ocr, "transcribe", return_value="header\n"):

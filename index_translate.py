@@ -1,5 +1,6 @@
 """Run the local Index translator over standard I/O or a per-render Unix socket."""
 from contextlib import contextmanager, nullcontext
+from bisect import bisect_left
 from difflib import SequenceMatcher
 import hashlib
 from http.client import HTTPConnection, HTTPException
@@ -7,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import re
 import shutil
 import socket
 import subprocess
@@ -185,10 +187,97 @@ def translate(lines, source_language, target):
         lines[i]["text"] = text.strip()
 
 
-def translated_tracks(tracks, target, source_language=None):
+# The dialogue has already been translated into one of the supported output
+# languages. This cheap prefilter avoids another model call for ordinary scenes.
+NAME_MENTION = re.compile(r"\b(?:names?|nom(?:s|bre|bres|e|es|i)?|namen?|имя|имени|именем|имена)\b"
+                          r"|名字|姓名|名前|이름|성함", re.I)
+
+
+def written_names(path, tracks, replacements, dialogue, target):
+    """Disambiguate an isolated word only where a speaker discusses writing a name."""
+    cues = [cue for cue in dialogue if NAME_MENTION.search(cue["text"])]
+    if not cues:
+        return {}
+    words = sorted((track["start"], i) for i, track in enumerate(tracks)
+                   if track.get("text") in replacements and "start" in track
+                   and track["text"].isalpha() and len(track["text"]) <= 24)
+    contexts = {}
+    for cue in cues:
+        # A cutaway can show the writing just after the speaker finishes.
+        start = bisect_left(words, (cue["start"], -1))
+        end = bisect_left(words, (cue["end"] + 6., -1))
+        occurrences = [i for _, i in words[start:end]]
+        if len({tracks[i]["text"] for i in occurrences}) == 1:
+            contexts.setdefault(cue["text"][:400], set()).update(occurrences)
+    named = {}
+    cues = list(contexts)
+    for offset in range(0, len(cues), 10):
+        batch = cues[offset:offset + 10]
+        question = ("For each separate dialogue line decide whether the speaker is talking about writing, "
+                    "engraving, printing, signing or displaying someone's personal name. Answer each with a "
+                    "JSON boolean. If they only mention a person or they talk about something else, choose false.\n")
+        flags = completion(path, question + json.dumps(batch, ensure_ascii=False), {
+            "type": "array", "minItems": len(batch), "maxItems": len(batch), "items": {"type": "boolean"}})
+        if not isinstance(flags, list) or len(flags) != len(batch) or not all(type(x) is bool for x in flags):
+            continue
+        for cue, flag in zip(batch, flags):
+            if flag:
+                for i in contexts[cue]:
+                    named.setdefault(tracks[i]["text"], set()).add(i)
+    result = {}
+    originals = list(named)
+    for offset in range(0, len(originals), 10):
+        batch = originals[offset:offset + 10]
+        # Only supply the writing itself here. Names mentioned in dialogue
+        # are never candidates for a replacement that doesn't appear on screen.
+        prompt = (f"The following on-screen items are personal names. Write each name in its conventional "
+                  f"form in {target}, using the usual writing system for that language. Transliterate the "
+                  "original pronunciation. Return only a JSON array in the original order.\n")
+        values = completion(path, prompt + json.dumps(batch, ensure_ascii=False), {
+            "type": "array", "minItems": len(batch), "maxItems": len(batch), "items": {"type": "string"}})
+        if isinstance(values, list) and len(values) == len(batch):
+            for word, value in zip(batch, values):
+                if isinstance(value, str):
+                    value = " ".join(value.split())
+                    if 0 < len(value) <= max(32, len(word) * 4) and any(c.isalpha() for c in value):
+                        result.update(dict.fromkeys(named[word], value))
+    return result
+
+
+def reconcile_readings(path, tracks, source_language):
+    """Choose among actual frame readings before translating an uncertain passage."""
+    chosen = {}
+    result = []
+    for track in tracks:
+        primary = track["text"]
+        alternatives = track.get("alternatives", ())
+        if alternatives and len(primary) <= 240:
+            values = [unicodedata.normalize("NFKC", s) for s in (primary, *alternatives[:8])
+                      if isinstance(s, str) and 0 < len(s) <= 240]
+            # The Arabic-script reader can use Arabic codepoints for the
+            # visually equivalent Persian glyphs in an otherwise Persian word.
+            if source_language == "fa":
+                values = [s.replace("ي", "ی").replace("ك", "ک") for s in values]
+            variants = tuple(dict.fromkeys(values))
+            if len(variants) > 1 and variants not in chosen:
+                prompt = ("以下是对同一段屏幕文字的数次 OCR 候选读法。请根据原语言的词义、搭配和上下文，"
+                          "选出语法语义最通顺、且最合理的一条。注意模糊的小点或笔画可能使个别字母误读。"
+                          "输出选中的完整原文，不要翻译。候选：\n")
+                try:
+                    reading = completion(path, prompt + json.dumps(variants, ensure_ascii=False), {"type": "string"})
+                except (ValueError, OSError, RuntimeError, HTTPException):
+                    reading = None
+                # Keep any wording invented by the model out of the picture.
+                chosen[variants] = reading if reading in variants else primary
+            if variants:
+                track = {**track, "text": chosen.get(variants, variants[0])}
+        result.append(track)
+    return result
+
+
+def translated_tracks(tracks, target, source_language=None, dialogue=()):
     """Keep only legible text that needs a replacement in the selected language."""
-    originals = list(dict.fromkeys(t["text"] for t in tracks if any(c.isalpha() for c in t["text"])))
-    if not originals:
+    if not any(c.isalpha() for t in tracks for c in t["text"]):
         return []
     replacements = {}
     # Index was trained with Chinese instruction templates. Audio is only a hint:
@@ -206,6 +295,8 @@ def translated_tracks(tracks, target, source_language=None):
         return "".join(c for c in unicodedata.normalize("NFKC", value).casefold() if c.isalnum())
 
     with translation_session() as path:
+        tracks = reconcile_readings(path, tracks, source_language)
+        originals = list(dict.fromkeys(t["text"] for t in tracks if any(c.isalpha() for c in t["text"])))
         for i in range(0, len(originals), 10):
             batch = originals[i:i + 10]
             instruction = (
@@ -225,6 +316,11 @@ def translated_tracks(tracks, target, source_language=None):
                 if (value and len(value) <= max(64, len(original) * 5)
                         and any(c.isalpha() for c in value) and normalized(original) != normalized(value)):
                     replacements[original] = value
+        try:
+            names = written_names(path, tracks, replacements, dialogue, target)
+        except (ValueError, OSError, RuntimeError, HTTPException):
+            # The base translation is valid even if the optional name check fails.
+            names = {}
     # A moving target-language label can be misread during a zoom. A correction
     # by one character is never sufficient evidence by itself to discard a real
     # translation. Require the corrected label at that location in nearby frames.
@@ -233,11 +329,13 @@ def translated_tracks(tracks, target, source_language=None):
         if track["text"] not in replacements and "box" in track:
             unchanged.setdefault(normalized(track["text"]), []).append(track)
     result = []
-    for track in tracks:
-        value = replacements.get(track["text"])
+    for i, track in enumerate(tracks):
+        value = names.get(i, replacements.get(track["text"]))
         if not value:
             continue
         before, after = normalized(track["text"]), normalized(value)
+        if before == after:
+            continue
         neighbors = unchanged.get(after)
         if neighbors and "box" in track and len(after) >= 4:
             edits = sum(max(b-a, d-c) for op, a, b, c, d in SequenceMatcher(None, before, after).get_opcodes()

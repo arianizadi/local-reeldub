@@ -45,7 +45,8 @@ def correct_kitten_model(job, model):
 
 def render_mismatch(job, details):
     required_filter = job.get("required_caption_filter_version")
-    if required_filter and details.get("caption_filter_version") != required_filter:
+    filter_version = details.get("caption_filter_version")
+    if required_filter and (type(filter_version) is not int or filter_version < required_filter):
         return "The render engine did not confirm dialogue verification."
     version = details.get("screen_text_version")
     count = details.get("screen_text_count")

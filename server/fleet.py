@@ -27,7 +27,7 @@ from . import fleet_health, sources, worker
 from .upload_voice import KITTEN_ENGINE, KITTEN_MATCH, VOICE_ERRORS, render_mismatch, upload_mode, voice_scope
 from .db import db, media_db, now, separate_metadata, uses_postgres
 from .progress import STEPS, nearby_runtime
-from .source import MAX_SOURCE_SECONDS, SOURCE_ERRORS, TOO_LONG
+from .source import CAPTION_FILTER_VERSION, MAX_SOURCE_SECONDS, SCREEN_TEXT_VERSION, SOURCE_ERRORS, TOO_LONG
 from .wakeup import Wake, notify
 
 
@@ -120,8 +120,8 @@ class Claim(StrictModel):
     request_id: UUID
     upload_voice_protocol: Literal[1] | None = None
     match_quality_protocol: Literal[1] | None = None
-    screen_text_protocol: Literal[1, 2] | None = None
-    caption_filter_protocol: Literal[1] | None = None
+    screen_text_protocol: int | None = Field(default=None, ge=1, le=SCREEN_TEXT_VERSION, strict=True)
+    caption_filter_protocol: int | None = Field(default=None, ge=1, le=CAPTION_FILTER_VERSION, strict=True)
     kitten_narrator: bool = False
     kitten_match: bool = False
 
@@ -191,8 +191,8 @@ class Details(StrictModel):
     translation_model: str | None = Field(default=None, max_length=120)
     voice_model: str | None = Field(default=None, max_length=120)
     screen_text_engine: str | None = Field(default=None, max_length=120)
-    screen_text_version: Literal[1, 2] | None = None
-    caption_filter_version: Literal[1] | None = None
+    screen_text_version: int | None = Field(default=None, ge=1, le=SCREEN_TEXT_VERSION, strict=True)
+    caption_filter_version: int | None = Field(default=None, ge=1, le=CAPTION_FILTER_VERSION, strict=True)
     screen_text_count: int | None = Field(default=None, ge=0)
     rendered_voice_mode: Literal["narrator", "match", "text_only"] | None = None
     audio_mix_version: int | None = Field(default=None, ge=0, le=1000)
@@ -286,7 +286,7 @@ def claim(slot: int, body: Claim, node: Node = Depends(authenticated)):
                 existing = db().jobs.find_one(lookup)
                 if (existing and existing["state"] == "running" and not existing.get("deleted")
                         and existing.get("lease") and existing.get("lease_end", now()) > now()):
-                    if existing.get("required_caption_filter_version") and not body.caption_filter_protocol:
+                    if (existing.get("required_caption_filter_version") or 0) > (body.caption_filter_protocol or 0):
                         return Response(status_code=204)
                     if (existing.get("required_screen_text_version") or 0) > (body.screen_text_protocol or 0):
                         return Response(status_code=204)
@@ -317,7 +317,7 @@ def claim(slot: int, body: Claim, node: Node = Depends(authenticated)):
                                                        avoid_recovery_node=avoid, upload_voices=bool(body.upload_voice_protocol),
                                                        kitten_narrator=body.kitten_narrator, kitten_match=body.kitten_match,
                                                        alternatives=alternatives, screen_text=body.screen_text_protocol or 0,
-                                                       caption_filter=bool(body.caption_filter_protocol),
+                                                       caption_filter=body.caption_filter_protocol or 0,
                                                        match_qualities=bool(body.match_quality_protocol),
                                                        allow_best_fallback=body.kitten_match or not fleet_health.has_kitten_worker(node.name))
                 if not job:

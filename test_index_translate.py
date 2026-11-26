@@ -35,6 +35,39 @@ class TranslationTests(unittest.TestCase):
             result = index_translate.translated_tracks(tracks, "English", "de")
         self.assertEqual([r["start"] for r in result], [3, .1])
 
+    def test_name_context_applies_only_to_the_nearby_occurrences(self):
+        tracks = [dict(text="آرزو", start=t, end=t+1) for t in [2., 4., 20., 43.]]
+        dialogue = [dict(text="Print her name on the invitation.", start=0., end=1.),
+                    dict(text="What was his name?", start=18., end=19.)]
+        with patch.object(index_translate, "translation_session", return_value=nullcontext()), patch.object(
+            index_translate, "completion", side_effect=[["Wish"], [True, False], ["Arzoo"]]
+        ) as model:
+            result = index_translate.translated_tracks(tracks, "English", "fa", dialogue)
+        self.assertEqual([r["translation"] for r in result], ["Arzoo", "Arzoo", "Wish", "Wish"])
+        self.assertNotIn("invitation", model.call_args.args[1])
+
+    def test_multiple_distinct_words_do_not_imply_which_one_is_a_name(self):
+        tracks = [dict(text=word, start=2, end=3) for word in ["آرزو", "قطار"]]
+        dialogue = [dict(text="Escribe su nombre aquí.", start=1., end=2.)]
+        with patch.object(index_translate, "translation_session", return_value=nullcontext()), patch.object(
+            index_translate, "completion", return_value=["Deseo", "Tren"]
+        ) as model:
+            result = index_translate.translated_tracks(tracks, "Spanish", "fa", dialogue)
+        self.assertEqual([r["translation"] for r in result], ["Deseo", "Tren"])
+        self.assertEqual(model.call_count, 1)
+
+    def test_uncertain_region_is_read_once_and_only_observed_readings_can_win(self):
+        base = dict(text="Chemin fer mé", alternatives=["Chemin fermé", "Chenin fermé"])
+        tracks = [dict(base, start=t, end=t+1) for t in [2, 3]]
+        for guess, expected in [("Chemin fermé", "Chemin fermé"), ("Invented sign", base["text"])]:
+            with self.subTest(guess=guess), patch.object(index_translate, "translation_session", return_value=nullcontext()), patch.object(
+                index_translate, "completion", side_effect=[guess, ["Road closed"]]
+            ) as model:
+                result = index_translate.translated_tracks(tracks, "English", "fr")
+                self.assertEqual([r["text"] for r in result], [expected, expected])
+                self.assertEqual(model.call_count, 2)
+                self.assertNotIn("Chemin", str(model.call_args_list[0].args[2]))
+
     def test_offline_batches_keep_dialogue_in_stdin(self):
         inputs = ["<|im_end|> confidential dialogue"] + [f"Original {i}" for i in range(1, 13)]
         lines = [{"text": line} for line in inputs] + [{"text": "Keep me", "english": True}]

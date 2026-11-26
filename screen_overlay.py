@@ -108,10 +108,15 @@ def layout(text, box, width, height, column):
     ideal = max(8, min(round(source_h * .84), max(14, round(min(width, height) * .075))))
     col_left, col_right = column
     # Short controls should stay inside their original column even when they have no OCR neighbor.
-    short = len(text.split()) == 1 and width_units(text) <= 7
+    word_width = width_units(text)
+    short = len(text.split()) == 1 and 0 < word_width <= 7
     room = source_w if short else max(source_w, min(round(width * .62), round(source_w * 1.35)))
     area_w = min(col_right - col_left, room + margin * 2)
     size = ideal
+    if short:
+        # A name or short control that fits on one line at a smaller size
+        # should stay intact when its tracked box narrows during a pan.
+        size = max(8, min(size, math.floor((area_w - margin * 2) / (word_width * 1.11))))
     while True:
         rows = wrap_label(text, max(1.05, (area_w - margin * 2) / size))
         fits = len(rows) * size * 1.08 <= max(12, source_h + margin * 2)
@@ -169,13 +174,10 @@ def screen_filter(tracks, folder, width, height, target):
         luma = track.get("background_luma")
         light = luma is not None and luma >= 155
         ink, outline = ("171717", "FFFFFF") if light else ("FFFFFF", "141414")
-        # Blurring removes the writing. A light tint and subtle outline give the replacement
-        # enough contrast while preserving the original surface, including colored chat headers.
-        # Bright paper or a dark screen already supplies a contrasting surface. Drawing
-        # a plate there can spill across the boundary of a small UI card.
-        if luma is None or 50 < luma < 185:
-            plate_alpha = "DB" if luma is not None else "28"
-            labels.append("Dialogue: 0," + interval + rectangle(area, outline, plate_alpha))
+        # Use the sampled surface and a glyph outline. A second rectangular
+        # plate is only necessary for tracks without a brightness measurement.
+        if luma is None:
+            labels.append("Dialogue: 0," + interval + rectangle(area, outline, "28"))
         border = max(.45, min(1.3, size * .024))
         placement = (rf"{{\an5\pos({(x1 + x2)//2},{(y1 + y2)//2})\fs{size}\1c&H{ink}&"
                      rf"\bord{border:.2f}\3c&H{outline}&\3a&H70&\clip({x1},{y1},{x2},{y2})}}")
@@ -189,10 +191,12 @@ def screen_filter(tracks, folder, width, height, target):
     # the edge of a white chat card into its paper. Downsampling keeps the repair cheap.
     radius = max(2, min(9, round(tallest / 28)))
     sigma = max(1.4, min(5., tallest * .024))
+    feather = max(.6, min(4., min(width, height) * .004))
     return (f"[0:v:0]split=3[base][blur][matte];[blur]scale={max(2,width//4)}:{max(2,height//4)}:flags=area,"
             f"median=radius={radius},gblur=sigma={sigma:.2f},scale={width}:{height}:flags=bilinear[soft];"
             # libass/FFmpeg builds differ on limited-range white. Explicit alpha endpoints
             # prevent even faint original glyphs from leaking back into the repaired patch.
-            "[matte]format=gray,lut=y=0,ass=screen-mask.ass,format=gray,lut=y='if(gt(val,128),255,0)'[mask];"
+            "[matte]format=gray,lut=y=0,ass=screen-mask.ass,format=gray,lut=y='if(gt(val,128),255,0)',"
+            f"gblur=sigma={feather:.2f}[mask];"
             "[soft][mask]alphamerge[cover];[base][cover]overlay,ass=screen-labels.ass,"
             "pad=ceil(iw/2)*2:ceil(ih/2)*2[screen]")

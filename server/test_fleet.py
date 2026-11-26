@@ -27,7 +27,7 @@ from . import api, fleet, fleet_health, worker
 from .db import db, media_db, now, separate_metadata, setup_indexes, uses_postgres
 from .postgres import install
 from .wakeup import notify
-from .source import TOO_LONG
+from .source import CAPTION_FILTER_VERSION, SCREEN_TEXT_VERSION, TOO_LONG
 
 
 @contextmanager
@@ -107,36 +107,39 @@ class FleetIntegration(TestCase):
 
     def claim(self, node="alpha", request=None, slot=0):
         return self.req("POST", f"/v1/slots/{slot}/claim", node,
-                        json={"request_id": request or str(uuid4()), "upload_voice_protocol": 1, "match_quality_protocol": 1, "screen_text_protocol": 2, "caption_filter_protocol": 1})
+                        json={"request_id": request or str(uuid4()), "upload_voice_protocol": 1, "match_quality_protocol": 1, "screen_text_protocol": SCREEN_TEXT_VERSION, "caption_filter_protocol": CAPTION_FILTER_VERSION})
 
     def test_screen_protocol_versions_fence_claims_results_and_replays(self):
-        old = self.queue(required_screen_text_version=1, queue_seq=10)
-        fresh = self.queue(required_screen_text_version=2, queue_seq=1)
-        old_client = {"request_id": str(uuid4()), "screen_text_protocol": 1}
+        old = self.queue(required_screen_text_version=SCREEN_TEXT_VERSION - 1, queue_seq=10)
+        fresh = self.queue(required_screen_text_version=SCREEN_TEXT_VERSION, queue_seq=1)
+        old_client = {"request_id": str(uuid4()), "screen_text_protocol": SCREEN_TEXT_VERSION - 1}
         legacy = self.req("POST", "/v1/slots/0/claim", json=old_client).json()
         self.assertEqual(legacy["_id"], old["_id"])
         claimed = self.req("POST", "/v1/slots/0/claim", node="beta",
-                           json=old_client | {"screen_text_protocol": 2}).json()
+                           json=old_client | {"screen_text_protocol": SCREEN_TEXT_VERSION}).json()
         self.assertEqual(claimed["_id"], fresh["_id"])
         self.assertEqual(self.req("POST", "/v1/slots/0/claim", node="beta", json=old_client).status_code, 204)
-        stale_details = {"media_seconds": 1, "screen_text_version": 1, "screen_text_count": 0}
+        stale_details = {"media_seconds": 1, "screen_text_version": SCREEN_TEXT_VERSION - 1, "screen_text_count": 0}
         headers = {"Content-Type": "application/octet-stream", "X-ReelDub-Details":
                    base64.b64encode(json.dumps(stale_details).encode()).decode()}
         result = self.req("PUT", f"/v1/jobs/{claimed['_id']}/result", node="beta", lease=claimed["lease"],
                           headers=headers, data=b"")
         self.assertEqual(result.status_code, 422)
         self.assertIn("on-screen text pass", result.json()["detail"])
-        self.assertIsNone(fleet.render_mismatch(old, stale_details | {"screen_text_version": 2}))
+        self.assertIsNone(fleet.render_mismatch(old, stale_details | {"screen_text_version": SCREEN_TEXT_VERSION}))
 
     def test_caption_filter_required_for_claim_replay_and_result(self):
-        queued = self.queue(required_caption_filter_version=1)
-        body = {"request_id": str(uuid4()), "screen_text_protocol": 1}
+        queued = self.queue(required_caption_filter_version=CAPTION_FILTER_VERSION)
+        body = {"request_id": str(uuid4()), "screen_text_protocol": SCREEN_TEXT_VERSION,
+                "caption_filter_protocol": CAPTION_FILTER_VERSION - 1}
         self.assertEqual(self.req("POST", "/v1/slots/0/claim", json=body).status_code, 204)
         body["request_id"] = str(uuid4())
-        claim = self.req("POST", "/v1/slots/0/claim", json=body | {"caption_filter_protocol": 1}).json()
-        self.assertEqual((claim["_id"], claim["required_caption_filter_version"]), (queued["_id"], 1))
+        claim = self.req("POST", "/v1/slots/0/claim", json=body | {"caption_filter_protocol": CAPTION_FILTER_VERSION}).json()
+        self.assertEqual((claim["_id"], claim["required_caption_filter_version"]), (queued["_id"], CAPTION_FILTER_VERSION))
         self.assertEqual(self.req("POST", "/v1/slots/0/claim", json=body).status_code, 204)
-        details = base64.b64encode(b'{"media_seconds":1}').decode()
+        details = base64.b64encode(json.dumps({"media_seconds": 1, "caption_filter_version": CAPTION_FILTER_VERSION - 1}).encode()).decode()
+        self.assertIsNone(fleet.render_mismatch({"required_caption_filter_version": 1},
+                                                {"caption_filter_version": CAPTION_FILTER_VERSION}))
         response = self.req("PUT", f"/v1/jobs/{claim['_id']}/result", lease=claim["lease"],
                             headers={"Content-Type": "application/octet-stream", "X-ReelDub-Details": details}, data=b"")
         self.assertEqual(response.status_code, 422)
@@ -272,7 +275,11 @@ class FleetIntegration(TestCase):
             path = "/v1/jobs/" + job["_id"]
             source = self.req("GET", path + "/source", "rental", job["lease"])
             self.assertEqual((source.status_code, source.content), (200, b"fixture source"))
-            details = base64.b64encode(b'{"media_seconds":1,"source_language":"en","voice_model":"Qwen3-TTS-12Hz-1.7B-Base","rendered_voice_mode":"match","screen_text_version":2,"screen_text_count":0,"caption_filter_version":1}').decode()
+            details = base64.b64encode(json.dumps({
+                "media_seconds": 1, "source_language": "en", "voice_model": "Qwen3-TTS-12Hz-1.7B-Base",
+                "rendered_voice_mode": "match", "screen_text_version": SCREEN_TEXT_VERSION, "screen_text_count": 0,
+                "caption_filter_version": CAPTION_FILTER_VERSION,
+            }).encode()).decode()
             result = self.req("PUT", path + "/result", "rental", job["lease"], headers={
                 "Content-Type": "application/octet-stream", "X-ReelDub-Details": details},
                 data=bytes(4) + video)

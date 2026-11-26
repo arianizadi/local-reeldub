@@ -85,9 +85,11 @@ def predict(image, detector, recognizers):
         image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
     else:
         image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
-    found = next(iter(detector.predict(image, limit_side_len=736, limit_type="max")))["dt_polys"]
-    boxes, crops = [], []
-    for poly in found[:MAX_LINES]:
+    detected = next(iter(detector.predict(image, limit_side_len=736, limit_type="max", box_thresh=.35)))
+    found = detected["dt_polys"]
+    scores = detected.get("dt_scores", [1.] * len(found))
+    boxes, crops, box_scores = [], [], []
+    for poly, score in zip(found[:MAX_LINES], scores):
         quad = np.array(poly, dtype="float32")
         if quad.shape != (4, 2) or not np.isfinite(quad).all():
             continue
@@ -100,6 +102,7 @@ def predict(image, detector, recognizers):
             continue
         mapping = cv2.getPerspectiveTransform(quad, np.float32([[0, 0], [w, 0], [w, h], [0, h]]))
         crops.append(cv2.warpPerspective(image, mapping, (w,h), borderMode=cv2.BORDER_REPLICATE))
+        box_scores.append(float(score))
         boxes.append([float(quad[:,0].min() / width), float(quad[:,1].min() / height),
                       float(quad[:,0].max() / width), float(quad[:,1].max() / height)])
     if not crops:
@@ -117,7 +120,51 @@ def predict(image, detector, recognizers):
             del recognizers[name]
     if not recognizers:
         raise RuntimeError("No prepared text recognizer could run.")
-    return [dict(best_reading(group), box=box) for box, group in zip(boxes, choices)]
+    rows = [dict(best_reading(group), box=box, weak_detection=score < .60)
+            for box, group, score in zip(boxes, choices, box_scores)]
+    # A detector can enclose a tilted word and a nearby illustration in the
+    # same level rectangle. Inspect both orientations on uncertain script
+    # readings. These secondary hypotheses still require temporal agreement.
+    retries = {}
+    for i, (row, crop) in enumerate(zip(rows, crops)):
+        if not .35 <= row["confidence"] < .85 or crop.shape[1] < 24:
+            continue
+        family = next((name for name, candidate in choices[i].items()
+                       if candidate["text"] == row["text"]), None)
+        if not family or not any(c.isalpha() for c in row["text"]):
+            continue
+        x0, y0, x1, y1 = boxes[i]
+        hh, ww = round((y1-y0)*height), round((x1-x0)*width)
+        if hh < 14 or not 1 <= ww / hh <= 6:
+            continue
+        if len(retries.setdefault(family, [])) >= 24:
+            continue
+        raw = image[round(y0*height):round(y1*height), round(x0*width):round(x1*width)]
+        if len(row["text"].split()) >= 2:
+            # Low-contrast ink can be washed out by color and local shadows.
+            # Read both rectified and upright crops after normalizing lighting.
+            for sample, left, right, stretch in ((crop, .05, .07, 1.), (raw, 0., .12, 1.4)):
+                sh, sw = sample.shape[:2]
+                strip = sample[:, round(sw * left):round(sw * (1-right))]
+                width48 = max(5, round(48 * strip.shape[1] / sh * stretch))
+                gray = cv2.cvtColor(cv2.resize(strip, (width48, 48)), cv2.COLOR_BGR2GRAY)
+                shade = cv2.divide(gray, cv2.GaussianBlur(gray, (0, 0), 10), scale=170)
+                retries[family].append((i, cv2.cvtColor(shade, cv2.COLOR_GRAY2BGR)))
+            continue
+        for angle in (-20, 20):
+            transform = cv2.getRotationMatrix2D((ww/2, hh/2), angle, 1)
+            rotated = cv2.warpAffine(raw, transform, (ww, hh), borderMode=cv2.BORDER_REPLICATE)
+            retries[family].append((i, rotated))
+    for name, batch in retries.items():
+        try:
+            results = list(recognizers[name].predict([crop for _, crop in batch], batch_size=8))
+        except (RuntimeError, ValueError, OSError):
+            continue  # Optional rotated reads must preserve the primary results.
+        for (i, _), result in zip(batch, results):
+            text, confidence = result["rec_text"].strip()[:512], float(result["rec_score"])
+            if confidence >= .60 and len(text) >= 3 and text != rows[i]["text"]:
+                rows[i].setdefault("alternatives", []).append(text)
+    return rows
 
 
 def serve():

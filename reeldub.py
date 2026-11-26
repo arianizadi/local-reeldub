@@ -1,6 +1,8 @@
 import argparse
+from bisect import bisect_left, bisect_right
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from itertools import groupby
 import gc
 import json
 import os
@@ -112,7 +114,59 @@ def whisper_model(model_size, device):
                         local_files_only=True, cpu_threads=threads)
 
 
-def recognize(audio, model_size, device, language, native, target="en", bed=None, beam=5):
+def speech_covers(start, end, spans, fraction=.55):
+    """Check time coverage in sorted, disjoint source intervals."""
+    if end <= start:
+        return False
+    index = bisect_right(spans, start, key=lambda span: span[1])
+    covered = 0.
+    while index < len(spans) and spans[index][0] < end:
+        left, right = spans[index]
+        covered += min(end, right) - max(start, left)
+        if covered >= fraction * (end - start):
+            return True
+        index += 1
+    return False
+
+
+def source_supports(segment, spans):
+    if speech_covers(segment.start, segment.end, spans):
+        return True
+    # A translated phrase can contain a long timestamp gap before its second
+    # word. Check spoken words independently of that silent part of the clock.
+    words = [word for word in segment.words or [] if word.end > word.start]
+    return bool(words) and 2 * sum(speech_covers(w.start, w.end, spans) for w in words) >= len(words)
+
+
+def recover_native(model, speech, language, beam, native, drafts):
+    """Retry translation-only intervals in the source language on the dialogue stem."""
+    duration = len(speech) / 16000
+    known = merge_regions([(s.start, s.end) for s in native], duration)
+    missing = merge_regions([(s.start, s.end) for s in drafts if not source_supports(s, known)], duration)
+    # Source and translated word boundaries differ, especially at the last
+    # syllable. Keep a small alignment margin without duplicating known words.
+    requested = merge_regions([(a - .4, b + .4) for a, b in missing], duration)
+    windows = merge_regions([(a - 8, b + 8) for a, b in missing], duration)
+    recovered = []
+    for start, end in windows:
+        left, right = round(start * 16000), round(end * 16000)
+        offset = left / 16000
+        heard, _ = model.transcribe(speech[left:right], language=language, task="transcribe",
+                                    beam_size=beam, **SPEECH_DECODE)
+        for segment in spoken_segments(heard):
+            words = [replace(w, start=w.start + offset, end=w.end + offset) for w in segment.words or []]
+            def new_word(word):
+                return (speech_covers(word.start, word.end, requested, .5)
+                        and not speech_covers(word.start, word.end, known, .2))
+            for new, run in groupby(words, key=new_word):
+                group = list(run)
+                if new and sum(w.probability for w in group) >= .65 * len(group):
+                    recovered.append(replace(segment, start=group[0].start, end=group[-1].end,
+                                             text="".join(w.word for w in group), words=group))
+    return recovered
+
+
+def recognize(audio, model_size, device, language, native, target="en", bed=None, beam=5, speech=None):
     if device == "auto":
         device = "cuda" if ctranslate2.get_cuda_device_count() else "cpu"
     print(f"Listening with Whisper {model_size} on {device}…", flush=True)
@@ -125,6 +179,8 @@ def recognize(audio, model_size, device, language, native, target="en", bed=None
     if native and target == "en" and info.language != "en":
         translated, _ = model.transcribe(audio, beam_size=beam, language=info.language, task="translate", **SPEECH_DECODE)
         drafts = list(spoken_segments(translated))
+        result.extend(recover_native(model, speech if speech is not None else audio, info.language, beam, result, drafts))
+        result.sort(key=lambda s: s.start)
     leaks = []
     if bed is not None:
         recognized, _ = model.transcribe(bed, beam_size=beam, language=info.language, task="transcribe" if native else "translate",
@@ -154,28 +210,22 @@ def timed_lines(candidates, duration):
     return lines
 
 
-def grounded_drafts(drafts, native_lines, turns):
-    """Allow a translation-only cue when isolated speaker activity supports it."""
-    accepted = []
-    for cue in drafts:
-        left, right = cue["start"], cue["end"]
-        duration = right - left
-        if duration <= 0:
-            continue
-        native_overlap = sum(max(0., min(right, line["end"]) - max(left, line["start"])) for line in native_lines)
-        if native_overlap >= .15 * duration:
-            accepted.append((cue, False))
-            continue
-        # Word times on a hallucinated credit can cover an entire musical intro
-        # and brush the first real word. Count the union of speaker intervals.
-        spans = sorted((max(left, t.start), min(right, t.end)) for t in turns if t.end > left and t.start < right)
-        covered, last = 0., left
-        for start, end in spans:
-            covered += max(0., end - max(start, last))
-            last = max(last, end)
-        if covered >= .55 * duration:
-            accepted.append((cue, True))
-    return accepted
+def grounded_drafts(drafts, native_lines, turns, duration):
+    """Only voice direct translations aligned with words decoded in the source language."""
+    spans = merge_regions([(line["start"], line["end"]) for line in native_lines], duration)
+    # Validate the utterance before speaker assignment can turn its first word
+    # into a separate plausible-looking cue at the edge of a previous sentence.
+    confirmed = [seg for seg in drafts if source_supports(seg, spans)]
+    result = []
+    for cue in assign_lines(confirmed, turns):
+        left = bisect_right(spans, cue["start"], key=lambda span: span[1])
+        right = bisect_left(spans, cue["end"], key=lambda span: span[0])
+        if left < right:
+            start = max(cue["start"], spans[left][0])
+            end = min(cue["end"], spans[right - 1][1])
+            if end > start:
+                result.append({**cue, "start": start, "end": end})
+    return result
 
 
 def has_audio_stream(media, remote):
@@ -185,12 +235,12 @@ def has_audio_stream(media, remote):
     return bool(audio.strip())
 
 
-def translate_screen(tracks, language, target):
+def translate_screen(tracks, language, target, dialogue=()):
     if not tracks:
         return []
     print("Translating on-screen text…", flush=True)
     with stage("translation"):
-        return translated_tracks(tracks, LANGUAGES[target].name, language)
+        return translated_tracks(tracks, LANGUAGES[target].name, language, dialogue)
 
 
 def save_render(folder, dest, tracks, **metadata):
@@ -275,20 +325,20 @@ def run(args):
 
         bed = mono(folder / "background.wav", "background.f32") if args.background == "separate" else None
         audio = mono(source, "mix.f32")
+        speech = mono(analysis_audio, "speech.f32") if analysis_audio != source else audio
         contextual = args.translation == "context"
         overflow = args.device == "auto" and os.getenv("REELDUB_FREE_CPU_ASR") == "1"
         with transcription_device(args.device, ctranslate2.get_cuda_device_count() > 0, overflow) as device:
             segments, language, drafts, confirmed = recognize(audio, args.model, device, args.language,
-                                                             contextual, target, bed, beam)
+                                                             contextual, target, bed, beam, speech)
         if bed is not None:
             regions = merge_regions(leakage_regions(bed) + confirmed, len(bed) / 16000)
             if regions:
                 suppress_unresolved(folder / "background.wav", regions)
-        if not (segments or drafts):
+        if not segments:
             return text_only(media, folder, dest, language, target, remote)
         gc.collect()
         print("Identifying speakers and timing lines…", flush=True)
-        speech = mono(analysis_audio, "speech.f32") if analysis_audio != source else audio
         turns = identify_turns(speech)
         if not turns:
             # Whisper can hallucinate dialogue over music. Only keep the original
@@ -297,10 +347,8 @@ def run(args):
                 return text_only(media, folder, dest, language, target, remote)
             raise ValueError(VOICE_ERRORS["unclear_speaker"])
         candidates = assign_lines(segments, turns)
-        corroborated = grounded_drafts(assign_lines(drafts, turns), candidates, turns)
-        english_cues = [cue for cue, _ in corroborated]
-        candidates.extend({**cue, "english": True} for cue, missing in corroborated if missing)
         duration = len(audio) / 16000
+        english_cues = grounded_drafts(drafts, candidates, turns, duration)
         lines = timed_lines(candidates, duration)
         if not lines:
             raise ValueError("No spoken lines to render.")
@@ -359,7 +407,7 @@ def run(args):
             print("Mixing soundtrack…", flush=True)
             mix(lines, source, folder)
             print("Reading on-screen text…", flush=True)
-            tracks = translate_screen(regions.result(), language, target)
+            tracks = translate_screen(regions.result(), language, target, dialogue=lines)
         print("Encoding video…", flush=True)
         render(media, lines, folder, target, voice_label="Matched speaker", remote=remote, screen_tracks=tracks)
         translator = folder / "translator.txt"
