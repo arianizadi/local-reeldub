@@ -3,6 +3,7 @@
 from contextlib import contextmanager, nullcontext
 from datetime import timedelta
 import os
+import hashlib
 from threading import Condition, Lock
 import time
 from tempfile import TemporaryFile
@@ -17,14 +18,15 @@ from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
 from .db import media_db, db, now
-from .source import MAX_SOURCE_SECONDS, TOO_LONG, reel_links_enabled, reel_url
+from .source import MAX_SOURCE_SECONDS, TOO_LONG, reel_links_enabled
+from .video_url import video_url
 
 MAX_BYTES = 80 * 1024 * 1024
 DAILY_REEL_BYTES = 250 * 1024 * 1024
 INTAKE = os.getenv("REELDUB_INTAKE_URL", "http://intake:8310")
 WINDOW = timedelta(hours=24)
-PREPARATION_LEASE = timedelta(minutes=4)
-PREPARATION_WAIT_SECONDS = 168
+PREPARATION_LEASE = timedelta(minutes=8)
+PREPARATION_WAIT_SECONDS = 420
 _preparations = WeakValueDictionary()
 _preparations_lock = Lock()
 
@@ -183,12 +185,12 @@ def cached_source(user, identity, max_bytes):
 
 def download_to(file, url, *, daily=True):
     """Fetch through the isolated intake, validating every byte before GPU processing."""
-    url = reel_url(url)
+    url = video_url(url)
     max_bytes = DAILY_REEL_BYTES if daily else MAX_BYTES
-    deadline = time.monotonic() + 155
+    deadline = time.monotonic() + 410
     try:
         with intake_post(
-            "/reel", json={"url": url, "daily": daily}, stream=True, timeout=(4, 155)
+            "/reel", json={"url": url, "daily": daily}, stream=True, timeout=(4, 410)
         ) as r:
             check(r)
             seconds = int(r.headers["X-Duration"])
@@ -206,10 +208,10 @@ def download_to(file, url, *, daily=True):
             if declared is not None and file.tell() != declared:
                 raise HTTPException(503, "The source transfer was interrupted.")
     except (requests.RequestException, ValueError, KeyError):
-        raise HTTPException(503, "The Reel could not be prepared. Try again.")
+        raise HTTPException(503, "The video could not be prepared. Try again.")
     if not file.tell():
-        raise HTTPException(422, "Instagram returned an empty video.")
-    return seconds, title or "Instagram Reel", author
+        raise HTTPException(422, "The source returned an empty video.")
+    return seconds, title or "Online video", author
 
 
 def fetch_reel(stage, user, url, slot, daily):
@@ -220,16 +222,16 @@ def fetch_reel(stage, user, url, slot, daily):
                                       "expires": {"$gt": now()}}, {"$set": {"expires": now() + PREPARATION_LEASE}})
         if not pin.matched_count:
             raise HTTPException(503, "The source preparation expired. Try again.")
-        return save(stage, user, file, url, seconds, title or "Instagram Reel", author,
+        return save(stage, user, file, url, seconds, title or "Online video", author,
                     max_bytes=max_bytes, reel_slot=slot)
 
 
 def prepare_reel(user, url, *, daily=False, job_fence=None):
     require_reel_links()
-    url = reel_url(url)
+    url = video_url(url)
     # String slots share the existing unique (owner, slot) index with numeric import permits.
     # Keep this slot on the ready record so a losing or late writer cannot publish a duplicate.
-    slot = "reel:" + url
+    slot = "reel:" + (url if len(url.encode()) <= 1024 else hashlib.sha256(url.encode()).hexdigest())
     key = {"owner": user, "slot": slot}
     with _preparations_lock:
         ready = _preparations.setdefault((user, url), Condition())
@@ -248,7 +250,7 @@ def prepare_reel(user, url, *, daily=False, job_fence=None):
                 continue
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                raise HTTPException(503, "This Reel is still being prepared. Try again shortly.")
+                raise HTTPException(503, "This video is still being prepared. Try again shortly.")
             with ready:
                 ready.wait(min(delay, remaining))
             delay = min(8, delay * 2)

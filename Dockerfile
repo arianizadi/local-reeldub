@@ -1,3 +1,7 @@
+FROM postgres:17-alpine AS metadata
+RUN apk add --no-cache openssl && install -d -o postgres -g postgres -m 0700 /var/lib/reeldub-tls /var/lib/reeldub-issuer && install -d -o postgres -g postgres -m 0755 /var/lib/reeldub-trust
+COPY deploy/postgres/tls.sh deploy/postgres/hba.conf /opt/reeldub/
+
 FROM python:3.12-slim-bookworm AS base
 ENV PYTHONUNBUFFERED=1 PIP_DISABLE_PIP_VERSION_CHECK=1
 WORKDIR /app
@@ -11,8 +15,15 @@ COPY server /app/server
 USER reel
 CMD ["uvicorn","server.api:app","--host","0.0.0.0","--port","8300","--no-access-log"]
 
+FROM python:3.12-slim-bookworm AS proxy
+WORKDIR /app
+COPY server/__init__.py server/media_network.py server/video_url.py /app/server/
+USER 65534:65534
+CMD ["python", "-B", "-m", "server.media_network"]
+
 FROM base AS intake
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg ca-certificates && rm -rf /var/lib/apt/lists/* && pip install --no-cache-dir yt-dlp==2026.10.26
+COPY deploy/intake-requirements.txt /tmp/intake-requirements.txt
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg ca-certificates && rm -rf /var/lib/apt/lists/* && pip install --no-cache-dir -r /tmp/intake-requirements.txt
 COPY server /app/server
 USER reel
 CMD ["uvicorn","server.intake:app","--host","0.0.0.0","--port","8310","--no-access-log"]

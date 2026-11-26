@@ -15,7 +15,7 @@ import gridfs
 from pymongo import ReturnDocument
 from pymongo.errors import ConnectionFailure, ExecutionTimeout, PyMongoError, WTimeoutError
 
-from .source import MAX_SOURCE_SECONDS, TOO_LONG, reel_url
+from .source import MAX_SOURCE_SECONDS, SOURCE_ERRORS, TOO_LONG
 from .languages import outputs
 from .upload_voice import (KITTEN_ENGINE, KITTEN_MATCH, VOICE_ERRORS, correct_kitten_model, kitten_match_ready,
                            kitten_ready, upload_mode, voice_scope)
@@ -37,7 +37,7 @@ STAGES = {"Waiting for GPU capacity": "Waiting for GPU", "GPU stage: ": "Process
           "Mixing soundtrack": "Mixing", "Encoding video": "Encoding"}
 
 def render_error(stage, diagnostic):
-    for message in VOICE_ERRORS.values():
+    for message in (*VOICE_ERRORS.values(), *SOURCE_ERRORS.values()):
         if message.lower() in diagnostic:
             return message
     if TOO_LONG.lower() in diagnostic:
@@ -85,7 +85,7 @@ def claim(studio=None, fleet_slot=None, fleet_request=None, avoid_recovery_node=
     if not upload_voices:
         # Earlier workers don't understand upload voices, including uploaded jobs
         # that predate the voice_mode field. They may still render ordinary Reels.
-        candidate.update(voice_mode=None, url={"$regex": "^https://"})
+        candidate.update(voice_mode=None, url={"$regex": "^https?://"})
     elif not studio:
         candidate["voice_mode"] = {"$ne": "match"}
     if avoid_recovery_node:
@@ -231,8 +231,8 @@ def process(job, fleet=None):
     sampled_duration = None
     try:
         options = quality_options(job)
-        if not fleet and (job.get("url") or "").startswith("https://") and os.getenv("REELDUB_REEL_LINKS") == "0":
-            raise RuntimeError("Reel links are disabled on this server. Share a video file instead.")
+        if not fleet and (job.get("url") or "").startswith(("https://", "http://")) and os.getenv("REELDUB_REEL_LINKS") == "0":
+            raise RuntimeError("Video links are disabled on this server. Share a video file instead.")
         with tempfile.TemporaryDirectory(prefix="reeldub-job-") as temp:
             dest = Path(temp) / "dub.mp4"
             log = Path(temp) / "render.log"
@@ -348,7 +348,7 @@ def process(job, fleet=None):
                 print(f"Render {job['_id']} exited {proc.returncode} at {stage}", flush=True)
                 if TOO_LONG.lower() in diagnostic:
                     raise RuntimeError(TOO_LONG)
-                for message in VOICE_ERRORS.values():
+                for message in (*VOICE_ERRORS.values(), *SOURCE_ERRORS.values()):
                     if message.lower() in diagnostic:
                         raise RuntimeError(message)
                 if job.get("quality_requested") == "fast" and stage not in ("Downloading", "Saving"):

@@ -108,6 +108,9 @@ final class Studio {
     var account: Account?
     var failure: String?
     private var libraryRevision = 0
+    private var queueMutation: UUID?
+    var queueBusy: Bool { queueMutation != nil }
+    var queueIssue: String?
     var api: API? { connection.map { API(connection: $0, transport: transport) } }
 
     func progressDelay(failures: Int) -> Int? {
@@ -259,6 +262,8 @@ final class Studio {
         failure = nil
     }
     private func resetTransfers() {
+        queueMutation = nil
+        queueIssue = nil
         libraryRevision += 1
         transferTask?.cancel()
         transferTask = nil; transferring = nil
@@ -378,6 +383,25 @@ final class Studio {
             }
         }
         if newerRequest, matches(api) { Task { await refresh() } }
+    }
+
+    func changeQueue(_ job: Job, action: QueueAction) async {
+        guard !queueBusy, let api else { return }
+        let change = UUID()
+        queueMutation = change
+        defer { if queueMutation == change { queueMutation = nil } }
+        do {
+            let revised = try await api.changeQueue(job.id, action: action)
+            guard matches(api), queueMutation == change else { return }
+            libraryRevision += 1
+            if let index = jobs.firstIndex(where: { $0.id == revised.id }) { jobs[index] = revised }
+            AccessibilityNotification.Announcement(action == .cancel ? "Dub cancelled" : "Queue updated").post()
+            await refresh()
+        } catch {
+            guard matches(api), queueMutation == change else { return }
+            if let conflict = error as? ServiceError, conflict.status == 409 { await refresh() }
+            if matches(api), queueMutation == change { queueIssue = error.localizedDescription }
+        }
     }
 
     func didSubmit(_ job: Job) {

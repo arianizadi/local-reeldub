@@ -129,7 +129,7 @@ class AssignedJob:
 
     def download(self, path):
         with self.coordinator.request("GET", self.path + "/source", headers=self.headers,
-                                      stream=True, timeout=(5, 330)) as r:
+                                      stream=True, timeout=(5, 430)) as r:
             if r.status_code in (410, 413, 422):
                 raise RuntimeError("ReelDub could not prepare this source video.")
             r.raise_for_status()

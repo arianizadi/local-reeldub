@@ -12,8 +12,9 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
-from .download import download_reel
-from .source import inspect_video, reel_links_enabled, reel_url
+from .download import DownloadError, download_reel
+from .source import inspect_video, reel_links_enabled
+from .video_url import video_url
 
 MAX_BYTES = 80 * 1024 * 1024
 DAILY_REEL_BYTES = 250 * 1024 * 1024
@@ -88,7 +89,7 @@ def fetch(body: Reel):
         folder = Path(tmp.name)
         metadata = folder / "details.json"
         max_bytes = DAILY_REEL_BYTES if body.daily else MAX_BYTES
-        path = download_reel(reel_url(body.url), folder, metadata=metadata, max_mib=max_bytes // (1024 * 1024))
+        path = download_reel(video_url(body.url), folder, metadata=metadata, max_mib=max_bytes // (1024 * 1024))
         from urllib.parse import quote
 
         info = json.loads(metadata.read_text()) if metadata.exists() else {}
@@ -100,9 +101,11 @@ def fetch(body: Reel):
         response = SourceFileResponse(path, headers=headers, cleanup=close)
         handing_off = True
         return response
+    except DownloadError as error:
+        raise HTTPException(422, str(error)) from error
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         raise HTTPException(
-            422, "Instagram could not provide this Reel. Try importing your own video."
+            422, "The site could not provide a public video with audio. Try sharing the video file."
         ) from error
     finally:
         if not handing_off:

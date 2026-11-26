@@ -7,20 +7,20 @@ enum DubQuality: String, CaseIterable {
 }
 
 enum DubSource {
-    case reel(String), uploaded(String)
+    case link(String), uploaded(String)
     var field: String {
-        if case .reel = self { return "url" }
+        if case .link = self { return "url" }
         return "source_id"
     }
     var value: String {
-        switch self { case .reel(let value), .uploaded(let value): value }
+        switch self { case .link(let value), .uploaded(let value): value }
     }
 }
 
 enum DubInput {
-    case reel(String), file(ImportedMovie)
+    case link(String), file(ImportedMovie)
     var identity: String {
-        switch self { case .reel(let link): link; case .file(let movie): movie.file.absoluteString }
+        switch self { case .link(let link): link; case .file(let movie): movie.file.absoluteString }
     }
 }
 
@@ -84,7 +84,7 @@ struct DubForm: View {
         do {
             let source: DubSource
             switch input {
-            case .reel(let link): source = .reel(link)
+            case .link(let link): source = .link(link)
             case .file(let movie):
                 if let uploadedID { source = .uploaded(uploadedID) }
                 else {

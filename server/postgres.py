@@ -34,6 +34,7 @@ TABLES = (
     "store_history",
     "purchase_intents",
 )
+LOCAL_TABLES = ("jobs", "sources", "counters", "playback", "request_rates", "account_deletions")
 S = sql.SQL
 MISSING = object()
 
@@ -84,6 +85,10 @@ def equals(key, value):
     field = column(key)
     if value is None:
         return S("({} IS NULL OR {} = 'null'::jsonb)").format(field, field)
+    if key in ("url", "identity") and isinstance(value, str):
+        # Index bounded digests while still comparing the full signed URL for equality.
+        return S("(md5(doc->>{})=md5({}) AND {}={})").format(
+            sql.Literal(key), sql.Literal(value), field, literal(value))
     if key in ("request_keys", "minute_grants", "minute_units") and isinstance(
         value, str
     ):
@@ -120,6 +125,8 @@ def predicate(query):
                     terms.append(S("starts_with(doc->>'owner','apple:')"))
                 elif op == "$regex" and key == "url" and value == "^https://":
                     terms.append(S("starts_with(doc->>'url','https://')"))
+                elif op == "$regex" and key == "url" and value == "^https?://":
+                    terms.append(S("(starts_with(doc->>'url','https://') OR starts_with(doc->>'url','http://'))"))
                 else:
                     raise ValueError(f"Unsupported metadata predicate {op}")
     return together(terms, " AND ")
@@ -357,7 +364,8 @@ class Collection:
         return_document=False,
     ):
         _, before, after = self._change(query, update, upsert=upsert, sort=sort)
-        result = after if return_document else before
+        # The repository persists timestamps at millisecond precision on both backends.
+        result = decode(encode(after)) if return_document else before
         return None if result is None else projected(result, projection)
 
     def find_one_and_delete(self, query):
@@ -458,9 +466,9 @@ class Postgres:
         with self.connection() as conn:
             row = conn.execute("""
                 SELECT p.doc FROM reeldub.playback p
-                LEFT JOIN reeldub.accounts a ON a.id=p.doc->'owner'
+                JOIN reeldub.access_keys a ON p.doc->>'owner' = 'local:' || a.library_id::text
                 WHERE p.id=%s AND p.doc->'job'=%s AND p.doc->'expires'>%s
-                  AND a.doc->'banned' IS DISTINCT FROM 'true'::jsonb""",
+                  AND a.token_hash IS NOT NULL AND p.doc->>'access_generation' = a.generation::text""",
                 (Jsonb(key),Jsonb(job),Jsonb(encode(stamp)))).fetchone()
         return decode(row[0]) if row else None
 
@@ -568,7 +576,7 @@ class Postgres:
                        WHERE doc->'owner'=%s AND doc->'deleted' IS DISTINCT FROM 'true'::jsonb {scope}
                        ORDER BY activity DESC, id DESC LIMIT 100
                    ), positions AS (
-                       SELECT id, rank() OVER (ORDER BY doc->'recovery_rank' DESC NULLS LAST, doc->'priority' DESC,
+                       SELECT id, rank() OVER (ORDER BY doc->'queue_front' DESC NULLS LAST, doc->'recovery_rank' DESC NULLS LAST, doc->'priority' DESC,
                               nullif(doc->'queue_seq','null'::jsonb) ASC NULLS FIRST,
                               CASE WHEN doc->>'queue_seq' IS NULL THEN doc->'created' END,
                               CASE WHEN doc->>'queue_seq' IS NULL THEN id END) - 1 AS ahead
@@ -584,6 +592,11 @@ class Postgres:
     def expire(self, stamp):
         from datetime import timedelta
 
+        if os.getenv("REELDUB_AUTH_MODE") == "postgres":
+            for name in ("playback", "request_rates", "account_deletions"):
+                getattr(self, name).delete_many({"expires": {"$lte": stamp}})
+            return
+
         for name in (
             "sessions",
             "challenges",
@@ -597,9 +610,9 @@ class Postgres:
             getattr(self, name).delete_many({"expires": {"$lte": cutoff}})
 
 
-def install(conn):
+def install(conn, *, local=False):
     conn.execute("CREATE SCHEMA IF NOT EXISTS reeldub")
-    for name in TABLES:
+    for name in LOCAL_TABLES if local else TABLES:
         conn.execute(
             S("""CREATE TABLE IF NOT EXISTS {} (
             doc jsonb NOT NULL CHECK (jsonb_typeof(doc)='object' AND NOT (doc ?| ARRAY['poster','phone_hash'])),
@@ -607,4 +620,5 @@ def install(conn):
                 sql.Identifier("reeldub", name)
             )
         )
-    conn.execute(Path(__file__).with_name("postgres.sql").read_text())
+    schema = "local_metadata.sql" if local else "postgres.sql"
+    conn.execute(Path(__file__).with_name(schema).read_text())

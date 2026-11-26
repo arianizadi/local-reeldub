@@ -9,7 +9,7 @@ from pymongo import MongoClient
 from pymongo.write_concern import WriteConcern
 
 from .db import now
-from .source import reel_url
+from .video_url import video_url
 
 FENCE_FIELDS = ("lease", "lease_end", "fleet_slot", "fleet_request", "upload_lease", "upload_token",
                 "upload_until", "staged_source", "staged_lease", "attempt_started")
@@ -37,7 +37,7 @@ def preflight(database, *, apply=False):
     active = {"state": {"$in": ["queued", "running"]}}
     for row in database.jobs.find(active, {k: 1 for k in ("url", "source_file", "quoted_seconds", "deleted", "state", *FENCE_FIELDS)}):
         try:
-            downloadable = reel_url(row.get("url") or "") == row.get("url")
+            downloadable = video_url(row.get("url") or "") == row.get("url")
         except ValueError:
             downloadable = False
         pinned = row.get("source_file") is not None or row.get("quoted_seconds") is not None

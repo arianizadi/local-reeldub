@@ -28,7 +28,7 @@ from .web import router as web_router
 from .wakeup import next_hour, notify
 from .db import separate_metadata, uses_postgres, media_db, db, now, setup_indexes
 from . import sources
-from .source import reel_url
+from .video_url import video_url
 from .languages import LANGUAGES
 from .upload_voice import KITTEN_MATCH
 
@@ -40,20 +40,36 @@ def hash_value(value):
 def canonical_url(value):
     sources.require_reel_links()
     try:
-        return reel_url(value)
+        return video_url(value)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
 
 
+def auth_mode():
+    mode = os.getenv("REELDUB_AUTH_MODE", "key")
+    if mode not in {"key", "postgres"} or (mode == "postgres" and not uses_postgres()):
+        raise HTTPException(503, "Check the server authentication configuration.")
+    return mode
+
+
 def owner(authorization: str = Header(default="")):
+    mode = auth_mode()
     scheme, _, key = authorization.partition(" ")
+    denied = HTTPException(401, "Enter the connection key for this server.")
+    if scheme.lower() != "bearer" or not 32 <= len(key) <= 256:
+        raise denied
+    if mode == "postgres":
+        with db().connection() as conn:
+            row = conn.execute("SELECT library_id FROM reeldub.access_keys WHERE token_hash=%s",
+                               (hashlib.sha256(key.encode()).digest(),)).fetchone()
+        if row:
+            return "local:" + str(row[0])
+        raise denied
     expected = os.getenv("SELF_HOST_KEY", "")
-    if len(expected) < 32:
-        raise HTTPException(503, "Set SELF_HOST_KEY to a private key of at least 32 characters.")
-    if scheme.lower() != "bearer" or not 32 <= len(key) <= 256 or not secrets.compare_digest(
-        hash_value(key), hash_value(expected)
-    ):
-        raise HTTPException(401, "Enter the connection key for this server.")
+    if not 32 <= len(expected) <= 256:
+        raise HTTPException(503, "Set SELF_HOST_KEY to a private key of 32 to 256 characters.")
+    if not secrets.compare_digest(hash_value(key), hash_value(expected)):
+        raise denied
     return "self-host"
 
 
@@ -188,7 +204,7 @@ def health():
 
 @app.get("/privacy", response_class=PlainTextResponse)
 def privacy():
-    return """ReelDub runs on the server you connect to. The server downloads the Reels you share,
+    return """ReelDub runs on the server you connect to. The server downloads the video links you share,
 processes your videos and speaker samples, and stores your library. People using the same
 connection key share that library. Only process recordings you have permission to dub.
 Remove a completed dub from your library to remove the device copy. The server can reuse a
@@ -237,7 +253,7 @@ def source_info(source_id: str, user=Depends(owner)):
 
 
 class Submission(BaseModel):
-    url: str | None = Field(default=None, min_length=1, max_length=2048)
+    url: str | None = Field(default=None, min_length=1, max_length=8192)
     source_id: str | None = Field(default=None, min_length=24, max_length=24)
     request_id: UUID = Field(default_factory=uuid4)
     target_language: str = Field(default="en", min_length=2, max_length=2)
@@ -270,8 +286,8 @@ def renew_media(stamp):
                       {"$max": ["$media_expires", stamp + MEDIA_WINDOW]}]}
 
 
-def next_position():
-    counter = db().counters.find_one_and_update({"_id": "queue"}, {"$inc": {"seq": 1}},
+def next_position(counter_id="queue"):
+    counter = db().counters.find_one_and_update({"_id": counter_id}, {"$inc": {"seq": 1}},
                                                 upsert=True, return_document=ReturnDocument.AFTER)
     return counter["seq"]
 
@@ -289,6 +305,11 @@ def summary(job, before=None):
             ahead = {"recovery_rank": 1, **lane}
         else:
             ahead = {"$or": [{"recovery_rank": 1}, {"recovery_rank": {"$ne": 1}, **lane}]}
+        front = job.get("queue_front")
+        if front is not None:
+            ahead = {"queue_front": {"$gt": front}}
+        else:
+            ahead = {"$or": [{"queue_front": {"$gt": 0}}, {"queue_front": None, **ahead}]}
         before = db().jobs.count_documents({"state": "queued", "deleted": {"$ne": True}, **ahead})
     return dict(id=job["_id"], url=job["url"], state=job["state"], stage=job["stage"], created=job["created"],
                 progress=job.get("progress"), estimated_finish=job.get("estimated_finish") if job["state"]=="running" else None,
@@ -310,7 +331,7 @@ def summary(job, before=None):
 def submit(body: Submission, user=Depends(owner)):
     limit_writes(user, "submit", 90)
     if (body.url is None) == (body.source_id is None):
-        raise HTTPException(422, "Provide one Reel URL or uploaded source.")
+        raise HTTPException(422, "Provide one video URL or uploaded source.")
     url = canonical_url(body.url) if body.url is not None else None
     target, requested = body.target_language, body.quality
     languages = quality_languages()
@@ -425,6 +446,51 @@ def job_status(job_id: str, user=Depends(owner)):
     return summary(owned(job_id, user))
 
 
+class QueueMove(BaseModel):
+    position: Literal["first", "last"]
+
+
+@app.post("/v1/jobs/{job_id}/queue")
+def move_job(job_id: UUID, body: QueueMove, user=Depends(owner)):
+    ident = str(job_id)
+    scope = {"_id": ident, "owner": user, "deleted": {"$ne": True}, "state": "queued"}
+    current = owned(ident, user)
+    if current["state"] != "queued":
+        raise HTTPException(409, "This video has already left the queue.")
+    if body.position == "first":
+        # The counter makes front moves unique across devices and API replicas.
+        change = {"$set": {"queue_front": next_position("manual-front")}}
+    else:
+        # Return to normal FIFO. Future submissions go behind this video.
+        change = {"$unset": {"queue_front": "", "recovery_rank": ""},
+                  "$set": {"queue_seq": next_position(), "priority": 0}}
+    moved = db().jobs.find_one_and_update(scope, change, projection={"poster": 0}, return_document=ReturnDocument.AFTER)
+    if not moved:
+        raise HTTPException(409, "This video has already left the queue.")
+    notify()
+    return summary(moved)
+
+
+@app.post("/v1/jobs/{job_id}/cancel")
+def cancel_job(job_id: UUID, user=Depends(owner)):
+    ident = str(job_id)
+    # Workers must hold a matching running lease for every heartbeat, publish and
+    # recovery. Revoking it in the same write prevents a late result or retry.
+    cancelled = db().jobs.find_one_and_update(
+        {"_id": ident, "owner": user, "deleted": {"$ne": True}, "state": {"$in": ["queued", "running"]}},
+        {"$set": {"state": "cancelled", "stage": "Cancelled", "finished": now()},
+         "$unset": dict.fromkeys(("lease", "lease_end", "fleet_slot", "fleet_request", "upload_token",
+                                  "upload_lease", "upload_until", "estimated_finish", "progress", "queue_front"), "")},
+        projection={"poster": 0}, return_document=ReturnDocument.AFTER)
+    if cancelled:
+        notify()
+        return summary(cancelled)
+    current = owned(ident, user)
+    if current["state"] == "cancelled":
+        return summary(current)
+    raise HTTPException(409, "This video already finished processing.")
+
+
 @app.delete("/v1/jobs/{job_id}", status_code=204)
 def delete_dub(job_id: str, user=Depends(owner),
                revision: Annotated[str | None, Header(alias="X-ReelDub-Library-Revision", max_length=64)] = None):
@@ -456,7 +522,7 @@ def delete_dub(job_id: str, user=Depends(owner),
     # Revoke reads first. Keep only the quota and idempotency record plus a
     # recoverable reference to the video until GridFS cleanup completes.
     job = db().jobs.find_one_and_update(
-        {**key, "deleted": {"$ne": True}, "state": {"$in": ["done", "failed"]},
+        {**key, "deleted": {"$ne": True}, "state": {"$in": ["done", "failed", "cancelled"]},
          "$or": [{"artifact": {"$exists": False}}, {"media_expired": True}, {"media_expires": {"$lte": stamp}}]},
         [{"$project": {"owner": 1, "request_id": 1, "request_keys": 1, "state": 1,
                        "artifact": 1, "deleted": {"$literal": True}}}],
@@ -532,21 +598,30 @@ def poster(job_id: str, user=Depends(owner)):
         file = media_db()["fs.files"].find_one({"_id": job["artifact"]}, {"poster": 1})
         image = file.get("poster") if file else None
     if not image:
-        raise HTTPException(404, "This Reel has no poster.")
+        raise HTTPException(404, "This video has no poster.")
     return Response(bytes(image), media_type="image/jpeg", headers={"Cache-Control": "private, no-store"})
 
 
 @app.post("/v1/jobs/{job_id}/playback")
-def playback(job_id: str, user=Depends(owner)):
+def playback(job_id: str, user=Depends(owner), authorization: str = Header(default="")):
     job = requested_media(job_id, user)
     ticket = secrets.token_urlsafe(36)
-    db().playback.insert_one({"_id": hash_value(ticket), "job": job_id, "owner": user,
-                              "generation": job.get("play_generation", 0), "expires": now() + timedelta(minutes=30)})
+    grant = {"_id": hash_value(ticket), "job": job_id, "owner": user,
+             "generation": job.get("play_generation", 0), "expires": now() + timedelta(minutes=30)}
+    if auth_mode() == "postgres":
+        key = authorization.partition(" ")[2]
+        with db().connection() as conn:
+            row = conn.execute("SELECT generation FROM reeldub.access_keys WHERE library_id=%s AND token_hash=%s",
+                               (UUID(user.removeprefix("local:")), hashlib.sha256(key.encode()).digest())).fetchone()
+        if not row:
+            raise HTTPException(401, "This connection key has changed.")
+        grant["access_generation"] = str(row[0])
+    db().playback.insert_one(grant)
     return {"ticket": ticket}
 
 
 def playback_grant(digest, job_id, stamp):
-    if uses_postgres():
+    if auth_mode() == "postgres":
         return db().playback_grant(digest, job_id, stamp)
     grant = db().playback.find_one({"_id": digest, "job": job_id, "expires": {"$gt": stamp}})
     if grant and grant.get("owner") != "self-host":

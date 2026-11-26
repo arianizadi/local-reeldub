@@ -27,7 +27,7 @@ from . import fleet_health, sources, worker
 from .upload_voice import KITTEN_ENGINE, KITTEN_MATCH, VOICE_ERRORS, correct_kitten_model, upload_mode, voice_scope
 from .db import db, media_db, now, separate_metadata, uses_postgres
 from .progress import STEPS, nearby_runtime
-from .source import MAX_SOURCE_SECONDS, TOO_LONG
+from .source import MAX_SOURCE_SECONDS, SOURCE_ERRORS, TOO_LONG
 from .wakeup import Wake, notify
 
 
@@ -132,6 +132,7 @@ class Heartbeat(StrictModel):
 class Failure(StrictModel):
     stage: str = Field(max_length=40)
     reason: Literal["generic", "no_speech", "download", "translation", "duration",
+                    "collection", "unavailable_video", "restricted_video", "oversized_video",
                     "voice_consent", "single_speaker", "unclear_speaker", "upload_translation"]
 
 
@@ -405,10 +406,12 @@ def source(job=Depends(current_job)):
         try:
             return sources.for_job(job)
         except HTTPException as exc:
-            if exc.status_code == 422 and exc.detail == TOO_LONG:
+            reasons = {message: key for key, message in SOURCE_ERRORS.items()}
+            reasons[TOO_LONG] = "duration"
+            if exc.status_code == 422 and isinstance(exc.detail, str) and exc.detail in reasons:
                 # Finalize on the coordinator so workers on an older release also release the reservation.
-                failure(Failure(stage="Downloading", reason="duration"), fence(job))
-                raise HTTPException(409, TOO_LONG) from exc
+                failure(Failure(stage="Downloading", reason=reasons[exc.detail]), fence(job))
+                raise HTTPException(409, exc.detail) from exc
             raise
 
     if job.get("stage") == "Starting":
@@ -465,7 +468,7 @@ def failure(body: Failure, scope=Depends(requested_fence)):
         raise HTTPException(422, "Invalid render stage.")
     diagnostic = {"generic": "", "download": "", "no_speech": "no translatable speech detected",
                   "translation": "neither translator produced an english dub", "duration": TOO_LONG.lower(),
-                  **{key: message.lower() for key, message in VOICE_ERRORS.items()}}[body.reason]
+                  **{key: message.lower() for key, message in {**VOICE_ERRORS, **SOURCE_ERRORS}.items()}}[body.reason]
     message = worker.render_error("Downloading" if body.reason == "download" else body.stage, diagnostic)
     release = ("slot", "minute_grants", "minute_units", "render_key", "extra_ticket", "skip_ticket",
                "lease", "lease_end", "upload_lease", "upload_until", "upload_token")

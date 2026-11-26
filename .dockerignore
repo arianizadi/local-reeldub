@@ -16,6 +16,10 @@
 !server/
 !server/**
 !deploy/
+!deploy/postgres/
+!deploy/postgres/tls.sh
+!deploy/postgres/hba.conf
+!deploy/intake-requirements.txt
 !deploy/fleet/
 !deploy/fleet/**
 **/__pycache__/

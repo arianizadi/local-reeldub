@@ -14,7 +14,6 @@
 		201D517F9F5327C41DA629EF /* VideoImport.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9AFCA869A58D3086F964E62 /* VideoImport.swift */; };
 		2466B64CEE3DF1BB83D795C9 /* Palette.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D14F892F6DBFC685C356355 /* Palette.swift */; };
 		2B0CA8FB30D77B3E183948A2 /* Client.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43208AEF5AECA108781F363F /* Client.swift */; };
-		2D4402FD536E65E1E2D425EA /* SharedReel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8EDE0803DD9B63D680AF39B4 /* SharedReel.swift */; };
 		33FA7DB727748CB61BA21D8B /* ReelSubmissionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D6F9E49619117EC173E2726B /* ReelSubmissionTests.swift */; };
 		3FDC44E6E2EEC5FF5F8DEC30 /* clip.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = 7E3D56A94780B4E473485E12 /* clip.mp4 */; };
 		46237C04007FBF59DF5E369B /* DubForm.swift in Sources */ = {isa = PBXBuildFile; fileRef = 29DA57E3A3B7387BC4164484 /* DubForm.swift */; };
@@ -24,9 +23,9 @@
 		60FA04AF8575C9E7BC133696 /* DubForm.swift in Sources */ = {isa = PBXBuildFile; fileRef = 29DA57E3A3B7387BC4164484 /* DubForm.swift */; };
 		668F34419ECB618A32D75CA2 /* DeviceLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = E92049E5BD652058AAE3905E /* DeviceLibrary.swift */; };
 		67E4B4EB5753A78FED6BFC06 /* PlaybackSoundTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FEFAC5E8265F423BA8BC73DE /* PlaybackSoundTests.swift */; };
-		6A243C7EB1409C7EF8BCCFD9 /* SharedReel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8EDE0803DD9B63D680AF39B4 /* SharedReel.swift */; };
 		6A92C21700939D9B784A2B84 /* TransportPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3FF8974CE7AC121FAD569F2C /* TransportPolicyTests.swift */; };
 		706640E8CE8DF92D55FF6C45 /* ReelDubShare.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 5B1D4417B7F3B25C34A902A4 /* ReelDubShare.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		7D2EB1359CF31C7CB67E013B /* SharedVideo.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B0A95302E86258E86C9A886 /* SharedVideo.swift */; };
 		87FD08F428A85C200A1DA26F /* SharePanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB96B230C4B53009974D6BDD /* SharePanel.swift */; };
 		8C8DEFFB89195ADB7E1FA354 /* OutputLanguage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F744C06BC48A6A48728BEEE /* OutputLanguage.swift */; };
 		8EDFED545097599993FB93EF /* InstrumentSerif-Italic.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 1D6C343B8A8D7B1FD031A148 /* InstrumentSerif-Italic.ttf */; };
@@ -49,6 +48,7 @@
 		CE5E9713D30C8D61F83255A4 /* DuoLayouts.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4CC84BF6AFD4DA1C2926BCD /* DuoLayouts.swift */; };
 		D86B833390C7DEFB1BBE23F6 /* OfflineRemovalTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 48AEB550E3BE07777FF7AB5A /* OfflineRemovalTests.swift */; };
 		E69833BEB969E0FCF6C6B9EA /* LayoutMatrixTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30A4F523ED1EA1E26F341D5 /* LayoutMatrixTests.swift */; };
+		F3686041B39E50688549ED67 /* SharedVideo.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B0A95302E86258E86C9A886 /* SharedVideo.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -106,10 +106,10 @@
 		5B1D4417B7F3B25C34A902A4 /* ReelDubShare.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = ReelDubShare.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		6B3FB6960C8146A94CA0E243 /* ReelDubApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReelDubApp.swift; sourceTree = "<group>"; };
 		786B5BDD69AF6AA6FE5AA02F /* Stellon-Community-License.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "Stellon-Community-License.txt"; sourceTree = "<group>"; };
+		7B0A95302E86258E86C9A886 /* SharedVideo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedVideo.swift; sourceTree = "<group>"; };
 		7D14F892F6DBFC685C356355 /* Palette.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Palette.swift; sourceTree = "<group>"; };
 		7E3D56A94780B4E473485E12 /* clip.mp4 */ = {isa = PBXFileReference; path = clip.mp4; sourceTree = "<group>"; };
 		8E562891A2A6B21798745625 /* ReportView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReportView.swift; sourceTree = "<group>"; };
-		8EDE0803DD9B63D680AF39B4 /* SharedReel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedReel.swift; sourceTree = "<group>"; };
 		92D9542904E859E6EB12DAD1 /* ReelDubTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = ReelDubTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		9A360E5C178187669B008D52 /* Home.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Home.swift; sourceTree = "<group>"; };
 		ABD127768F9C99E088EB5B6B /* AdaptiveNavigationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdaptiveNavigationTests.swift; sourceTree = "<group>"; };
@@ -189,7 +189,7 @@
 				29DA57E3A3B7387BC4164484 /* DubForm.swift */,
 				2F744C06BC48A6A48728BEEE /* OutputLanguage.swift */,
 				7D14F892F6DBFC685C356355 /* Palette.swift */,
-				8EDE0803DD9B63D680AF39B4 /* SharedReel.swift */,
+				7B0A95302E86258E86C9A886 /* SharedVideo.swift */,
 				D9AFCA869A58D3086F964E62 /* VideoImport.swift */,
 				C2247E7B3B3D12DC9BDB377C /* KittenML */,
 			);
@@ -454,7 +454,7 @@
 				C61CDDE95B6BC5E80D12403C /* ReelDubApp.swift in Sources */,
 				B5D33D1EE6B3D06F835C980C /* ReportView.swift in Sources */,
 				5F451703B7CE01CA61521BF7 /* SettingsView.swift in Sources */,
-				6A243C7EB1409C7EF8BCCFD9 /* SharedReel.swift in Sources */,
+				7D2EB1359CF31C7CB67E013B /* SharedVideo.swift in Sources */,
 				201D517F9F5327C41DA629EF /* VideoImport.swift in Sources */,
 				A5F4BC12D4C242BCD2CC054F /* Welcome.swift in Sources */,
 			);
@@ -470,7 +470,7 @@
 				90B11E7A6ADD3E7045AC56A8 /* Palette.swift in Sources */,
 				A818723737ED39690D591829 /* ShareController.swift in Sources */,
 				87FD08F428A85C200A1DA26F /* SharePanel.swift in Sources */,
-				2D4402FD536E65E1E2D425EA /* SharedReel.swift in Sources */,
+				F3686041B39E50688549ED67 /* SharedVideo.swift in Sources */,
 				B144F565BB5243256BE638BD /* VideoImport.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -642,7 +642,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 19;
+				CURRENT_PROJECT_VERSION = 20;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
@@ -744,7 +744,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 19;
+				CURRENT_PROJECT_VERSION = 20;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;

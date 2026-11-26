@@ -7,7 +7,7 @@ from pymongo import MongoClient
 from pymongo.write_concern import WriteConcern
 
 
-QUEUE_ORDER = [("recovery_rank", -1), ("priority", -1), ("queue_seq", 1), ("created", 1), ("_id", 1)]
+QUEUE_ORDER = [("queue_front", -1), ("recovery_rank", -1), ("priority", -1), ("queue_seq", 1), ("created", 1), ("_id", 1)]
 
 
 def now():

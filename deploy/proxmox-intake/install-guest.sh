@@ -18,6 +18,8 @@ test -s "$root/tls/ca.pem"
 test -e "$root/tls/clients.map"
 test -f /etc/reeldub-host-guard/ready
 test -x /opt/reeldub-venv/bin/yt-dlp
+test -x /opt/reeldub-venv/bin/deno
+/opt/reeldub-venv/bin/python -c 'import yt_dlp_ejs'
 test -e /opt/reeldub-intake/server/intake.py
 test "$#" -ge 1
 install -d -m 0755 /etc/reeldub
@@ -65,7 +67,7 @@ http {
             proxy_http_version 1.1;
             proxy_request_buffering off;
             proxy_buffering off;
-            proxy_read_timeout 155s;
+            proxy_read_timeout 430s;
         }
         location / { return 404; }
     }
@@ -106,7 +108,7 @@ WantedBy=multi-user.target
 EOF
 cat > /etc/systemd/system/reeldub-intake-proxy.service <<'EOF'
 [Unit]
-Description=Allowlisted HTTPS egress for ReelDub media tools
+Description=Public HTTP and HTTPS egress for ReelDub media tools
 Requires=reeldub-intake-firewall.service
 After=reeldub-intake-firewall.service
 [Service]

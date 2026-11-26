@@ -1,0 +1,107 @@
+# Optional local PostgreSQL for individual library keys and job metadata.
+x-api-image: &api-image ${COMPOSE_PROJECT_NAME:-reeldub}-api
+x-pg-client: &pg-client
+  PGSSLROOTCERT: /run/reeldub-trust/ca.pem
+services:
+  pg-tls:
+    build: {context: ., target: metadata}
+    image: reeldub-local-postgres
+    user: postgres
+    entrypoint: [/bin/sh, /opt/reeldub/tls.sh]
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    volumes:
+      - pg-issuer:/var/lib/reeldub-issuer
+      - pg-tls:/var/lib/reeldub-tls
+      - pg-trust:/var/lib/reeldub-trust
+
+  postgres:
+    build: {context: ., target: metadata}
+    image: reeldub-local-postgres
+    environment:
+      POSTGRES_DB: reeldub
+      POSTGRES_PASSWORD: ${REELDUB_PG_ROOT_PASSWORD:?Run ./start-local.sh --postgres}
+    command: ["postgres", "-c", "ssl=on", "-c", "ssl_min_protocol_version=TLSv1.2",
+              "-c", "ssl_cert_file=/var/lib/reeldub-tls/server.pem",
+              "-c", "ssl_key_file=/var/lib/reeldub-tls/server.key",
+              "-c", "hba_file=/opt/reeldub/hba.conf"]
+    networks: [metadata]
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+      - pg-tls:/var/lib/reeldub-tls:ro
+    depends_on:
+      pg-tls: {condition: service_completed_successfully}
+    healthcheck:
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "postgres", "-d", "reeldub"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  pg-schema:
+    build: {context: ., target: api}
+    user: reel
+    environment:
+      <<: *pg-client
+      POSTGRES_PASSWORD: ${REELDUB_PG_ROOT_PASSWORD:?Run ./start-local.sh --postgres}
+      REELDUB_PG_APP_PASSWORD: ${REELDUB_PG_APP_PASSWORD:?Run ./start-local.sh --postgres}
+      REELDUB_PG_WORKER_PASSWORD: ${REELDUB_PG_WORKER_PASSWORD:?Run ./start-local.sh --postgres}
+      REELDUB_PG_KEYS_PASSWORD: ${REELDUB_PG_KEYS_PASSWORD:?Run ./start-local.sh --postgres}
+      PYTHONDONTWRITEBYTECODE: "1"
+    entrypoint: ["python", "/app/provision.py"]
+    volumes:
+      - pg-trust:/run/reeldub-trust:ro
+      - ./deploy/postgres/provision.py:/app/provision.py:ro
+    networks: [metadata]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    depends_on:
+      postgres: {condition: service_healthy}
+
+  api:
+    image: *api-image
+    environment:
+      <<: *pg-client
+      REELDUB_AUTH_MODE: postgres
+      SELF_HOST_KEY: ""
+      REELDUB_POSTGRES_DSN: postgresql://reeldub_app:${REELDUB_PG_APP_PASSWORD}@postgres/reeldub
+    networks: [metadata]
+    volumes: ["pg-trust:/run/reeldub-trust:ro"]
+    depends_on:
+      pg-schema: {condition: service_completed_successfully}
+
+  worker:
+    environment:
+      <<: *pg-client
+      REELDUB_POSTGRES_DSN: postgresql://reeldub_worker:${REELDUB_PG_WORKER_PASSWORD}@postgres/reeldub
+    networks: [metadata]
+    volumes: ["pg-trust:/run/reeldub-trust:ro"]
+    depends_on:
+      pg-schema: {condition: service_completed_successfully}
+
+  keys:
+    profiles: [admin]
+    image: *api-image
+    environment:
+      <<: *pg-client
+      REELDUB_KEY_ADMIN_DSN: postgresql://reeldub_keys:${REELDUB_PG_KEYS_PASSWORD}@postgres/reeldub
+    entrypoint: ["python", "-m", "server.access_keys"]
+    logging: {driver: none}
+    networks: [metadata]
+    volumes: ["pg-trust:/run/reeldub-trust:ro"]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    depends_on:
+      pg-schema: {condition: service_completed_successfully}
+
+networks:
+  metadata: {internal: true}
+volumes:
+  pg-data: {}
+  pg-tls: {}
+  pg-issuer: {}
+  pg-trust: {}

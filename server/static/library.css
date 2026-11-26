@@ -31,3 +31,7 @@ video,progress{width:100%;accent-color:var(--mint)}
 video{max-height:65vh;border-radius:.65rem;background:#0b0d0b}
 #message{color:#ffc2a7} [hidden]{display:none!important}
 @media(max-width:350px){.settings{grid-template-columns:1fr}}
+
+#queue-tools{display:flex;flex-wrap:wrap;gap:.45rem;margin:.65rem 0}
+#queue-tools button{background:#2d342c;color:inherit;font-size:.9rem;min-height:2.7rem}
+#cancel-job{color:#ffd3bb!important}

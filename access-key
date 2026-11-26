@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Use a short-lived, local key administrator. Its output goes to this terminal.
+set -euo pipefail
+cd "$(dirname "$0")"
+if [[ ! -f .env ]] || ! grep -Fxq 'REELDUB_DATABASE_MODE=postgres' .env; then
+  echo 'This command needs a PostgreSQL ReelDub installation. See ./start-local.sh --help.' >&2
+  exit 1
+fi
+exec docker compose run --rm --no-deps -T keys "$@"

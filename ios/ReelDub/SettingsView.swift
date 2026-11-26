@@ -16,7 +16,7 @@ struct SettingsView: View {
                     Button("Disconnect", role: .destructive) { dismiss(); studio.disconnect() }
                 }
                 Section("Using ReelDub") {
-                    Text("In Instagram, share a Reel and choose ReelDub. Pick a voice matching mode and tap Dub video. ReelDub confirms submission and returns you to Instagram. Open Dubs to watch.")
+                    Text("Share a video link and choose ReelDub. Pick a voice matching mode and tap Dub video. ReelDub confirms submission and returns you to the app you shared from. Open Dubs to watch.")
                     Text("Use videos and voices you have permission to translate. AI translations can miss words or change their meaning.")
                 }
                 Section("About") {

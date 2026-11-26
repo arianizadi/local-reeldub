@@ -93,17 +93,23 @@ async function connect(value) {
   if (version === generation) { recent = jobs; drawRecent(); }
 }
 
-function title(job) { return job.title || "Instagram Reel"; }
+function title(job) { return job.title || "Video"; }
 
 function drawRecent() {
   byId("recent").hidden = recent.length === 0;
-  const rows = recent.map(job => {
+  const rank = job => job.state === "queued" ? 0 : job.state === "running" ? 1 : 2;
+  const sorted = [...recent].sort((a, b) => rank(a) - rank(b)
+    || (a.state === "queued" && b.state === "queued" ? (a.ahead ?? Infinity) - (b.ahead ?? Infinity) : 0));
+  const rows = sorted.map(job => {
     const row = document.createElement("li");
     const button = document.createElement("button");
     const label = document.createElement("span");
     label.textContent = title(job);
     const detail = document.createElement("small");
     detail.textContent = languages.of(job.target_language || "en") + " · " + (job.stage || job.state);
+    if (job.state === "queued" && Number.isInteger(job.ahead)) {
+      detail.textContent = job.ahead === 0 ? "Next in line" : job.ahead + " queued ahead";
+    }
     button.append(label, detail);
     button.onclick = () => openJob(job);
     row.append(button);
@@ -135,6 +141,8 @@ function update(job, version) {
   if (index >= 0) recent[index] = job; else recent.unshift(job);
   drawRecent();
   const live = job.state === "running" || job.state === "queued";
+  byId("queue-tools").hidden = !live;
+  byId("move-first").hidden = byId("move-last").hidden = job.state !== "queued";
   const progress = byId("progress");
   progress.hidden = !live;
   if (typeof job.progress === "number") progress.value = job.progress;
@@ -214,6 +222,29 @@ createForm.onsubmit = async event => {
   } catch (error) { message(error.message); }
   finally { button.disabled = false; }
 };
+async function changeJob(action, position) {
+  if (!currentJob || !profile) return;
+  const job = currentJob;
+  const version = ++generation;
+  clearTimeout(timer);
+  const controls = byId("queue-tools").querySelectorAll("button");
+  controls.forEach(button => { button.disabled = true; });
+  try {
+    const item = await api("/v1/jobs/" + encodeURIComponent(job.id) + "/" + action, position ? {position} : {});
+    if (version !== generation) return;
+    update(item, version);
+    const list = await api("/v1/jobs");
+    if (version === generation) { recent = list; drawRecent(); message(); }
+  } catch (error) {
+    if (version === generation) {
+      await refreshJob(version);
+      message(error.message);
+    }
+  } finally { controls.forEach(button => { button.disabled = false; }); }
+}
+byId("move-first").onclick = () => changeJob("queue", "first");
+byId("move-last").onclick = () => changeJob("queue", "last");
+byId("cancel-job").onclick = () => changeJob("cancel");
 byId("disconnect").onclick = disconnect;
 createForm.onchange = describeMode;
 byId("retry-play").onclick = () => {

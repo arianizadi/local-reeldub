@@ -5,6 +5,7 @@ struct JobView: View {
     let studio: Studio
     let initial: Job
     let requestDeletion: (Job) -> Void
+    let requestCancellation: (Job) -> Void
     @State private var player: AVPlayer?
     @State private var didStart = false
     @State private var preparingPlayback = false
@@ -24,7 +25,7 @@ struct JobView: View {
     @State private var retryID = UUID()
     private var job: Job { studio.jobs.first { $0.id == initial.id } ?? initial }
 
-    private var originalURL: URL? { Job.isReel(job.url) ? URL(string: job.url) : nil }
+    private var originalURL: URL? { job.sourceURL }
     private var expired: Bool { studio.isExpired(job) }
 
     var body: some View {
@@ -140,12 +141,22 @@ struct JobView: View {
                         .background(Color.orange.opacity(0.13), in: RoundedRectangle(cornerRadius: 12))
                         .accessibilityIdentifier("render-recovery")
                 }
-                if job.state == "running" || job.state == "queued" { ProgressRow(job: job, processing: studio.processingCount) }
+                if job.rdPhase.isActive {
+                    ProgressRow(job: job, processing: studio.processingCount)
+                    Menu("Manage dub", systemImage: "ellipsis.circle") {
+                        QueueJobButtons(studio: studio, job: job) { requestCancellation(job) }
+                    }
+                }
                 else {
-                    Label(job.state == "done" ? (studio.storageLabel(job) ?? "\(job.targetName) dub ready") : "Couldn’t finish this dub", systemImage: job.state == "done" ? "checkmark.circle" : "exclamationmark.circle")
+                    if job.rdPhase == .cancelled {
+                        Label("Cancelled", systemImage: "xmark.circle")
+                    } else {
+                        Label(job.state == "done" ? (studio.storageLabel(job) ?? "\(job.targetName) dub ready") : "Couldn’t finish this dub",
+                              systemImage: job.state == "done" ? "checkmark.circle" : "exclamationmark.circle")
+                    }
                     if let error = job.error {
                         Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
-                        if let originalURL { Link("Check original Reel", destination: originalURL) }
+                        if let originalURL { Link("Check original video", destination: originalURL) }
                     }
                     Text(job.timing(at: Date())).font(.subheadline).foregroundStyle(.secondary)
                     if studio.canDownloadAgain(job.id), job.available_on_server != false {
@@ -162,8 +173,8 @@ struct JobView: View {
                 if job.state != "failed", let quality = job.lab_mode ?? job.render_quality {
                     LabeledContent("Render quality", value: quality.capitalized)
                 }
-                if (job.state == "failed" || expired), let api = studio.api {
-                    if let source = RDLink.reel(in: job.url).map(DubSource.reel) ?? job.source_id.map(DubSource.uploaded) {
+                if (job.state == "failed" || job.state == "cancelled" || expired), let api = studio.api {
+                    if let source = RDLink.video(in: job.url).map(DubSource.link) ?? job.source_id.map(DubSource.uploaded) {
                         Button("Translate again", systemImage: "arrow.clockwise") {
                             Task {
                                 guard !retrying else { return }
@@ -182,7 +193,7 @@ struct JobView: View {
                 }
                 if let problem { Text(problem).font(.footnote).foregroundStyle(.secondary) }
                 Divider()
-                if job.error == nil, let originalURL { Link(destination: originalURL) { Label("Open original Reel", systemImage: "arrow.up.right.square") } }
+                if job.error == nil, let originalURL { Link(destination: originalURL) { Label("Open original video", systemImage: "arrow.up.right.square") } }
                 Button { reporting = true } label: { Label(job.reported ? "Update issue report" : "Report an issue", systemImage: "flag") }
                 if !job.rdPhase.isActive {
                     Button(role: .destructive) { requestDeletion(job) } label: {

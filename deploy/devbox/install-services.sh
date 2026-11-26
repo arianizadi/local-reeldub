@@ -9,7 +9,7 @@ runtime="${XDG_RUNTIME_DIR:?}/reeldub-boot"
 units="$HOME/.config/systemd/user"
 public_host=${REELDUB_PUBLIC_HOST:?Set the public hostname}
 [[ $public_host =~ ^[A-Za-z0-9.-]+$ ]]
-mkdir -p -m 700 "$units" "$runtime"
+install -d -m 0700 "$units" "$runtime"
 mountpoint -q "$vault/open"
 for name in api operator worker; do test -s "$cfg/$name.env"; done
 # Use the same ingress policies as Compose. Only the listener and upstream change.
@@ -109,12 +109,31 @@ UMask=0077
 WantedBy=default.target
 EOF
 install -d -m 0700 "$bin/intake/server"
-for module in __init__ intake source download media_network; do
+for module in __init__ intake source download extract video_url media_network; do
   install -m 0600 "$repo/server/$module.py" "$bin/intake/server/$module.py"
 done
+make_unit intake-proxy <<EOF
+[Unit]
+Description=ReelDub public media egress proxy
+[Service]
+WorkingDirectory=$repo
+ExecStart=$repo/deploy/devbox/intake.sh --proxy
+RuntimeDirectory=reeldub-intake-proxy
+RuntimeDirectoryMode=0700
+RestrictAddressFamilies=AF_INET AF_INET6
+NoNewPrivileges=yes
+MemoryMax=128M
+TasksMax=96
+Restart=always
+RestartSec=5
+[Install]
+WantedBy=default.target
+EOF
 make_unit intake <<EOF
 [Unit]
 Description=ReelDub isolated video intake
+Requires=reeldub-intake-proxy.service
+After=reeldub-intake-proxy.service
 [Service]
 WorkingDirectory=$repo
 ExecStart=$repo/deploy/devbox/intake.sh

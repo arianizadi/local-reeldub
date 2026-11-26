@@ -17,7 +17,8 @@ from server.gpu import transcription_device
 from server.languages import LANGUAGES
 from server.upload_voice import (KITTEN_MATCH, KITTEN_MATCH_MODEL,
                                  VOICE_ERRORS, kitten_match_ready)
-from server.source import inspect_video, reel_url
+from server.source import inspect_video
+from server.video_url import video_url
 from server.download import download_reel
 from clean_background import leakage_regions, matching_dialogue, merge_regions, suppress_unresolved
 from render import ff, mix, render, source_input_options, source_time_limit, RATE
@@ -31,8 +32,8 @@ def input_video(value, folder):
     if hosted and os.getenv("REELDUB_STAGED_INPUT") == value:
         return Path(value)
     if hosted or urlparse(value).scheme:
-        value = reel_url(value)
-        return download_reel(value, folder, limited=hosted, metadata=os.getenv("REELDUB_METADATA_FILE"))
+        value = video_url(value)
+        return download_reel(value, folder, metadata=os.getenv("REELDUB_METADATA_FILE"))
     path = Path(value).expanduser().resolve()
     if not path.is_file():
         raise ValueError(f"Video file does not exist: {path}")
@@ -90,7 +91,7 @@ def timed_lines(candidates, duration):
 
 
 def run(args):
-    value = args.input or input("Paste an Instagram Reel link (or a video path): ").strip()
+    value = args.input or input("Paste a public video link (or a video path): ").strip()
     target = args.target_language
     output = LANGUAGES[target]
     if not output.matched:
@@ -110,6 +111,7 @@ def run(args):
     output_dir.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=".reeldub-", dir=output_dir) as temp:
         folder = Path(temp)
+        remote = urlparse(value).scheme in ("https", "http")
         media = input_video(value, folder)
         dest = args.output.expanduser().resolve() if args.output else output_dir / f"{media.stem}.{target}.mp4"
         if dest.suffix.lower() != ".mp4":
@@ -121,7 +123,7 @@ def run(args):
                 raise ValueError("Choose a video under 250 MiB.")
             report(duration=float(inspect_video(media)))
         source = folder / "source.wav"
-        ff(*source_input_options(), "-i", media, *source_time_limit(), "-map", "0:a:0", "-vn", "-ac", "2", "-ar", str(RATE),
+        ff(*source_input_options(remote), "-i", media, *source_time_limit(), "-map", "0:a:0", "-vn", "-ac", "2", "-ar", str(RATE),
            "-c:a", "pcm_s16le", "-rf64", "auto", source)
         analysis_audio = source
         worker = APP / ".qwen-venv/bin/python"
@@ -208,7 +210,7 @@ def run(args):
         print("Mixing soundtrack…", flush=True)
         mix(lines, source, folder)
         print("Encoding video…", flush=True)
-        render(media, lines, folder, target, voice_label="Matched speaker")
+        render(media, lines, folder, target, voice_label="Matched speaker", remote=remote)
         metadata_file = os.getenv("REELDUB_METADATA_FILE")
         if metadata_file:
             path = Path(metadata_file)
@@ -227,7 +229,7 @@ def run(args):
 
 def main():
     parser = argparse.ArgumentParser(description="Translate and dub a video using local models.")
-    parser.add_argument("input", nargs="?", help="Instagram Reel URL, or local video")
+    parser.add_argument("input", nargs="?", help="Public video URL, or local video")
     parser.add_argument("-o", "--output", type=Path, help="output MP4 (default: output/<video>.<language>.mp4)")
     parser.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto")
     installed = APP / ".venv/reeldub-model"
@@ -243,7 +245,7 @@ def main():
     parser.add_argument("--match-engine", choices=[KITTEN_MATCH], help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.input is None:
-        args.input = input("Paste an Instagram Reel link (or a video path): ").strip()
+        args.input = input("Paste a public video link (or a video path): ").strip()
     try:
         try:
             run(args)

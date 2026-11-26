@@ -13,8 +13,8 @@ struct ReportView: View {
             Form {
                 Picker("Issue", selection: $category) { ForEach(["Translation","Voice","Timing","Background","Other"], id: \.self) { Text($0) } }
                 Section("What went wrong?") { TextField("For example, a word was mistranslated at 0:12.", text: $note, axis: .vertical).lineLimit(3...8) }
-                Section { Text(job.url).font(.footnote) } header: { Text("Reel included") } footer: {
-                    Text("Your note, Reel link and render details go to the operator of your connected server for debugging.")
+                Section { Text(job.url).font(.footnote) } header: { Text("Video included") } footer: {
+                    Text("Your note, video source and render details go to the operator of your connected server for debugging.")
                 }
                 if note.count > 2000 { Text("Shorten your note to 2,000 characters.").foregroundStyle(.red) }
                 if sending { ProgressView("Sending report…") }

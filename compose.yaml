@@ -27,13 +27,41 @@ services:
       retries: 30
     restart: unless-stopped
 
+  egress:
+    <<: *harden
+    build: {context: ., target: proxy}
+    environment: {REELDUB_PROXY_LISTEN: 0.0.0.0}
+    networks: [egress, fetch]
+    read_only: true
+    tmpfs: [/tmp]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1',18322),2).close()"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_interval: 1s
+      start_period: 10s
+    pids_limit: 96
+    mem_limit: 128m
+    restart: unless-stopped
+
   intake:
     <<: *harden
     build: {context: ., target: intake}
     environment:
+      REELDUB_INTAKE_FIXED_PROXY: "1"
+      REELDUB_INTAKE_PROXY_HOST: egress
       REELDUB_REEL_LINKS: "1"
       REELDUB_MAX_SOURCE_SECONDS: ${REELDUB_MAX_SOURCE_SECONDS:-0}
-    networks: [intake, fetch]
+    networks: [intake, egress]
+    depends_on: {egress: {condition: service_healthy}}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1',8310),2).close()"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_interval: 1s
+      start_period: 10s
     read_only: true
     tmpfs: ["/tmp:size=768m,mode=1777"]
     mem_limit: 1g
@@ -50,10 +78,10 @@ services:
       REELDUB_REEL_LINKS: "1"
       REELDUB_ACCESS_MODE: operator
       REELDUB_MAX_SOURCE_SECONDS: ${REELDUB_MAX_SOURCE_SECONDS:-0}
-      SELF_HOST_KEY: ${SELF_HOST_KEY:?Run ./start-local.sh first}
+      SELF_HOST_KEY: ${SELF_HOST_KEY:-}
     ports: ["127.0.0.1:${REELDUB_PORT:-8300}:8300"]
     networks: [database, web, intake]
-    depends_on: {mongo: {condition: service_healthy}, intake: {condition: service_started}}
+    depends_on: {mongo: {condition: service_healthy}, intake: {condition: service_healthy}}
     read_only: true
     tmpfs: [/tmp]
     healthcheck:
@@ -136,13 +164,14 @@ services:
     networks: [database, intake]
     depends_on:
       mongo: {condition: service_healthy}
-      intake: {condition: service_started}
+      intake: {condition: service_healthy}
       models: {condition: service_completed_successfully}
     command: ["python", "-m", "server.worker"]
     init: true
     restart: unless-stopped
 networks:
   intake: {internal: true}
+  egress: {internal: true}
   fetch: {}
   downloads: {}
   database: {internal: true}

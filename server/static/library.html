@@ -22,22 +22,27 @@
     </form>
   </section>
   <section id="studio" hidden>
-    <h1>Dub a Reel</h1>
+    <h1>Dub a video</h1>
     <form id="create">
-      <label for="source">Instagram Reel link</label>
-      <input type="url" id="source" placeholder="https://www.instagram.com/reel/…" required autocomplete="off">
+      <label for="source">Video link</label>
+      <input type="url" id="source" placeholder="Paste a video URL" required autocomplete="off">
       <div class="settings">
         <div><label for="target">Translate into</label><select id="target" required></select></div>
         <fieldset><legend>Voice matching</legend><div class="modes"><label><input type="radio" name="quality" value="fast">Fast</label><label><input type="radio" name="quality" value="best" checked>Best</label></div></fieldset>
       </div>
       <p class="hint" id="mode-description"></p>
-      <button>Dub Reel</button>
+      <button>Dub video</button>
     </form>
     <p id="receipt" role="status"></p>
     <section id="result" hidden aria-labelledby="result-title">
       <h2 id="result-title">Your dub</h2>
       <p id="job-status" role="status"></p>
       <progress id="progress" max="1" aria-label="Dub progress" hidden></progress>
+      <div id="queue-tools" hidden>
+        <button id="move-first" type="button">Move to front</button>
+        <button id="move-last" type="button">Move to back</button>
+        <button id="cancel-job" type="button">Cancel dub</button>
+      </div>
       <video id="video" controls playsinline preload="metadata" hidden></video>
       <button id="retry-play" hidden>Reload video</button>
     </section>

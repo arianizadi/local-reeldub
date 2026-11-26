@@ -10,10 +10,13 @@ CREATE UNIQUE INDEX IF NOT EXISTS binding_token ON reeldub.billing_bindings ((do
 CREATE INDEX IF NOT EXISTS queue_order ON reeldub.jobs ((doc->'state'),(doc->'priority') DESC,(doc->'queue_seq'),(doc->'created'));
 CREATE INDEX IF NOT EXISTS fleet_slot_claim ON reeldub.jobs ((doc->'fleet_slot'),(doc->'fleet_request')) WHERE doc->'fleet_slot' IS NOT NULL AND doc->'fleet_slot' <> 'null'::jsonb;
 CREATE INDEX IF NOT EXISTS recovery_order ON reeldub.jobs ((doc->'state'),(doc->'recovery_rank') DESC NULLS LAST,(doc->'priority') DESC NULLS LAST,(doc->'queue_seq'),(doc->'created'));
-CREATE INDEX IF NOT EXISTS owner_url ON reeldub.jobs ((doc->'owner'),(doc->'url'),(doc->'target_language'));
+CREATE INDEX IF NOT EXISTS manual_queue_order ON reeldub.jobs ((doc->'state'),(doc->'queue_front') DESC NULLS LAST,(doc->'recovery_rank') DESC NULLS LAST,(doc->'priority') DESC NULLS LAST,(doc->'queue_seq'),(doc->'created'),id);
+CREATE INDEX IF NOT EXISTS owner_video_digest ON reeldub.jobs ((doc->'owner'),(md5(doc->>'url')),(doc->'target_language'));
+DROP INDEX IF EXISTS reeldub.owner_url;
 CREATE INDEX IF NOT EXISTS owner_activity ON reeldub.jobs ((doc->'owner'),(coalesce(doc->'last_requested',doc->'created')) DESC,id DESC);
 CREATE INDEX IF NOT EXISTS purchases_owner ON reeldub.purchases ((doc->'owner'),(doc->'environment'));
-CREATE INDEX IF NOT EXISTS sources_owner ON reeldub.sources ((doc->'owner'),(doc->'identity'));
+CREATE INDEX IF NOT EXISTS sources_identity_digest ON reeldub.sources ((doc->'owner'),(md5(doc->>'identity')));
+DROP INDEX IF EXISTS reeldub.sources_owner;
 CREATE INDEX IF NOT EXISTS jobs_minutes ON reeldub.jobs USING gin ((doc->'minute_grants'));
 CREATE INDEX IF NOT EXISTS jobs_requests ON reeldub.jobs USING gin ((doc->'request_keys'));
 CREATE TABLE IF NOT EXISTS reeldub.spend_keys (unit text PRIMARY KEY, job jsonb NOT NULL REFERENCES reeldub.jobs(id) ON DELETE CASCADE);

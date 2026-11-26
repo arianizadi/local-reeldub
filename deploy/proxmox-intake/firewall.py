@@ -15,6 +15,7 @@ def main():
     clients = ", ".join(map(str, peers))
     network_user = pwd.getpwnam("systemd-network").pw_uid
     egress_user = pwd.getpwnam("reeldub-egress").pw_uid
+    intake_user = pwd.getpwnam("reeldub-intake").pw_uid
     rules = f"""
 destroy table inet reeldub_intake
 table inet reeldub_intake {{
@@ -31,14 +32,17 @@ table inet reeldub_intake {{
  chain forward {{ type filter hook forward priority -10; policy drop; }}
  chain output {{
   type filter hook output priority -10; policy drop;
+  oifname "lo" meta skuid {intake_user} tcp dport 18322 accept
+  oifname "lo" meta skuid {{ {egress_user}, {intake_user} }} ct state established,related accept
+  oifname "lo" meta skuid {{ {egress_user}, {intake_user} }} drop
   oifname "lo" accept
   oifname "eth0" meta skuid {{ 0, {network_user} }} udp sport 68 udp dport 67 accept
   oifname "eth0" meta skuid 0 ip daddr {endpoint} udp dport {port} accept
   oifname "eth0" ip daddr @clients tcp sport 8443 ct state established accept
   oifname "tun0" meta skuid {egress_user} ip daddr 1.1.1.1 udp dport 53 accept
   oifname "tun0" meta skuid {egress_user} ip daddr 1.1.1.1 tcp dport 53 accept
-  oifname "tun0" ip daddr {{ 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16, 224.0.0.0/4, 240.0.0.0/4 }} drop
-  oifname "tun0" meta skuid {egress_user} ip protocol tcp tcp dport 443 accept
+  oifname "tun0" ip daddr {{ 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.0.0.0/24, 192.0.2.0/24, 192.88.99.0/24, 192.168.0.0/16, 198.18.0.0/15, 198.51.100.0/24, 203.0.113.0/24, 224.0.0.0/4, 240.0.0.0/4 }} drop
+  oifname "tun0" meta skuid {egress_user} ip protocol tcp tcp dport {{ 80, 443 }} accept
  }}
 }}
 """

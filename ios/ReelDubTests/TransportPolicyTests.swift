@@ -70,17 +70,27 @@ final class TransportPolicyTests: XCTestCase {
         XCTAssertEqual(try job([:]).queuePosition(processing: 3), "Queued")
     }
 
-    func testCaptionsFromPasteAndShareUseTheSameInstagramValidation() {
-        XCTAssertEqual(RDLink.reel(in: "A clip: https://m.instagram.com/reel/ABCDE/"), "https://m.instagram.com/reel/ABCDE/")
-        XCTAssertNotNil(RDLink.reel(in: "Watch HTTPS://WWW.INSTAGRAM.COM/reels/ABcd1/ today"))
-        XCTAssertEqual(RDLink.reel(in: "https://example.com/ then https://www.instagram.com/reel/abc12/"), "https://www.instagram.com/reel/abc12/")
-        XCTAssertNil(RDLink.reel(in: "https://instagram.com.example.invalid/reel/abc12/"))
-        XCTAssertNil(RDLink.reel(in: "https://instagram.com/p/abc12/"))
-        XCTAssertEqual(RDLink.reel(in: "https://www.instagram.com/share/reel/AbCdE/?igsh=123"), "https://www.instagram.com/share/reel/AbCdE/?igsh=123")
+    func testPastedVideoLinksPreserveTheirSiteAndQuery() {
+        for link in ["https://m.instagram.com/reel/ABCDE/", "HTTPS://WWW.INSTAGRAM.COM/share/reel/AbCdE/?igsh=123",
+                     "https://www.youtube.com/watch?v=AbCdE123&t=5", "https://youtu.be/AbCdE123",
+                     "https://vimeo.com/123456789", "http://media.example.com:80/movies/demo.mp4?clip=A%2BB",
+                     "https://www.tiktok.com/@creator/video/1234567890"] {
+            XCTAssertEqual(RDLink.video(in: link), link)
+            XCTAssertEqual(RDLink.video(in: "Please translate " + link + " for me"), link)
+        }
+        let international = "https://例え.jp/動画?字幕=有"
+        XCTAssertEqual(RDLink.video(in: international), URL(string: international)?.absoluteString)
+        let first = "https://vimeo.com/123456789"
+        XCTAssertEqual(RDLink.video(in: first + " then https://youtu.be/AbCdE123"), first)
+        for bad in ["", "just text", "file:///tmp/private.mov", "ftp://media.example.com/movie",
+                    "javascript:alert(1)", "custom://example.com/file", "video.example.com/movie",
+                    "https://user:password@media.example.org/v", "https://media.example.org:8080/file", "https:///watch"] {
+            XCTAssertNil(RDLink.video(in: bad), bad)
+        }
     }
 
     func testStoredConnectionsAreValidatedBeforeAttachingTheSessionToken() throws {
-        for origin in ["http://reeldub.arianizadi.com", "http://my-server.local", "http://192.168.1.2",
+        for origin in ["http://dub.example.org", "http://my-server.local", "http://192.0.2.2",
                        "https://user@example.org", "https://example.org/other"] {
             let connection = Connection(base: try XCTUnwrap(URL(string: origin)), token: "test-only")
             XCTAssertThrowsError(try API(connection: connection).request("v1/me"), origin)

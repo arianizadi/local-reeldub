@@ -28,7 +28,7 @@ struct SharePanel: View {
                     Text("Open ReelDub once to enter your server address and key, then share again.").foregroundStyle(.secondary)
                 } else if let input, let connection {
                     switch input {
-                    case .reel: Text("Dub this Reel").font(.title.bold())
+                    case .link: Text("Dub this video").font(.title.bold())
                     case .file(let movie): Text(movie.title).font(.title.bold())
                     }
                     DubForm(api: API(connection: connection), input: input, languages: languages) { _ in
@@ -50,7 +50,7 @@ struct SharePanel: View {
             guard let connection else { return }
             do {
                 if input == nil {
-                    let shared = try await SharedReel.extract(from: items)
+                    let shared = try await SharedVideo.extract(from: items)
                     if Task.isCancelled {
                         if case .file(let movie) = shared { movie.remove() }
                         return

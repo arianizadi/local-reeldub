@@ -273,11 +273,50 @@ final class StudioSmoke: XCTestCase {
         XCTAssertEqual(subtitles.value as? String, previous)
     }
 
+    func testManageFixtureQueueFromLibraryAndDetails() throws {
+        guard ProcessInfo.processInfo.environment["REELDUB_QUEUE_UI"] == "1" else {
+            throw XCTSkip("Requires a disposable queue fixture.")
+        }
+        let app = XCUIApplication()
+        app.launch()
+        continueAfterFailure = false
+        let beta = "Queue QA Beta"
+        let running = "Queue QA Running"
+        let betaMenu = app.buttons["Actions for " + beta]
+        guard betaMenu.waitForExistence(timeout: 10), app.buttons["Actions for " + running].exists else {
+            XCTFail("Expected labelled disposable fixtures before changing the queue.")
+            return
+        }
+        func row(_ title: String, state: String, detail: String = "") -> XCUIElement {
+            let candidates = app.buttons.matching(NSPredicate(format: "identifier == %@ AND label CONTAINS %@", "job-" + state, title))
+            return detail.isEmpty ? candidates.firstMatch : candidates.matching(NSPredicate(format: "label CONTAINS %@", detail)).firstMatch
+        }
+        func pick(_ title: String, _ action: String) {
+            app.buttons["Actions for " + title].tap()
+            app.buttons[action].firstMatch.tap()
+        }
+
+        pick(beta, "Move to front")
+        XCTAssertTrue(row(beta, state: "queued", detail: "Next in line").waitForExistence(timeout: 6))
+        pick(beta, "Move to back")
+        XCTAssertTrue(row(beta, state: "queued", detail: "2 dubs queued ahead").waitForExistence(timeout: 6))
+        pick(beta, "Cancel dub")
+        app.sheets.buttons["confirm-cancel-dub"].firstMatch.tap()
+        XCTAssertTrue(row(beta, state: "cancelled").waitForExistence(timeout: 6))
+
+        row(running, state: "running").tap()
+        app.buttons["Manage dub"].tap()
+        app.buttons["Cancel dub"].firstMatch.tap()
+        app.sheets.buttons["confirm-cancel-dub"].firstMatch.tap()
+        XCTAssertTrue(app.buttons["Translate again"].waitForExistence(timeout: 8))
+        XCTAssertTrue(app.buttons["delete-dub"].exists)
+    }
+
     func testWelcomeAndSelfHostedPlayback() throws {
         let app = XCUIApplication()
         let job = try connectToPlaybackLibrary(app)
-        app.buttons["add-reel"].tap()
-        let upload = app.textFields["reel-link"]
+        app.buttons["add-video"].tap()
+        let upload = app.textFields["video-link"]
         XCTAssertTrue(upload.waitForExistence(timeout: 3))
         app.buttons["Close"].tap()
         if !job.isHittable { app.swipeDown() }

@@ -9,7 +9,7 @@ struct Welcome: View {
                     Image("brand-mark").resizable().scaledToFit().frame(width: 58, height: 58)
                         .accessibilityHidden(true)
                     Text("Connect your server").font(.largeTitle.bold())
-                    Text("Your server translates the dialogue and matches the speaker’s voice. Once connected, share a Reel straight from Instagram.")
+                    Text("Your server translates the dialogue and matches the speaker’s voice. Once connected, share a video link straight from another app.")
                         .foregroundStyle(.secondary)
                     ConnectionForm(studio: studio)
                 }.padding(24).frame(maxWidth: 560)

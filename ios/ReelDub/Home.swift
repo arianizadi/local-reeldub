@@ -20,6 +20,7 @@ struct Home: View {
     @State private var deletion: [Job] = []
     @State private var rangeSelection = LibraryDragSelection()
     private var eligible: [String] { sections.flatMap { $0.jobs }.filter { !$0.rdPhase.isActive }.map(\.id) }
+    @State private var cancellation: Job?
     @State private var deletionError: String?
     @State private var submissionNotice: UUID?
 
@@ -43,7 +44,7 @@ struct Home: View {
             VStack(alignment: .leading, spacing: 0) {
                 if usesWindowToolbar {
                     if !selecting && typeSize > .xLarge {
-                        addReel.frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 18)
+                        addVideo.frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 18)
                     }
                 } else { header }
                 if searching {
@@ -85,7 +86,7 @@ struct Home: View {
                 }
             }
             .navigationDestination(for: Job.self) { job in
-                JobView(studio: studio, initial: job, requestDeletion: { deletion = [$0] })
+                JobView(studio: studio, initial: job, requestDeletion: { deletion = [$0] }, requestCancellation: { cancellation = $0 })
             }
             .sheet(item: $sheet) { item in
                 switch item {
@@ -142,6 +143,17 @@ struct Home: View {
         } message: { _ in
             Text("Removes the library entry and its download from this device. Copies you saved in Photos or Files stay there.")
         }
+        .confirmationDialog("Cancel this dub?", isPresented: Binding(get: { cancellation != nil }, set: { if !$0 { cancellation = nil } }),
+                            titleVisibility: .visible, presenting: cancellation) { job in
+            Button("Cancel dub", role: .destructive) { Task { await studio.changeQueue(job, action: .cancel) } }
+                .accessibilityIdentifier("confirm-cancel-dub")
+            Button("Keep dub", role: .cancel) {}
+        } message: { job in
+            Text(job.state == "running" ? "Stop processing this video on your server." : "Remove this video from the render queue.")
+        }
+        .alert("Couldn’t update the queue", isPresented: Binding(get: { studio.queueIssue != nil }, set: { if !$0 { studio.queueIssue = nil } })) {
+            Button("OK") { studio.queueIssue = nil }
+        } message: { Text(studio.queueIssue ?? "") }
         .alert("Couldn’t finish removing dubs", isPresented: Binding(get: { deletionError != nil },
                set: { if !$0 { deletionError = nil } })) { Button("OK") {} } message: { Text(deletionError ?? "") }
         .task(id: scenePhase == .active && studio.hasPendingRemovals) {
@@ -190,7 +202,7 @@ struct Home: View {
                 Spacer()
                 headerActions
             }
-            if !selecting && typeSize > .xLarge { addReel }
+            if !selecting && typeSize > .xLarge { addVideo }
         }.padding(.horizontal, 18).padding(.bottom, 10).padding(.top, 4)
     }
 
@@ -208,17 +220,17 @@ struct Home: View {
             } label: {
                 Image(systemName: "ellipsis.circle").font(.title3).frame(width: 44, height: 44)
             }.accessibilityLabel("Library options").accessibilityIdentifier("library-options")
-            if typeSize <= .xLarge { addReel }
+            if typeSize <= .xLarge { addVideo }
         }
     }
 
-    private var addReel: some View {
+    private var addVideo: some View {
         Button { sheet = .composer } label: {
-            Label("Add Reel", systemImage: "plus").font(.headline)
+            Label("Add video", systemImage: "plus").font(.headline)
                 .padding(.horizontal, 14).padding(.vertical, 7)
                 .foregroundStyle(.black).background(leaf, in: Capsule())
                 .frame(minHeight: 44)
-        }.accessibilityIdentifier("add-reel")
+        }.accessibilityIdentifier("add-video")
     }
 
     private var sections: [(title: String, jobs: [Job])] {
@@ -228,7 +240,8 @@ struct Home: View {
             ("Queued", items.filter { $0.rdPhase == .queued }.sorted { ($0.ahead ?? Int.max) < ($1.ahead ?? Int.max) }),
             ("Ready", items.filter { $0.rdPhase == .done && !studio.isExpired($0) }),
             ("Expired", items.filter { studio.isExpired($0) }),
-            ("Failed", items.filter { $0.rdPhase == .failed })
+            ("Failed", items.filter { $0.rdPhase == .failed }),
+            ("Cancelled", items.filter { $0.rdPhase == .cancelled })
         ]
     }
 
@@ -257,8 +270,8 @@ struct Home: View {
                     else if studio.jobs.isEmpty {
                         ContentUnavailableView {
                             Label("Your first dub", systemImage: "film.stack")
-                        } description: { Text("In Instagram, tap Share, then ReelDub. You can also paste a Reel link here.") }
-                        actions: { Button("Add Reel") { sheet = .composer } }
+                        } description: { Text("Share a video from another app to ReelDub, or paste its link here.") }
+                        actions: { Button("Add video") { sheet = .composer } }
                     } else {
                         ContentUnavailableView(query.isEmpty ? filter.emptyTitle : "No matching dubs",
                                                systemImage: query.isEmpty ? "tray" : "magnifyingglass")
@@ -294,10 +307,7 @@ struct Home: View {
                         .disabled(selecting && job.rdPhase.isActive)
                         .accessibilityAddTraits(selected.contains(job.id) ? .isSelected : [])
                         .buttonStyle(.plain).accessibilityIdentifier("job-" + job.state)
-                        if !selecting && job.rdPhase.isActive {
-                            Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary).accessibilityHidden(true)
-                                .allowsHitTesting(false)
-                        } else if !selecting {
+                        if !selecting {
                             Menu { actions(job) } label: {
                                 Image(systemName: "ellipsis").frame(width: 44, height: 44)
                                     .contentShape(Rectangle())
@@ -311,8 +321,12 @@ struct Home: View {
                     }
                     .contextMenu { if !selecting { actions(job) } }
                     .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                        if !selecting && !job.rdPhase.isActive {
-                            Button("Remove from Library", systemImage: "trash", role: .destructive) { deletion = [job] }
+                        if !selecting {
+                            if job.rdPhase.isActive {
+                                Button("Cancel dub", systemImage: "xmark.circle", role: .destructive) { cancellation = job }
+                            } else {
+                                Button("Remove from Library", systemImage: "trash", role: .destructive) { deletion = [job] }
+                            }
                         }
                     }
                     .listRowInsets(EdgeInsets(top: 9, leading: 18, bottom: 9, trailing: 10))
@@ -326,6 +340,10 @@ struct Home: View {
     }
 
     @ViewBuilder private func actions(_ job: Job) -> some View {
+        if job.rdPhase.isActive {
+            QueueJobButtons(studio: studio, job: job) { cancellation = job }
+            Divider()
+        }
         RDJobMenu(job: job, expired: studio.isExpired(job)) { path.append(job) }
         if !job.rdPhase.isActive {
             Divider()
@@ -401,6 +419,8 @@ private struct TransferRow: View {
                         .font(.caption).foregroundStyle(.secondary).lineLimit(2)
                     if let storage { Text(storage).font(.caption2).foregroundStyle(leaf) }
                     Text(job.timing(at: .now)).font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                case .cancelled:
+                    Text("Cancelled · " + job.timing(at: .now)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                 case .failed:
                     Text(job.error ?? "Open for details or retry.").font(.caption).foregroundStyle(.orange)
                         .lineLimit(typeSize.isAccessibilitySize ? nil : 2)
@@ -427,14 +447,18 @@ struct RDComposer: View {
                 LabeledContent("Video", value: movie.title)
                 Button("Choose another video") { movie.remove(); self.movie = nil }
             } else {
-                TextField("Paste an Instagram Reel link", text: $text)
+                TextField("Paste a video link", text: $text)
                     .textInputAutocapitalization(.never).autocorrectionDisabled()
                     .keyboardType(.URL).textFieldStyle(.roundedBorder)
-                    .accessibilityIdentifier("reel-link")
+                    .accessibilityIdentifier("video-link")
+                if !text.isEmpty, RDLink.video(in: text) == nil {
+                    Text("Enter a public video link starting with http:// or https://.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
                 VideoImportButton(receive: { movie = $0; problem = nil }, failed: { problem = $0 }, title: "Choose a video file")
             }
             if let api = studio.api {
-                let source = movie.map(DubInput.file) ?? RDLink.reel(in: text).map(DubInput.reel)
+                let source = movie.map(DubInput.file) ?? RDLink.video(in: text).map(DubInput.link)
                 DubForm(api: api, input: source, languages: studio.account?.quality_languages ?? api.connection.qualityLanguages ?? [:]) { job in
                     studio.didSubmit(job)
                     onQueued(job)
@@ -514,6 +538,8 @@ struct ProgressRow: View {
             return job.rdStageName
         case .done:
             return job.rdRuntime.map { "Ready · " + $0 } ?? "Ready to watch"
+        case .cancelled:
+            return "Cancelled"
         case .failed:
             return "Dub failed"
         }
@@ -812,6 +838,28 @@ struct RDSearchField: View {
     }
 }
 
+struct QueueJobButtons: View {
+    let studio: Studio
+    let job: Job
+    let requestCancellation: () -> Void
+
+    var body: some View {
+        Group {
+            if job.rdPhase == .queued {
+                Button("Move to front", systemImage: "arrow.up.to.line") {
+                    Task { await studio.changeQueue(job, action: .first) }
+                }.disabled(job.ahead == 0)
+                Button("Move to back", systemImage: "arrow.down.to.line") {
+                    Task { await studio.changeQueue(job, action: .last) }
+                }
+            }
+            if job.rdPhase.isActive {
+                Button("Cancel dub", systemImage: "xmark.circle", role: .destructive, action: requestCancellation)
+            }
+        }.disabled(studio.queueBusy)
+    }
+}
+
 struct RDJobMenu: View {
     let job: Job
     let expired: Bool
@@ -821,18 +869,19 @@ struct RDJobMenu: View {
         Button(action: open) {
             switch job.rdPhase {
             case .done: Label(expired ? "View details" : "Watch", systemImage: expired ? "info.circle" : "play.fill")
+            case .cancelled: Label("View details", systemImage: "info.circle")
             case .failed: Label("Details & Report Issue", systemImage: "exclamationmark.bubble")
             default: Label("Show Progress", systemImage: "waveform")
             }
         }
-        if Job.isReel(job.url), let url = URL(string: job.url) {
+        if let url = job.sourceURL {
             Link(destination: url) {
-                Label("Open in Instagram", systemImage: "arrow.up.forward.app")
+                Label("Open original video", systemImage: "arrow.up.forward.app")
             }
             ShareLink(item: url) {
-                Label("Share Reel Link", systemImage: "square.and.arrow.up")
+                Label("Share video link", systemImage: "square.and.arrow.up")
             }
-            Button { UIPasteboard.general.string = job.url } label: { Label("Copy Reel Link", systemImage: "link") }
+            Button { UIPasteboard.general.string = job.url } label: { Label("Copy video link", systemImage: "link") }
         }
     }
 }
@@ -858,7 +907,7 @@ struct RDPressStyle: ButtonStyle {
 // MARK: - Model helpers
 
 enum RDPhase: String {
-    case queued, running, done, failed
+    case queued, running, done, failed, cancelled
 
     var isActive: Bool { self == .queued || self == .running }
 
@@ -867,6 +916,7 @@ enum RDPhase: String {
         case .queued: "hourglass"
         case .running: "waveform"
         case .done: "checkmark"
+        case .cancelled: "xmark"
         case .failed: "exclamationmark"
         }
     }
@@ -876,6 +926,7 @@ enum RDPhase: String {
         case .queued: .secondary
         case .running: RD.accent
         case .done: .green
+        case .cancelled: .secondary
         case .failed: .red
         }
     }
@@ -908,7 +959,7 @@ extension Job {
 
     var rdByline: String {
         let name = (author ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty else { return Job.isReel(url) ? "Instagram Reel" : "Uploaded video" }
+        guard !name.isEmpty else { return sourceURL?.host(percentEncoded: false) ?? "Uploaded video" }
         return name.hasPrefix("@") || name.contains(" ") ? name : "@" + name
     }
 

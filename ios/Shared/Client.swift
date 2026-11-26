@@ -142,13 +142,11 @@ struct Job: Codable, Identifiable, Hashable {
     var activity: String { last_requested ?? created }
     var displayTitle: String {
         if let title, !title.isEmpty { return title }
-        if let author, !author.isEmpty { return "Reel by " + author }
-        return (Self.isReel(url) ? "Reel" : "Video") + (Self.date(created).map { " · " + $0.formatted(.dateTime.month(.abbreviated).day().hour().minute()) } ?? "")
+        if let author, !author.isEmpty { return "Video by " + author }
+        return "Video" + (Self.date(created).map { " · " + $0.formatted(.dateTime.month(.abbreviated).day().hour().minute()) } ?? "")
     }
-    static func isReel(_ value: String) -> Bool {
-        value.range(of: #"(?i)^https://(?:(?:www|m)\.)?instagram\.com/(?:reels?|share/reel)/[A-Za-z0-9_-]{5,32}/?(?:[?#][^\s]*)?$"#, options: .regularExpression) != nil
-    }
-    var code: String { URL(string: url)?.lastPathComponent ?? "Reel" }
+    var sourceURL: URL? { RDLink.webURL(url) }
+    var code: String { sourceURL?.lastPathComponent ?? "Video" }
     static func date(_ value: String?) -> Date? {
         guard let value else { return nil }
         let parser = ISO8601DateFormatter()
@@ -170,6 +168,7 @@ struct Job: Codable, Identifiable, Hashable {
             let priority = (recovery_count ?? 0) > 0 ? "Recovery priority · " : ""
             return priority + queuePosition(processing: processing) + " · " + time + " waiting"
         }
+        if state == "cancelled", start == nil { return time + " in queue" }
         if state == "running" { return "\(stage) · \(time) elapsed" }
         return "\(time) processing · \(Self.duration(max(0, Int((start ?? created).timeIntervalSince(created))))) queued"
     }
@@ -188,6 +187,10 @@ private final class NoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sen
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
                     newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) { completionHandler(nil) }
 }
+enum QueueAction: String {
+    case first, last, cancel
+}
+
 struct API {
     let connection: Connection
     let transport: URLSession
@@ -259,6 +262,12 @@ struct API {
         let (result, response) = try await transport.upload(for: req, fromFile: movie.file)
         return try JSONDecoder().decode(Receipt.self, from: checked(result, response)).id
     }
+    func changeQueue(_ id: String, action: QueueAction) async throws -> Job {
+        let path = "v1/jobs/" + id + (action == .cancel ? "/cancel" : "/queue")
+        let payload = action == .cancel ? [:] : ["position": action.rawValue]
+        return try JSONDecoder().decode(Job.self, from: await data(path, method: "POST", body: payload))
+    }
+
     func playback(_ id: String) async throws -> URL {
         struct Ticket: Decodable { let ticket: String }
         let payload: Data
@@ -288,14 +297,30 @@ struct API {
 }
 
 enum RDLink {
-    /// Accepts a bare Reel URL or text containing one (e.g. a share caption).
-    static func reel(in text: String) -> String? {
+    /// ReelDub submits this URL as data to its instance. The server and its
+    /// isolated downloader decide whether the site is reachable and supported.
+    static func webURL(_ value: String) -> URL? {
+        guard !value.contains("\\"), !value.unicodeScalars.contains(where: CharacterSet.whitespacesAndNewlines.contains),
+              !value.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains),
+              let url = URL(string: value),
+              let parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let scheme = parts.scheme?.lowercased(), ["https", "http"].contains(scheme),
+              let host = parts.host, !host.isEmpty, parts.user == nil, parts.password == nil,
+              parts.port == nil || parts.port == (scheme == "https" ? 443 : 80) else { return nil }
+        return url
+    }
+
+    static func video(in text: String) -> String? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if Job.isReel(trimmed) { return trimmed }
+        if let url = webURL(trimmed) { return url.absoluteString }
+        // A standalone URI that failed validation must not be reparsed as a
+        // link inside itself (for example an unsupported app:// URL).
+        if !trimmed.contains(where: { $0.isWhitespace }) { return nil }
         guard let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue) else { return nil }
         let range = NSRange(trimmed.startIndex..., in: trimmed)
         for match in detector.matches(in: trimmed, range: range) {
-            if let url = match.url?.absoluteString, Job.isReel(url) { return url }
+            guard let bounds = Range(match.range, in: trimmed) else { continue }
+            if let url = webURL(String(trimmed[bounds])) { return url.absoluteString }
         }
         return nil
     }

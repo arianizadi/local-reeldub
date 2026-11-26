@@ -78,19 +78,19 @@ def source_time_limit():
     return ["-t", str(max(1, int(seconds)))] if seconds else []
 
 
-def source_input_options():
-    # The hosted downloader requests MP4 only. Do not interpret it as a playlist.
-    return ["-protocol_whitelist", "file", "-f", "mov"] if os.getenv("REELDUB_SERVICE_LIMITS") else []
+def source_input_options(remote=False):
+    # The intake normalizes remote media to MP4. Do not interpret it as a playlist.
+    return ["-protocol_whitelist", "file", "-f", "mov"] if remote or os.getenv("REELDUB_SERVICE_LIMITS") else []
 
 
-def render(media, lines, folder, target="en", *, voice_label=None):
+def render(media, lines, folder, target="en", *, voice_label=None, remote=False):
     tag = "language=" + LANGUAGES[target].mp4
     captions = folder / f"{target}.srt"
     captions.write_text("".join(
         f"{i}\n{clock(line['start'])} --> {clock(line['spoken_end'])}\n{line['text']}\n\n"
         for i, line in enumerate(lines, 1)
     ), encoding="utf-8")
-    ff(*source_input_options(), "-i", media, "-i", folder / "mix.wav", "-i", captions,
+    ff(*source_input_options(remote), "-i", media, "-i", folder / "mix.wav", "-i", captions,
        *source_time_limit(), "-map", "0:v:0", "-map", "1:a:0", "-map", "2:s:0", "-map_metadata", "-1",
        "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2", "-c:v", "libx264", "-crf", "19", "-preset", "fast",
        "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-c:s", "mov_text",
