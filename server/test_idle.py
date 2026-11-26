@@ -13,7 +13,7 @@ from uuid import uuid4
 
 from fastapi import HTTPException
 
-from . import api, store_history, wakeup
+from . import api, wakeup
 from .db import db, media_db, now, uses_postgres
 
 
@@ -38,29 +38,7 @@ class LocalWakeTests(unittest.TestCase):
 
 @unittest.skipUnless(os.getenv("REELDUB_TEST_DATABASE") == "1" and uses_postgres(), "Disposable Postgres only")
 class IdleTests(unittest.TestCase):
-    def test_progress_checks_revocation_in_one_auth_lookup(self):
-        token, user, job = str(uuid4()), "apple:" + str(uuid4()), uuid4()
-        database = db()
-        digest = api.hash_value(token)
-        self.addCleanup(database.sessions.delete_one, {"_id": digest})
-        self.addCleanup(database.account_deletions.delete_one, {"_id": user})
-        database.sessions.insert_one({"_id": digest, "owner": user, "expires": now() + timedelta(minutes=2)})
-        with patch.object(database, "connection", wraps=database.connection) as checkouts:
-            self.assertEqual(api.library_progress(api.LibraryCheck(ids=[job]), api.owner("Bearer " + token)), [])
-            self.assertEqual(checkouts.call_count, 2)
-            checkouts.reset_mock()
-            self.assertEqual(api.me(api.owner("Bearer " + token), "")["tier"], "free")
-            self.assertEqual(checkouts.call_count, 2)
-        database.account_deletions.insert_one({"_id": user})
-        with self.assertRaises(HTTPException) as denied:
-            api.owner("Bearer " + token)
-        self.assertEqual(denied.exception.status_code, 401)
 
-    def test_store_history_stays_on_half_hour_boundaries(self):
-        stamp = now().replace(hour=23, minute=14, second=39)
-        half = stamp.replace(minute=30, second=0, microsecond=0)
-        self.assertEqual(store_history.next_check(stamp), half)
-        self.assertEqual(store_history.next_check(half + timedelta(seconds=8)), wakeup.next_hour(half))
 
     def test_only_one_replica_runs_a_due_sweep(self):
         schedule = media_db().maintenance
@@ -94,11 +72,11 @@ class IdleTests(unittest.TestCase):
             self.assertFalse(worker.due())
 
     def test_no_reservation_when_queue_cannot_receive_its_wake_signal(self):
-        job = {"_id": str(uuid4()), "day": now().date().isoformat()}
+        job = api.Submission(url="https://instagram.com/reel/IdleFixture/")
         with patch.object(api, "notify", return_value=False), self.assertRaises(HTTPException) as failure:
-            api.enqueue_render(job, "admin", None)
+            api.submit(job, "self-host")
         self.assertEqual(failure.exception.status_code, 503)
-        self.assertIsNone(db().jobs.find_one({"_id": job["_id"]}))
+        self.assertIsNone(db().jobs.find_one({"request_id": str(job.request_id)}))
 
     def test_completed_admission_skips_recovery_polls_but_overlap_retains_them(self):
         signals = media_db().queue_wake
@@ -116,17 +94,6 @@ class IdleTests(unittest.TestCase):
         self.assertTrue(worker.due())
         self.assertGreater(worker.settle_until, now())
 
-    def test_anonymous_challenge_uses_local_ttl_and_can_be_consumed_only_once(self):
-        req = SimpleNamespace(client=SimpleNamespace(host="127.0.0.1"), headers={})
-        with patch.object(api, "db", side_effect=AssertionError("unexpected metadata connection")):
-            challenge = api.challenge(req)["challenge"]
-            login = api.AppleLogin(challenge=challenge, identity_token="sample")
-            claims = {"nonce": api.hash_value(challenge), "sub": "tester"}
-            with patch.object(api.apple_keys, "get_signing_key_from_jwt"), patch.object(api.jwt, "decode", return_value=claims):
-                self.assertEqual(api.verify_identity(login), claims)
-                with self.assertRaises(HTTPException) as rejected:
-                    api.verify_identity(login)
-                self.assertEqual(rejected.exception.status_code, 401)
 
     def test_library_positions_match_single_job_positions_across_owners(self):
         user, other = ("apple:" + str(uuid4()) for _ in range(2))

@@ -1,4 +1,0 @@
-services:
-  hosted-api:
-    environment: {MONGO_TLS_CA_FILE: /run/reeldub/ca.pem}
-    volumes: ["${REELDUB_TLS_DIR:?Set REELDUB_TLS_DIR}/ca.pem:/run/reeldub/ca.pem:ro"]

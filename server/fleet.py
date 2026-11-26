@@ -61,7 +61,7 @@ MAX_VIDEO = 500 * 1024 * 1024
 MAX_POSTER = 512_000
 STAGES = set(STEPS) | {"Waiting for GPU", "Processing"}
 CLAIM_FIELDS = ("_id", "lease", "lease_end", "priority", "target_language", "render_quality",
-                "lab_mode", "lab_runtime", "lab_separation", "lab_voice", "voice_batch", "quoted_seconds", "narrator_engine", "match_engine")
+                "lab_mode", "lab_runtime", "lab_separation", "lab_voice", "voice_batch", "quoted_seconds", "narrator_engine", "match_engine", "quality_requested")
 claim_capacity = BoundedSemaphore(3)  # Each advisory-lock holder also needs a SQL connection for its claim.
 
 
@@ -118,6 +118,7 @@ class StrictModel(BaseModel):
 class Claim(StrictModel):
     request_id: UUID
     upload_voice_protocol: Literal[1] | None = None
+    match_quality_protocol: Literal[1] | None = None
     kitten_narrator: bool = False
     kitten_match: bool = False
 
@@ -179,7 +180,7 @@ def telemetry(slot: int, body: Telemetry, node: Node = Depends(authenticated)):
 
 
 class Details(StrictModel):
-    media_seconds: float = Field(gt=0, le=MAX_SOURCE_SECONDS + 1)
+    media_seconds: float = Field(gt=0, le=(MAX_SOURCE_SECONDS + 1 if MAX_SOURCE_SECONDS else None), allow_inf_nan=False)
     source_language: str | None = Field(default=None, max_length=24)
     first_caption: str | None = Field(default=None, max_length=240)
     asr_model: str | None = Field(default=None, max_length=120)
@@ -276,6 +277,8 @@ def claim(slot: int, body: Claim, node: Node = Depends(authenticated)):
                 existing = db().jobs.find_one(lookup)
                 if (existing and existing["state"] == "running" and not existing.get("deleted")
                         and existing.get("lease") and existing.get("lease_end", now()) > now()):
+                    if existing.get("quality_requested") and not body.match_quality_protocol:
+                        return Response(status_code=204)
                     if not body.upload_voice_protocol and upload_mode(existing) is not None:
                         return Response(status_code=204)
                     if existing.get("narrator_engine") == KITTEN_ENGINE and not body.kitten_narrator:
@@ -300,7 +303,8 @@ def claim(slot: int, body: Claim, node: Node = Depends(authenticated)):
                 job = None if active else worker.claim(studio=node.studio, fleet_slot=slot_key, fleet_request=req,
                                                        avoid_recovery_node=avoid, upload_voices=bool(body.upload_voice_protocol),
                                                        kitten_narrator=body.kitten_narrator, kitten_match=body.kitten_match,
-                                                       alternatives=alternatives)
+                                                       alternatives=alternatives, match_qualities=bool(body.match_quality_protocol),
+                                                       allow_best_fallback=body.kitten_match or not fleet_health.has_kitten_worker(node.name))
                 if not job:
                     gate.wake.watch_active_leases()
                     if avoid and db().jobs.find_one({"state": "queued", "deleted": {"$ne": True},
@@ -465,6 +469,11 @@ def failure(body: Failure, scope=Depends(requested_fence)):
     message = worker.render_error("Downloading" if body.reason == "download" else body.stage, diagnostic)
     release = ("slot", "minute_grants", "minute_units", "render_key", "extra_ticket", "skip_ticket",
                "lease", "lease_end", "upload_lease", "upload_until", "upload_token")
+    if body.stage not in ("Downloading", "Saving") and body.reason not in ("duration", "download"):
+        if worker.retry_as_best(db().jobs, {**scope, "lease_end": {"$gt": now()}},
+                                worker.best_retry_reason(body.stage, message)):
+            fleet_health.tickets().update_one({"job": scope["_id"], "lease": scope["lease"]}, {"$set": {"watch": False}})
+            return Response(status_code=204)
     changed(db().jobs.update_one({**scope, "lease_end": {"$gt": now()}}, {"$set": {"state": "failed", "stage": "Failed", "error": message,
                                                       "finished": now()}, "$unset": dict.fromkeys(release, "")}))
     notify()

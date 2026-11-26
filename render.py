@@ -1,5 +1,4 @@
 from server.languages import LANGUAGES
-from server.source import MAX_SOURCE_SECONDS
 import os
 import subprocess
 
@@ -76,7 +75,7 @@ def clock(seconds):
 
 def source_time_limit():
     seconds = os.getenv("REELDUB_MAX_SECONDS")
-    return ["-t", str(max(1, min(MAX_SOURCE_SECONDS, int(seconds))))] if seconds else []
+    return ["-t", str(max(1, int(seconds)))] if seconds else []
 
 
 def source_input_options():

@@ -42,8 +42,7 @@ def main():
         raise RuntimeError("Voice matching needs a working CUDA GPU.")
     prepare = sys.argv[1] == "--prepare"
     if prepare:
-        for size in ("1.7B", "0.6B"):
-            snapshot_download(MODEL.replace("1.7B", size))
+        snapshot_download(MODEL)
         return
     size = os.getenv("REELDUB_QWEN_SIZE", "1.7B")
     if size not in ("1.7B", "0.6B"):

@@ -33,11 +33,11 @@ final class LayoutMatrixTests: XCTestCase {
     func testComposerAndProgressFitNarrowAndWideWindowsAtLargeTextSizes() throws {
         let studio = Studio(connection: nil)
         studio.account = try JSONDecoder().decode(Account.self, from: Data(
-            #"{"tier":"paid","used":1,"creator_minutes":true,"output_languages":["en","de","es"]}"#.utf8))
+            #"{"quality_languages":{"best":["en","de","es"],"fast":["en"]},"output_languages":["en","de","es"]}"#.utf8))
         let progress = try job("running")
         let widths = Set(viewports.flatMap { [$0.width, $0.height] })
         for type in [DynamicTypeSize.large, .xxxLarge, .accessibility5] {
-            let views = [AnyView(RDComposer(studio: studio, onQueued: {})), AnyView(ProgressRow(job: progress))]
+            let views = [AnyView(RDComposer(studio: studio, onQueued: { _ in })), AnyView(ProgressRow(job: progress))]
             for view in views {
                 let host = UIHostingController(rootView: view.dynamicTypeSize(type))
                 for width in widths {

@@ -1,0 +1,33 @@
+:root{font-family:system-ui,sans-serif;color:#f1eee5;background:#181b18;color-scheme:dark;--line:#4b514a;--mint:#d6ef9c}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh}
+.mast,main{max-width:48rem;margin:auto;padding:1.2rem clamp(1.15rem,5vw,3rem)}
+.mast{display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--line);height:4.25rem}
+.mast strong{font-weight:750;letter-spacing:-.06em;font-size:1.55rem}
+h1,h2{font-family:Georgia,serif;font-weight:400;line-height:1.12;overflow-wrap:anywhere}
+h1{font-size:clamp(2.45rem,8vw,4.2rem);margin:1.1rem 0 1.75rem;letter-spacing:-.06em}
+h2{font-size:1.8rem;margin:.25rem 0 .8rem}
+label,legend{display:block;font-size:.95rem;font-weight:600;margin-bottom:.45rem}
+input:not([type=radio]),select{width:100%;border:1px solid var(--line);border-radius:.65rem;background:#232823;color:inherit;font:inherit;padding:.8rem;min-height:3rem}
+button{cursor:pointer;font:inherit;font-weight:650;color:#16200d;background:var(--mint);border:0;border-radius:.65rem;padding:.75rem 1.25rem;min-height:2.85rem}
+button:disabled{opacity:.6;cursor:wait}
+input:focus-visible,select:focus-visible,button:focus-visible{outline:3px solid #eea773;outline-offset:3px}
+.settings{display:grid;grid-template-columns:1fr 1fr;gap:1.1rem;margin-top:1.15rem}
+fieldset{padding:0;border:0;margin:0;min-width:0}
+.modes{display:flex;padding:.18rem;border:1px solid var(--line);border-radius:.65rem;background:#232823;min-height:3rem}
+.modes label{flex:1;cursor:pointer;margin:0;text-align:center;padding:.55rem .25rem;border-radius:.4rem;position:relative}
+.modes label:has(:checked){background:#465139;color:#effbd7}
+.modes label:focus-within{outline:2px solid #eea773}
+.modes input{position:absolute;opacity:0}
+.hint,#job-status,.quiet{color:#c4cabe}
+.hint{line-height:1.5;font-size:.94rem;margin:.7rem 0 1.15rem}
+.quiet{font-weight:500;padding:.35rem;background:transparent}
+#result,#recent{border-top:1px solid var(--line);margin-top:2rem;padding-top:1.4rem}
+ul{list-style:none;margin:0;padding:0}
+li+li{border-top:1px solid #333b32}
+li button{display:flex;justify-content:space-between;align-items:center;width:100%;background:transparent;text-align:left;color:inherit;padding:.65rem 0;gap:1rem}
+li small{color:#b7c2b0;font-weight:400;white-space:nowrap}
+video,progress{width:100%;accent-color:var(--mint)}
+video{max-height:65vh;border-radius:.65rem;background:#0b0d0b}
+#message{color:#ffc2a7} [hidden]{display:none!important}
+@media(max-width:350px){.settings{grid-template-columns:1fr}}

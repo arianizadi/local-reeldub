@@ -5,8 +5,10 @@ import re
 import subprocess
 from decimal import Decimal, InvalidOperation
 
-MAX_SOURCE_SECONDS = 120
-TOO_LONG = "This video is longer than 2 minutes. Choose a shorter video."
+MAX_SOURCE_SECONDS = int(os.getenv("REELDUB_MAX_SOURCE_SECONDS", "0"))
+if MAX_SOURCE_SECONDS < 0:
+    raise ValueError("REELDUB_MAX_SOURCE_SECONDS must be zero or positive.")
+TOO_LONG = f"This video exceeds the server's configured limit of {MAX_SOURCE_SECONDS} seconds."
 
 
 def reel_links_enabled():
@@ -41,15 +43,18 @@ def inspect_video(path):
             raise ValueError
     except (ValueError, TypeError, KeyError, InvalidOperation, StopIteration, subprocess.SubprocessError) as exc:
         raise ValueError("Choose a playable MP4 or MOV with audio, up to 4K.") from exc
-    if seconds > MAX_SOURCE_SECONDS:
+    if MAX_SOURCE_SECONDS and seconds > MAX_SOURCE_SECONDS:
         raise VideoTooLong()
     return seconds
 
-REEL = re.compile(r"https://(?:(?:www|m)\.)?instagram\.com/reels?/([A-Za-z0-9_-]{5,32})/?(?:[?#][^\s]*)?", re.ASCII | re.I)
+REEL = re.compile(r"https://(?:(?:www|m)\.)?instagram\.com/(reels?|share/reel)/([A-Za-z0-9_-]{5,64})/?(?:[?#][^\s]*)?", re.ASCII | re.I)
 
 
 def reel_url(value):
     match = REEL.fullmatch(value.strip())
     if not match or len(value) > 2048:
         raise ValueError("Paste a link to an individual Instagram Reel.")
-    return f"https://www.instagram.com/reel/{match[1]}/"
+    path = "share/reel" if match[1].lower() == "share/reel" else "reel"
+    if path == "reel" and len(match[2]) > 32:
+        raise ValueError("Paste a link to an individual Instagram Reel.")
+    return f"https://www.instagram.com/{path}/{match[2]}/"

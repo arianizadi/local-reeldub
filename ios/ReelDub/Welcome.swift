@@ -1,223 +1,65 @@
 import SwiftUI
-import AuthenticationServices
-import CryptoKit
 
 struct Welcome: View {
     let studio: Studio
-    @State private var selfHost = false
-    @State private var help = false
-    @State private var busy = false
-    @State private var issue: String?
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @ScaledMetric(relativeTo: .largeTitle) private var headline = 54.0
-    @Environment(\.dynamicTypeSize) private var typeSize
-
-    private var usesWindowToolbar: Bool { UIDevice.current.userInterfaceIdiom == .pad }
-
-    var body: some View {
-        Group {
-            if usesWindowToolbar {
-                NavigationStack {
-                    content
-                        .navigationTitle("ReelDub")
-                        .navigationBarTitleDisplayMode(.inline)
-                        .toolbar { ToolbarItem(placement: .principal) { brand } }
-                }
-            } else {
-                content
-            }
-        }
-        .sheet(isPresented: $help) { ReelDubHelp() }
-        .sheet(isPresented: $selfHost) { SelfHost(studio: studio) }
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: busy)
-        .onChange(of: issue) { _, value in
-            if let value { AccessibilityNotification.Announcement(value).post() }
-        }
-    }
-
-    private var brand: some View {
-        HStack(spacing: 9) {
-            Image(decorative: "brand-mark").resizable().frame(width: 36, height: 36)
-            Text("ReelDub").font(.title3.weight(.bold))
-        }
-        .foregroundStyle(.white)
-        .accessibilityElement(children: .combine)
-    }
-
-    private var content: some View {
-        GeometryReader { geo in
-            ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
-                    if !usesWindowToolbar { brand }
-                    Spacer(minLength: 28)
-                    Image("voice-print").resizable().scaledToFit()
-                        .frame(maxWidth: .infinity)
-                        .frame(maxHeight: typeSize.isAccessibilitySize || (usesWindowToolbar && geo.size.height < 600) ? 46 : 160)
-                        .accessibilityHidden(true)
-                    Text("Reels, in your language.")
-                        .font(typeSize.isAccessibilitySize ? .system(.title, design: .serif) : .system(size: headline, weight: .medium, design: .serif)).tracking(-1)
-                        .fixedSize(horizontal: false, vertical: true).padding(.top, 14)
-                    Text("Share a video from Photos or Files. Hear it in another language with a narrator or an authorized speaker match.")
-                        .font(.body).foregroundStyle(.white.opacity(0.76)).fixedSize(horizontal: false, vertical: true).padding(.top, 12)
-                    Spacer(minLength: 34)
-                    VStack(alignment: .leading, spacing: 12) {
-                        Label("ReelDub Cloud", systemImage: "cloud").font(.subheadline.weight(.semibold))
-                        Text("Create an account or sign in to start dubbing.").font(.subheadline).foregroundStyle(.white.opacity(0.75))
-                        AppleButton(studio: studio, white: true, busy: $busy, issue: $issue)
-                            .frame(height: 54).disabled(busy)
-                        if busy { Label("Signing in…", systemImage: "clock").font(.footnote) }
-                        if let message = issue ?? studio.welcomeMessage { Text(message).font(.footnote).foregroundStyle(.white).accessibilityLabel("Sign-in message. " + message) }
-                        Button("Use my own server") { selfHost = true }
-                            .frame(maxWidth: .infinity, minHeight: 44).foregroundStyle(.white.opacity(0.85))
-                        ViewThatFits(in: .horizontal) {
-                            HStack(spacing: 22) { PolicyLinks() }.fixedSize()
-                            VStack(alignment: .leading, spacing: 8) { PolicyLinks() }
-                        }.font(.footnote).tint(.white)
-                        Button("Help & FAQ") { help = true }.font(.footnote).tint(.white).frame(minHeight: 44)
-                    }
-                }.padding(.horizontal, 26).padding(.vertical, 14)
-                    .frame(maxWidth: 570).frame(minHeight: max(0, geo.size.height))
-                    .frame(maxWidth: .infinity)
-            }
-        }.background(Palette.ink.ignoresSafeArea()).foregroundStyle(.white)
-    }
-}
-
-// Use Apple's own control. A tap always starts a fresh challenge or displays an error.
-struct AppleButton: UIViewRepresentable {
-    let studio: Studio
-    let white: Bool
-    @Binding var busy: Bool
-    @Binding var issue: String?
-    var onProof: ((String, String, String) async throws -> Void)? = nil
-
-    func makeCoordinator() -> Coordinator { Coordinator(self) }
-    func makeUIView(context: Context) -> ASAuthorizationAppleIDButton {
-        let button = ASAuthorizationAppleIDButton(type: .continue, style: white ? .white : .black)
-        button.cornerRadius = 13
-        button.accessibilityIdentifier = "continue-apple"
-        button.addTarget(context.coordinator, action: #selector(Coordinator.begin(_:)), for: .touchUpInside)
-        return button
-    }
-    func updateUIView(_ button: ASAuthorizationAppleIDButton, context: Context) {
-        context.coordinator.view = self
-        button.isEnabled = !busy
-    }
-
-    @MainActor final class Coordinator: NSObject, ASAuthorizationControllerDelegate, ASAuthorizationControllerPresentationContextProviding {
-        var view: AppleButton
-        private var flow: (URL, String)?
-        private var window: UIWindow?
-        private var controller: ASAuthorizationController?
-        init(_ view: AppleButton) { self.view = view }
-
-        @objc func begin(_ sender: ASAuthorizationAppleIDButton) {
-            guard !view.busy, let window = sender.window else { return }
-            let base = Connection.hosted
-            self.window = window
-            view.busy = true
-            view.issue = nil
-            Task {
-                do {
-                    let api = API(connection: Connection(base: base, token: ""))
-                    let response = try await api.data("v1/apple/challenge", method: "POST")
-                    let nonce = try JSONDecoder().decode(Challenge.self, from: response).challenge
-                    guard sender.window != nil else { finish(nil); return }
-                    flow = (base, nonce)
-                    let request = ASAuthorizationAppleIDProvider().createRequest()
-                    request.requestedScopes = view.onProof == nil ? [.email] : []
-                    request.nonce = SHA256.hash(data: Data(nonce.utf8)).map { String(format: "%02x", $0) }.joined()
-                    let auth = ASAuthorizationController(authorizationRequests: [request])
-                    controller = auth
-                    auth.delegate = self
-                    auth.presentationContextProvider = self
-                    auth.performRequests()
-                } catch { finish("Couldn’t start sign-in. " + error.localizedDescription + " Tap Continue with Apple to retry.") }
-            }
-        }
-        func presentationAnchor(for controller: ASAuthorizationController) -> ASPresentationAnchor { window! }
-        func authorizationController(controller: ASAuthorizationController, didCompleteWithAuthorization authorization: ASAuthorization) {
-            guard let (base, challenge) = flow,
-                  let credential = authorization.credential as? ASAuthorizationAppleIDCredential,
-                  let data = credential.identityToken, let identity = String(data: data, encoding: .utf8) else {
-                finish("Apple returned an incomplete sign-in. Please try again."); return
-            }
-            Task {
-                do {
-                    if let onProof = view.onProof {
-                        let code = credential.authorizationCode.flatMap { String(data: $0, encoding: .utf8) } ?? ""
-                        try await onProof(identity, challenge, code)
-                        finish(nil)
-                        return
-                    }
-                    let api = API(connection: Connection(base: base, token: ""))
-                    let payload = try await api.data("v1/apple/session", method: "POST", body: ["identity_token": identity, "challenge": challenge])
-                    let session = try JSONDecoder().decode(SessionKey.self, from: payload)
-                    try await view.studio.connect(Connection(base: base, token: session.token))
-                    finish(nil)
-                } catch { finish(error.localizedDescription) }
-            }
-        }
-        func authorizationController(controller: ASAuthorizationController, didCompleteWithError error: Error) {
-            finish((error as? ASAuthorizationError)?.code == .canceled ? nil : error.localizedDescription)
-        }
-        private func finish(_ message: String?) {
-            controller = nil
-            flow = nil
-            window = nil
-            view.busy = false
-            view.issue = message
-        }
-    }
-}
-
-struct PolicyLinks: View {
-    var body: some View {
-        Link("Cloud privacy", destination: Connection.hosted.appending(path: "privacy")).frame(minHeight: 44)
-        Link("Terms of use", destination: URL(string: "https://www.apple.com/legal/internet-services/itunes/dev/stdeula/")!).frame(minHeight: 44)
-    }
-}
-
-struct ReelDubHelp: View {
-    var suggestionAPI: API? = nil
-    @Environment(\.dismiss) private var dismiss
-
     var body: some View {
         NavigationStack {
-            List {
-                Section("Making a dub") {
-                    answer("How do I translate a video?", "In Photos or Files, share a video to ReelDub. You can also choose Add video in Dubs. Choose a voice and language, review the cost and confirm.")
-                    answer("When can I match a voice?", "Choose Only my voice for a video where you are the sole speaker. For other speakers, keep their written authorization to synthesize and export the translated speech and enter its reference. The narrator works without matching a voice.")
-                    answer("How long can my video be?", "Choose a video up to 2 minutes long. If yours is longer, trim the video before importing it.")
-                    answer("Which languages can I choose?", "ReelDub detects the spoken language. The Dub language menu lists the output languages your connected server supports.")
-                    answer("What if the translation sounds wrong?", DubGuidance.accuracy + " Open the dub, tap Report an issue and include the words you heard and the time they occurred.")
-                    answer("How do sound and captions work?", "Tap the speaker button under the video to mute or unmute it. You can listen in Silent Mode. Use your iPhone’s volume buttons to adjust the level. Captions start on when a track is available. The subtitle switch remembers your choice.")
-                }
-                Section("Account and hosting") {
-                    answer("How do I sign in?", "Choose Continue with Apple for ReelDub Cloud. In Account you can see how many daily dubs you have used.")
-                    answer("How many free dubs do I get?", "The Cloud free plan includes five dubs per day. " + Account.dailyResetNotice + " You can see your allowance in Account.")
-                    answer("Where is my finished video?", "Open Dubs to play it. Once it says Saved on this device, you can watch offline or use Share to export a copy.")
-                    DisclosureGroup("Can I host ReelDub myself?") {
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text("Yes. ReelDub is open source, and you can run the server on your own hardware. In the official iPhone app, choose Use my own server to test your HTTPS address and connection key for free. A one-time purchase unlocks dubbing on your own servers.")
-                            Link("Open-source setup guide", destination: URL(string: "https://github.com/arianizadi/local-reeldub#readme")!)
-                        }.padding(.vertical, 4)
-                    }
-                    answer("How do I restore self-hosting on a new iPhone?", "Use the same Apple Account for Media & Purchases. On the welcome screen, tap Use my own server, then Restore Purchases. Enter your server address and key to reconnect.")
-                    answer("Where can I manage Cloud purchases?", "Open Account → Plans & minutes to see what’s available, restore eligible Cloud purchases or manage an Apple subscription. Cloud rendering uses a separate allowance.")
-                }
-                if let suggestionAPI {
-                    Section {
-                        NavigationLink("What else would you like to translate?") { VideoSuggestionForm(api: suggestionAPI) }
-                    }
-                }
-                Section { PolicyLinks() }
-            }.navigationTitle("Help & FAQ").navigationBarTitleDisplayMode(.inline)
-                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
+                    Image("brand-mark").resizable().scaledToFit().frame(width: 58, height: 58)
+                        .accessibilityHidden(true)
+                    Text("Connect your server").font(.largeTitle.bold())
+                    Text("Your server translates the dialogue and matches the speaker’s voice. Once connected, share a Reel straight from Instagram.")
+                        .foregroundStyle(.secondary)
+                    ConnectionForm(studio: studio)
+                }.padding(24).frame(maxWidth: 560)
+            }.navigationTitle("ReelDub").navigationBarTitleDisplayMode(.inline)
         }
     }
+}
 
-    private func answer(_ question: String, _ text: String) -> some View {
-        DisclosureGroup(question) { Text(text).padding(.vertical, 4) }
+struct ConnectionForm: View {
+    let studio: Studio
+    var onConnect: () -> Void = {}
+    @State private var address: String
+    @State private var key = ""
+    @State private var working = false
+    @State private var issue: String?
+
+    init(studio: Studio, onConnect: @escaping () -> Void = {}) {
+        self.studio = studio
+        self.onConnect = onConnect
+        _address = State(initialValue: studio.connection?.base.absoluteString ?? "")
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Server address").font(.subheadline.weight(.medium))
+            TextField("https://dub.example.com", text: $address)
+                .textContentType(.URL).keyboardType(.URL).accessibilityIdentifier("server-address")
+            Text("Connection key").font(.subheadline.weight(.medium))
+            SecureField("Server key", text: $key).textContentType(.password).accessibilityIdentifier("server-key")
+            Text("Use the address and key from your server setup.").font(.footnote).foregroundStyle(.secondary)
+            if let issue { Text(issue).foregroundStyle(.red) }
+            Button(action: { Task { await connect() } }) {
+                Text(working ? "Connecting…" : "Connect").font(.headline).frame(maxWidth: .infinity, minHeight: 40)
+            }.buttonStyle(.borderedProminent).foregroundStyle(Palette.onAction)
+                .accessibilityIdentifier("self-host-connect")
+                .disabled(working || address.isEmpty || key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        }
+        .textInputAutocapitalization(.never).autocorrectionDisabled().textFieldStyle(.roundedBorder)
+    }
+
+    private func connect() async {
+        guard !working else { return }
+        working = true
+        issue = nil
+        defer { working = false }
+        do {
+            let server = try Connection.server(address)
+            try await studio.connect(Connection(base: server, token: key.trimmingCharacters(in: .whitespacesAndNewlines)))
+            key = ""
+            onConnect()
+        } catch { issue = error.localizedDescription }
     }
 }

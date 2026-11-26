@@ -19,7 +19,7 @@ import requests
 from .gpu import lock_dir, pipeline_slot
 from .source import MAX_SOURCE_SECONDS, TOO_LONG
 from .worker import LeaseLost, process
-from .upload_voice import VOICE_ERRORS, kitten_match_ready, kitten_ready
+from .upload_voice import VOICE_ERRORS, kitten_match_ready
 
 
 class VideoBody:
@@ -76,9 +76,7 @@ class Coordinator:
 
     def claim(self, slot, request_id):
         sent = time.monotonic()
-        body = {"request_id": request_id, "upload_voice_protocol": 1}
-        if kitten_ready():
-            body["kitten_narrator"] = True
+        body = {"request_id": request_id, "upload_voice_protocol": 1, "match_quality_protocol": 1}
         if kitten_match_ready(require_service=True):
             body["kitten_match"] = True
         with self.request("POST", f"/v1/slots/{slot}/claim", json=body) as r:
@@ -138,7 +136,7 @@ class AssignedJob:
             duration = int(r.headers["X-Duration"])
             runtime = float(r.headers.get("X-Estimated-Runtime", 0))
             limit = 250 * 1024**2
-            if duration > MAX_SOURCE_SECONDS:
+            if MAX_SOURCE_SECONDS and duration > MAX_SOURCE_SECONDS:
                 raise RuntimeError(TOO_LONG)
             if duration <= 0:
                 raise ValueError("Invalid source duration")
@@ -185,7 +183,6 @@ def preflight():
     cache = Path(os.getenv("XDG_CACHE_HOME", Path.home() / ".cache"))
     hub = Path(os.getenv("HF_HUB_CACHE", Path(os.getenv("HF_HOME", cache / "huggingface")) / "hub"))
     files = [root / ".qwen-venv/ready", root / ".venv/bin/python", root / ".qwen-venv/bin/python",
-             cache / "local-reeldub/kokoro-v1.0.fp16.onnx", cache / "local-reeldub/voices-v1.0.bin",
              cache / "local-reeldub/segmentation.onnx", cache / "local-reeldub/wespeaker_en_voxceleb_resnet34.onnx",
              cache / "bandit-infer/checkpoint-multi.ckpt",
              cache / "reeldub/index-translate/translation.gguf", cache / "reeldub/index-translate/llama-b12532/llama-server"]
@@ -234,7 +231,7 @@ def preflight_window(*, idle_only):
 
 
 def report_health(coordinator):
-    from .console import gpu_snapshot
+    from .gpu import gpu_snapshot
     needs_check = True
     last_check = last_metrics = float("-inf")
     reason = None
@@ -251,8 +248,6 @@ def report_health(coordinator):
                         reason = preflight()
                         last_check = tick
             status = {"ready": reason is None, "preflight": checked}
-            if kitten_ready():
-                status["kitten_narrator"] = True
             if kitten_match_ready(require_service=True):
                 status["kitten_match"] = True
             if reason:

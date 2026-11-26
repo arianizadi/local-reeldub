@@ -4,15 +4,6 @@ import XCTest
 @testable import ReelDub
 
 final class TransportPolicyTests: XCTestCase {
-    func testVideoImportChecksTheTwoMinuteBoundaryWithoutRounding() {
-        XCTAssertNoThrow(try DubGuidance.checkDuration(CMTime(value: 120_000, timescale: 1_000)))
-        XCTAssertThrowsError(try DubGuidance.checkDuration(CMTime(value: 120_001, timescale: 1_000))) { error in
-            XCTAssertEqual(error.localizedDescription, DubGuidance.lengthError)
-        }
-        // Files without readable duration metadata still go through the server's media inspection.
-        XCTAssertNoThrow(try DubGuidance.checkDuration(.indefinite))
-    }
-
     func testSharedMovieOwnsAValidatedCopyAfterProviderReturns() async throws {
         let sample = try XCTUnwrap(Bundle(for: type(of: self)).url(forResource: "clip", withExtension: "mp4"))
         let provider = NSItemProvider()
@@ -46,7 +37,7 @@ final class TransportPolicyTests: XCTestCase {
         } catch { XCTAssertEqual(error.localizedDescription, ImportedMovie.typeError) }
     }
 
-    func testMovieImportRejectsEmptyDisguisedAndOversizedFiles() async throws {
+    func testMovieImportRejectsEmptyAndDisguisedFiles() async throws {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".mp4")
         defer { try? FileManager.default.removeItem(at: url) }
         for (bytes, issue) in [(Data(), "This video is empty."), (Data("text".utf8), ImportedMovie.typeError)] {
@@ -56,13 +47,6 @@ final class TransportPolicyTests: XCTestCase {
                 XCTFail("Invalid video was accepted")
             } catch { XCTAssertEqual(error.localizedDescription, issue) }
         }
-        let large = try FileHandle(forWritingTo: url)
-        try large.truncate(atOffset: UInt64(ImportedMovie.maxBytes + 1))
-        try large.close()
-        do {
-            _ = try await ImportedMovie.copy(url)
-            XCTFail("Oversize video was accepted")
-        } catch { XCTAssertEqual(error.localizedDescription, ImportedMovie.sizeError) }
     }
 
     func testRecoveryMessagesDistinguishWaitingFromAConfirmedHandoff() throws {
@@ -78,7 +62,12 @@ final class TransportPolicyTests: XCTestCase {
         XCTAssertTrue(try XCTUnwrap(job(["state": "running", "recovery_count": 1, "recovery_switched_server": true]).recoveryNotice).contains("another server"))
         let created = "2026-11-21T00:00:00Z"
         let waiting = try job(["created": created, "recovery_count": 1]).timing(at: XCTUnwrap(Job.date(created)))
-        XCTAssertEqual(waiting, "Recovery priority · 0s waiting")
+        XCTAssertEqual(waiting, "Recovery priority · Queued · 0s waiting")
+        XCTAssertEqual(try job(["ahead":0]).queuePosition(processing: 2), "Next in line · 2 processing")
+        XCTAssertEqual(try job(["ahead":0]).queuePosition(processing: 0), "Next in line")
+        XCTAssertEqual(try job(["ahead":1]).queuePosition(processing: 2), "1 dub queued ahead")
+        XCTAssertEqual(try job(["ahead":3]).queuePosition(processing: 0), "3 dubs queued ahead")
+        XCTAssertEqual(try job([:]).queuePosition(processing: 3), "Queued")
     }
 
     func testCaptionsFromPasteAndShareUseTheSameInstagramValidation() {
@@ -87,6 +76,7 @@ final class TransportPolicyTests: XCTestCase {
         XCTAssertEqual(RDLink.reel(in: "https://example.com/ then https://www.instagram.com/reel/abc12/"), "https://www.instagram.com/reel/abc12/")
         XCTAssertNil(RDLink.reel(in: "https://instagram.com.example.invalid/reel/abc12/"))
         XCTAssertNil(RDLink.reel(in: "https://instagram.com/p/abc12/"))
+        XCTAssertEqual(RDLink.reel(in: "https://www.instagram.com/share/reel/AbCdE/?igsh=123"), "https://www.instagram.com/share/reel/AbCdE/?igsh=123")
     }
 
     func testStoredConnectionsAreValidatedBeforeAttachingTheSessionToken() throws {
@@ -101,55 +91,11 @@ final class TransportPolicyTests: XCTestCase {
         XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer test-only")
     }
 
-    func testOnlyTheAuthenticatedProfileProbeIsFreeOnAPrivateServer() throws {
-        let host = try Connection.server("https://studio.example")
-        let connection = Connection(base: host, token: "private-fixture")
-        let locked = API(connection: connection, selfHostAuthorized: { false })
-        let probe = try locked.request("v1/me")
-        XCTAssertEqual(probe.httpMethod, "GET")
-        XCTAssertEqual(probe.url?.host, "studio.example")
-        XCTAssertEqual(probe.value(forHTTPHeaderField: "Authorization"), "Bearer private-fixture")
-        XCTAssertThrowsError(try locked.request("v1/me", method: "POST"))
-        for (path, method) in [("v1/jobs", "POST"), ("v1/quotes", "POST"), ("v1/sources", "POST"),
-                                ("v1/jobs", "GET"), ("v1/jobs/example/video", "GET")] {
-            XCTAssertThrowsError(try locked.request(path, method: method))
-        }
-        let unlocked = API(connection: connection, selfHostAuthorized: { true })
-        XCTAssertNoThrow(try unlocked.request("v1/jobs", method: "POST"))
-        let cloud = API(connection: Connection(base: Connection.hosted, token: "cloud-fixture"),
-                        selfHostAuthorized: { false })
-        XCTAssertNoThrow(try cloud.request("v1/jobs", method: "POST"))
-    }
-
-    @MainActor
-    func testPurchaseRequiresAProbedPrivateConnection() async throws {
-        let studio = Studio(connection: nil, selfHostAuthorized: { false })
-        let connection = Connection(base: try Connection.server("https://studio.example"), token: "fixture")
-        do {
-            _ = try await studio.purchaseSelfHost(for: connection)
-            XCTFail("Opening checkout requires a successful connection test")
-        } catch {
-            XCTAssertEqual(error.localizedDescription, "Test this server connection before purchasing.")
-        }
-        XCTAssertNil(studio.connection)
-    }
-
-    func testEquivalentCloudOriginsNeverQualifyForSelfHostCheckout() throws {
-        let host = try XCTUnwrap(Connection.hosted.host())
-        for origin in ["https://" + host + ":443", "https://" + host.uppercased() + "./"] {
-            XCTAssertTrue(Connection(base: try Connection.server(origin), token: "").isHosted)
-        }
-        XCTAssertFalse(Connection(base: try Connection.server("https://" + host + ":8443"), token: "").isHosted)
-    }
-
-    func testConsoleProofAndGrantAreConfinedToTheHostedAdminAPI() throws {
-        let cloud = API(connection: Connection(base: Connection.hosted, token: "fixture"), adminGrant: "grant")
-        XCTAssertEqual(try cloud.request("v1/admin/overview").value(forHTTPHeaderField: "X-ReelDub-Admin"), "grant")
-        XCTAssertNil(try cloud.request("v1/me").value(forHTTPHeaderField: "X-ReelDub-Admin"))
-        let privateServer = try Connection.server("https://private.example")
-        let own = API(connection: Connection(base: privateServer, token: "fixture"), adminGrant: "grant")
-        XCTAssertThrowsError(try own.request("v1/admin/unlock", method: "POST", body: ["identity_token": "proof"]))
-        XCTAssertThrowsError(try own.request("v1/admin/accounts", method: "POST"))
+    func testPrivateServerKeyCanSubmitAndFetchWithoutAnAccount() throws {
+        let server = try Connection.server("https://studio.example")
+        let api = API(connection: Connection(base: server, token: "fixture"))
+        XCTAssertEqual(try api.request("v1/jobs", method: "POST").value(forHTTPHeaderField: "Authorization"), "Bearer fixture")
+        XCTAssertEqual(try api.request("v1/jobs/example/video").url?.host, "studio.example")
     }
 
     func testPlaintextLoopbackIsConfinedToSimulatorDevelopment() throws {

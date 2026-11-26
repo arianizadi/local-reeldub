@@ -36,15 +36,17 @@ def kitten_match_ready(*, require_service=False):
 def correct_kitten_model(job, model):
     if job.get("match_engine") == KITTEN_MATCH:
         return model == KITTEN_MATCH_MODEL
+    if job.get("quality_requested") in ("fast", "best"):
+        return model == "Qwen3-TTS-12Hz-1.7B-Base"
     if job.get("narrator_engine") == KITTEN_ENGINE:
         return model == KITTEN_MODEL
     return model not in (KITTEN_MODEL, KITTEN_MATCH_MODEL)
 
 
 VOICE_ERRORS = {
-    "voice_consent": "Match the speaker requires consent for this video. Choose a narrator or confirm permission.",
-    "single_speaker": "ReelDub could not isolate one speaker for your own voice. Choose a narrator for this video.",
-    "unclear_speaker": "ReelDub could not isolate the speakers clearly enough to match them. Choose a narrator for this video.",
+    "voice_consent": "Match the speaker requires consent for this video. Confirm permission from each speaker.",
+    "single_speaker": "ReelDub could not isolate one speaker for your own voice. Try a clip with clearer dialogue.",
+    "unclear_speaker": "ReelDub could not isolate the speakers clearly enough to match them. Try a clip with clearer dialogue.",
     "upload_translation": "The translation model could not finish this language. Try again later or choose another language.",
 }
 
@@ -62,6 +64,8 @@ def voice_scope(job):
     mode = upload_mode(job)
     if mode == "narrator":
         return mode
+    if mode == "match" and job.get("quality_requested") in ("fast", "best"):
+        return "match"
     consent = job.get("voice_consent")
     version = job.get("voice_consent_version")
     if mode == "match" and type(version) is int and version == 1 and consent in ("own_voice", "documented_permission"):

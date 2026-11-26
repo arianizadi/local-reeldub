@@ -1,94 +1,57 @@
-# ReelDub Cloud hosting
+# Hosting ReelDub
 
-Phones reach the hosted API through Cloudflare at `reeldub.arianizadi.com`. A restricted SSH forward connects the public gateway to the origin on Proxmox CT115. That guest runs the API, private GPU coordinator, operator endpoint and encrypted media store. Proxmox CT114 fetches public Instagram media through its own restricted VPN connection. The Linux devbox pulls jobs and renders them on its 4070 Ti Super. The Mac is used for iOS development. [GPU fleet architecture, queue order and failover](GPU-FLEET.md)
+The [quick start](README.md#quick-start) runs one GPU worker on a Linux server. Docker publishes the API on loopback. The downloader, database and model services have no published ports. The model installer fetches its weights before the GPU worker starts. If the optional Kitten installation fails, the installer reports it in its log and the worker can still process dubs with Qwen. The worker reaches MongoDB and the private downloader through internal networks. The Kitten service has its own offline network namespace and receives speaker references through a private volume.
 
-## Storage and billing controls
+## Connect
 
-ReelDub Cloud uses a dedicated MongoDB database on Proxmox for account identities, hashed sessions, entitlements, billing records, queue state and file references. CT115 stores originals, rendered videos and posters in a separate encrypted GridFS cache. Wake signals, node health, telemetry and short-lived sign-in challenges also stay on CT115. The app can play and delete its local downloads offline. [Media lifecycle](GPU-FLEET.md#from-admission-to-playback)
+On the server, open `http://127.0.0.1:8300`. On another computer, forward a local port through SSH:
 
-Set `REELDUB_STORE_STORAGE_LIMIT_BYTES` to the metadata budget. New checkout requires a majority-acknowledged, journaled purchase intent. Checkout pauses when either allocated data and indexes reach 80% of this budget or filesystem usage reaches 80%. A failed storage check or write also pauses checkout. Verified Apple transactions, refunds and renewals can still be delivered. The iOS client finishes transactions after server delivery and retries unfinished purchases. Apple controls renewals and final payment timing.
+```sh
+ssh -N -L 8300:127.0.0.1:8300 your-user@your-render-host
+```
 
-## Metadata migration
+Open `http://127.0.0.1:8300` on the connecting computer. For phones, use an HTTPS reverse proxy with a certificate the phone trusts or [Tailscale Serve](https://tailscale.com/kb/1242/tailscale-serve) on the Docker host. Proxy the site root and all API requests to the loopback address and allow enough time for video uploads. Each operator key shares one library. Give unrelated users separate installations if they need private libraries.
 
-1. Create a dedicated application database and a scoped MongoDB login. Supply `REELDUB_METADATA_MONGO_URI_FILE`, `REELDUB_METADATA_MONGO_DATABASE` and, for a private CA, `REELDUB_METADATA_MONGO_CA_FILE`. The connection validates server certificates. Keep the separate `MONGO_URI`, `MONGO_DATABASE` and `MONGO_TLS_CA_FILE` values for the existing CT115 media cache.
-2. For a PostgreSQL cutover, stop admissions, let in-flight renders complete, then stop every API, operator and coordinator process that can write metadata. Preserve the previous configuration and a source snapshot throughout verification.
-3. Set `REELDUB_MIGRATION_DSN_FILE` to a file with a PostgreSQL connection that can read all ReelDub tables. Run `python -m server.migrate_mongo --copy`. It uses one read-only PostgreSQL snapshot, checks the receipt-spend and idempotency indexes, compares every document and per-collection count, then creates MongoDB indexes. It accepts identical previously copied documents on retry. A conflict stops the copy. A fresh staging database is safe when an earlier import conflicts.
-4. Set the three metadata Mongo variables on the API, operator and coordinator services. Remove `REELDUB_POSTGRES_DSN` and `REELDUB_POSTGRES_DSN_FILE` from their runtime environments. Start the services, check private `/health`, and verify an existing account, job and GPU claim. A rollback to the frozen source is safe only before accepting new writes; after reopening, reconcile new MongoDB writes and deletions first. Before reopening admissions, run `deploy/metadata/install-cutover-fence.sh reeldub_metadata` on the control host. Its systemd drop-ins survive application rollbacks and prevent all three writer services from starting against stale Neon configuration. Keep the frozen Neon source offline and retire its retained copy under the backup retention policy. After a disaster, use the isolated, receipt-reconciled restore described in the backup runbook; if receipt coverage or the latest billing writes cannot be proven, keep the restored service private pending reconciliation.
+## Updates and configuration
 
-## Recover when only the S3 metadata backup survives
+Keep `.env` on the server. The setup script generates a strong connection key and different MongoDB passwords for the owner, API and worker. Re-running setup preserves them.
 
-1. Keep the public API, operator writers, workers and Apple notification consumers stopped. Restore the newest usable snapshot into an **empty, isolated** `reeldub_restore_*` database with the [S3 recovery tools](deploy/backup/). Verify its checksums and replay the separate deletion journal through the present before exposing accounts. Record the snapshot timestamp and incident time. All mutations between those times are at risk, including newly registered users, renders, credit spending, bans and beta allowances. Rebuild the media database, queue coordinator and runtime secrets separately. Rotate or reissue lost service credentials and test the GPU certificate and token on the private coordinator.
-2. Set `REELDUB_STORE_STORAGE_LIMIT_BYTES=0` on each restored API while reconciling. This closes new checkout intents, including the one-time unlock. Keep new render submissions closed too. Use the original Apple team and bundle configuration when restoring Sign in with Apple. Users sign in again because session credentials are excluded from the backup. Returning subjects reconnect to surviving accounts. A user who first registered after the snapshot can create a new profile with the same Apple identity. Their previous library, beta grant, local-to-cloud library identifier and purchase bindings may need recovery. Apple may only supply profile information such as email at the initial authorization.
-3. In isolated staging, run `python -m server.restore_media_loss --mongo-uri-file "$RECOVERY_URI_FILE" --target "$RESTORE_DB"` and record its counts. When the **entire GridFS cache is confirmed lost**, add `--apply-absent-media` and run it again in report mode to verify zero remaining changes. Set `REELDUB_BACKUP_CA` for a private CA. This keeps finished job history and marks server copies and posters unavailable. A copy on a surviving device may still play. Uploads and previously quoted sources require resubmission and a fresh quote. Unfinished jobs tied to these sources fail and release their reservations. Previously running, unquoted public Reels go to the recovery queue with their existing reservation and a new lease on claim. Instagram may no longer serve the original clip.
-4. Recover App Store Server API credentials and verify the environment and bundle. Starting before the snapshot timestamp, page notification history through the incident, then page **Get Transaction History V2** for each known customer transaction, including finished consumables, renewals, refunds and revocations. Use the normal signed-transaction verifier and idempotent ledger path. Match the verified app account token, prior binding and environment. Process a representative replay twice and verify each transaction grants credit once. A user whose entire purchase history falls after the snapshot may need to provide an Apple transaction identifier or sign in on a device that can resubmit a signed transaction. A paid receipt proves what Apple sold. It cannot identify how many seconds ReelDub later spent, reconstruct missing jobs, or establish ownership of an unfamiliar app account token by email alone. Keep ambiguous balances and claims under manual review, and record any adjustment before enabling new spends. [Apple transaction history](https://developer.apple.com/documentation/appstoreserverapi/get-transaction-history) · [Apple notification history](https://developer.apple.com/documentation/appstoreserverapi/get-notification-history)
-5. With wallets still closed, verify restore-time deletion and suspension decisions, daily and paid allowances, unavailable-media responses and active subscriptions. Test fresh sign-in, an expired playback token, a recovered queue job and a newly staged Reel. Fence any previous primary and workers, replay any later deletion receipts, then explicitly promote the reconciled database. Confirm backups and erasure mirroring on the promoted deployment before re-enabling public submissions and purchases. Recovery leaves completed-job charges intact unless a recorded financial reconciliation calls for an adjustment.
+```sh
+git pull --ff-only
+./start-local.sh
+docker compose ps -a
+docker compose logs --tail=60 models worker
+```
 
-## Beta tester allowances
+| Setting | Default | Purpose |
+| --- | --- | --- |
+| `REELDUB_PORT` | `8300` | Published loopback API port |
+| `REELDUB_KITTEN_MATCH` | `1` | Set to `0` before startup for a Qwen-only installation |
+| `REELDUB_MAX_SOURCE_SECONDS` | `0` | Optional operator limit on input duration in seconds |
+| `WORKER_PROCESSES` | `1` | Increase only after testing simultaneous renders on your GPU |
 
-With operator database credentials, run `python -m server.admin beta-allowance tester@example.org 50` to reserve a daily allowance. Invite the tester through TestFlight and ask them to choose **Share My Email** with that address when signing in to ReelDub. The first matching verified Apple sign-in claims the allowance. Account settings show daily use and the limit. It resets at midnight UTC and gives standard queue access. Run the command again to update the allowance for that tester.
+After changing `.env`, rerun `./start-local.sh`. To rotate access, replace `SELF_HOST_KEY` with the output of `openssl rand -hex 32`, recreate the API with `docker compose up -d api`, then connect each client with the new key. Database passwords in an existing Mongo volume require a corresponding MongoDB credential change.
 
-## Deploy and recover the hosted fleet
+To run MongoDB with TLS on the container networks, follow `server/setup-mongo-tls.sh` and include `compose.tls.yaml` in the Compose file list. To use another GPU server, see the [private worker guide](deploy/fleet/README.md).
 
-1. Configure the two guests, preserving the separate service identities and encrypted data volumes. CT114 accepts private mutual TLS requests from CT115. Its restricted downloader and inspection tools use an allowlisted proxy with VPN-only egress. CT115 serves the app through its public origin and workers through a separate mutual TLS listener. Keep the operator endpoint private. [Intake guest](deploy/proxmox-intake/README.md) · [Control guest and GPU worker](deploy/fleet/README.md) · [Operator relay](deploy/proxmox-operator/README.md)
-2. Complete the [metadata setup and migration](#metadata-migration). Install service-specific credentials on CT115. Protect the database connection with verified TLS. GPU nodes receive a worker certificate, private key and node-scoped bearer. The coordinator transfers only the source and result for the worker's current job lease.
-3. For a migration, drain the queue and pause writes. Back up the media database and test restoration separately. When importing historical Mongo metadata, run the migration with `--metadata` against the intended source and destination. The command checks media references, imports metadata transactionally and compares table checksums. Keep the frozen source until old library items, owner-only playback, admin entitlement and a new render have been verified.
-4. Verify public API access, private worker authentication, intake egress enforcement, completed playback and guest restart recovery. The former devbox API, direct workers and origin are disabled. Its frozen encrypted archive represents the cutover point. For a later rollback, quiesce the active services and reconcile all newer metadata and media before serving from a restored copy. [Fleet deployment checks](deploy/fleet/README.md)
+## Storage and backups
 
-Hosted purchases and public uploads are feature-gated. Enabling either requires its own deployment configuration.
+Docker keeps the library, queue, inputs and outputs in the `mongo-data` volume. The `model-cache`, `studio-env` and `kitten-env` volumes contain rebuildable models and environments. The `kitten-compile` volume holds reusable CUDA compilation artifacts. `match-spool` is temporary work in progress. `docker compose down` stops the services while preserving named volumes.
 
-## Self-hosted Compose and legacy native deployment
+For a recoverable single-host backup, wait for active jobs to finish, stop the stack, and take a consistent snapshot of `mongo-data`. Keep an encrypted copy of `.env` and any locally managed proxy certificates separately. Restart with `./start-local.sh`. Test recovery by restoring into a separate installation with its own project name and loopback port. Model weights can be reinstalled. Operators with an existing split metadata deployment can use the [off-site backup and restore tooling](deploy/backup/README.md).
 
-The official iOS app offers a free authenticated connection test and a one-time App Store unlock for self-hosting. Your server URL and key go directly to your server. The hosted billing API receives an Apple-signed app proof before purchase and a signed transaction afterward. It commits a checkout intent to the metadata database before StoreKit opens the payment sheet. Previously purchased access can be restored through the App Store while the hosted API is offline.
+## Troubleshooting
 
-The hosted billing service uses `REELDUB_SELF_HOST_STORE_ENVIRONMENTS=Sandbox` for beta checkout. Production checkout requires enabling `Production` on the billing service and an approved App Store product. This setting is independent of hosted Creator billing. Both use the configured storage budget to pause new purchases when the ledger reaches 80% of the limit. Private server operators do not need Apple billing credentials.
+| What you see | What to check |
+| --- | --- |
+| API is up and jobs are queued | `docker compose logs -f models` on first startup. A successful model installer exits with status 0. Then check `docker compose ps worker`. |
+| GPU is missing | Run `./start-local.sh --check` on the Linux server. This checks GPU visibility from inside Docker, the Compose file and the host driver. |
+| First model install failed | Read the last model installer error. Check free disk, outbound access, GPU driver support and free GPU memory, then rerun setup. A Qwen-only setup can use `REELDUB_KITTEN_MATCH=0`. |
+| Phone cannot connect | Open the same HTTPS address in Safari, check the proxy and verify that the phone can reach the private network. A phone’s `localhost` refers to the phone. |
+| Instagram download failed | Check `docker compose logs intake`. Instagram can decline individual downloads. Share your local copy from Photos or Files in the iPhone app. |
 
-A new self-hosted installation can use Compose with its bundled MongoDB. For PostgreSQL metadata, apply `compose.neon.yaml` after the hosted and TLS overlays. Supply `REELDUB_API_DSN_FILE` to the API and `REELDUB_WORKER_DSN_FILE` to the optional direct worker in the `local-worker` profile. Mount only each service's credential. The direct worker needs schema usage, SELECT and UPDATE(doc) on `reeldub.jobs`, plus access to the local media store. The fleet deployment above provides the alternative for remote GPUs.
+## Previous hosted deployments
 
-For an existing native all-in-one Ubuntu 24.04 x86-64 installation, `deploy/devbox/prepare-runtime.sh` prepares the service and sandbox binaries and `deploy/devbox/install-services.sh` generates user systemd units. The legacy encrypted media vault uses gocryptfs and a TPM-sealed credential bound to PCR 7. Keep a separate recovery key offline, especially before changing Secure Boot or replacing the motherboard. User lingering starts the units after boot. Retain encrypted backups independently of the GPU host.
+Installing the self-host release does not convert Apple accounts or merge past libraries into a shared operator workspace. Keep a verified backup before modifying a live deployment. The historical account-backed API, StoreKit catalog and hosted Compose overlays were retired. For a clean personal instance, start a separate Compose project with its own generated `.env`, loopback port and volumes, then point the client at the new server.
 
-## Render performance
-
-Two pipeline slots share the hosted 16 GiB card. Both priority and standard jobs use the GPU. The optional direct-worker setting `REELDUB_FREE_CPU_OVERFLOW=1` permits one free job to transcribe on six CPU threads when GPU lanes are busy. Separation, Studio translation and matched speech still use the GPU. The Best preset defaults to paired speech synthesis, with a separate voice reference per line. An out-of-memory error falls back to single-line synthesis.
-
-Jobs report stage milestones and completed voice lines. Finish-time estimates use up to seven recent successful renders of comparable duration and prefer the same output language. Fewer than three comparable samples yields progress without a time estimate. Queue wait is measured separately.
-
-For database tuning, compare `pg_stat_statements` calls and shared-buffer reads on a disposable PostgreSQL instance using the same data and requests. Inspect queue and job queries with `EXPLAIN (ANALYZE, BUFFERS)`. Connection-checkout regression tests live in `server/test_idle.py`. On the GPU host, use `pidstat` for CPU activity and `nvidia-smi` for memory, load and power. Xcode Instruments' Network template measures device traffic while rendering and after the library goes idle.
-
-New dubs on the hosted Studio worker use the **Best** preset across both queue tiers. Best uses Whisper large-v3, context translation, and Qwen3-TTS 1.7B for matched voices. On the hosted devbox, Index-Translate-9B Q5_K_M handles translation with Gemma 3 12B available as a fallback. Hindi uses Kokoro. Each new completed job records the actual models it used. On the Ryzen 9 5900X, using six CPU threads, native transcription of 13.4 seconds of Persian took 11.9 seconds on CPU and 1.1 seconds on the RTX. A 40.0-second Russian clip took 38.7 and 4.3 seconds respectively. These timings exclude model loading and the rest of the render.
-
-### Hosted administrator console
-
-In the iOS app, open **Dubs → Account → Admin console** from the library menu. The hosted API requires an active Apple session whose subject matches `ADMIN_APPLE_SUB`. Use Apple again to unlock the console. Every dashboard, moderation and experiment request checks the session and a separate, session-bound 15-minute grant. The app holds that grant in memory. A self-host key, beta review key, plan assignment or matching email cannot unlock the console.
-
-Overview groups retained requests by status, language pair and render mode and shows measured cache reuse, queue wait and render time. Cache-hit counting starts with this version. Pull to refresh. Accounts, requests and reports load in pages of 40. Open an account to see its effective allowance and request history. A ban stops hosted access and pending work and records the reason. Account deletion remains available to suspended users.
-
-To review the five-dub allowance, open **Admin console → Overview**. Over the last 30 UTC calendar days, it shows how many standard free accounts used a fifth daily slot and how often that happened across days they used at least one slot. Someone who dubs on three different days contributes one account and three active days. Reopening a cached dub uses no slot. Tracking begins with this release.
-
-Priority wait measures the time from entering the paid priority lane to the first worker start. The overview shows the median, 95th percentile and number of measured starts, plus the same figures for arrivals when all compatible configured GPU slots were occupied. An empty sample means there is no observed wait yet. These measurements use the existing admin refresh and do not require background polling.
-
-The render lab queues a fresh test with its own settings. Best uses context translation and a matched voice when supported. Medium keeps context translation and chooses a preset voice where one is available. Fast uses greedy speech decoding and, for English, direct Whisper translation. All three keep source-dialogue cleanup. Paired decoding keeps a separate voice reference for each line. Experiments participate in the regular priority queue and have separate cache identities.
-
-On a native Studio worker, run `./setup-lab.sh graph` to install the optional CUDA Graphs voice engine and set `REELDUB_LAB_RUNTIMES=graph` on the hosted API after testing every eligible worker. For a Compose deployment, bake the same runtime into the worker image or persist its installation at `/app/.tts-graph`. The GPU and model versions affect timing. The app's estimate is calibrated with two English dubs on one RTX 4070 Ti Super. Time spent downloading, waiting in the queue and transferring the result is additional.
-
-Hosted GPU workers report sampled utilization, VRAM, temperature and power to CT115 when local GPU metrics are enabled. The admin overview shows recent samples per node. Samples older than three minutes drop out. For a self-hosted API sharing the same GPU as its worker, `REELDUB_LOCAL_GPU_METRICS=1` also enables on-demand local sampling.
-
-FP16 dialogue separation is available per experiment. To test vLLM-Omni voices, run `./setup-lab.sh omni` on each compatible worker and include `omni` in the enabled runtime list. The tested isolated build uses CUDA 12.9.
-
-#### Render lab reference timings
-
-Wall time in seconds from cached local media to a finished English MP4 on a 16 GiB RTX 4070 Ti Super. Each entry is one complete render. The inputs were a 13.42-second Persian clip and a 40.01-second Russian conversation. The voice reference changes per line. Download, queue wait and transfer to the phone are separate.
-
-| Configuration | Persian clip | Russian conversation |
-| --- | ---: | ---: |
-| Best, matched Qwen 1.7B, paired lines | 42.53 | 88.43 |
-| Medium, context translation and preset voice | 30.50 | 67.26 |
-| Fast, direct English translation and preset voice | 28.67 | 60.42 |
-| Best with CUDA Graphs, one matched line at a time | 42.17 | 83.51 |
-| Fast with FP16 dialogue separation | — | 55.26 |
-| Best with vLLM-Omni 0.16.0, paired matched voices | 155.18 | — |
-
-A separate warm test of three Spanish lines took 1.61 seconds with CUDA Graphs and 22.99 seconds with vLLM-Omni on this machine. Full renders include engine startup, separation, recognition, translation and encoding. The timing samples describe these inputs. Voice similarity, translation quality and residual dialogue still need listening checks across languages. [CUDA Graphs implementation](https://github.com/andimarafioti/faster-qwen3-tts) · [vLLM-Omni](https://github.com/vllm-project/vllm-omni)
-
-### Sign in with Apple account deletion
-
-ReelDub verifies a fresh Apple identity before beginning erasure. For automatic Apple token revocation, create a Sign in with Apple key associated with the primary ReelDub App ID. On the hosted API service configure `APPLE_SIGNIN_TEAM_ID`, `APPLE_SIGNIN_KEY_ID`, and `APPLE_SIGNIN_PRIVATE_KEY_FILE`. Restrict the downloaded .p8 key to the API account on the encrypted control volume. The API signs a five-minute ES256 client secret for each token exchange. Hosts with an existing client-secret JWT can use `APPLE_SIGNIN_CLIENT_SECRET_FILE` and rotate it before expiry. Account data erasure still completes if Apple revocation is unavailable, with manual disconnect instructions in the app. [Apple key setup](https://developer.apple.com/help/account/capabilities/create-a-sign-in-with-apple-private-key/) · [Apple account deletion guidance](https://developer.apple.com/documentation/technotes/tn3194-handling-account-deletions-and-revoking-tokens-for-sign-in-with-apple)
+The existing split-host deployment uses independent GPU, intake, media and metadata services. Its [control setup](deploy/fleet/README.md), [metadata configuration](deploy/metadata/README.md) and [backup tools](deploy/backup/README.md) remain available for operators maintaining that layout.

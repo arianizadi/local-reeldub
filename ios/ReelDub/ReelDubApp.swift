@@ -1,30 +1,17 @@
 import SwiftUI
-import StoreKit
 
 @main
 struct ReelDubApp: App {
     @State private var studio = Studio()
-    @Environment(\.scenePhase) private var phase
-    private var runsStoreListeners: Bool {
-        #if DEBUG && targetEnvironment(simulator)
-        // In-process unit tests install SKTestSession before accessing StoreKit.
-        // Starting a listener sooner selects the external sandbox on a fresh simulator.
-        return NSClassFromString("XCTestCase") == nil
-        #else
-        return true
-        #endif
-    }
     var body: some Scene {
         WindowGroup {
             Group {
                 if studio.connection == nil { Welcome(studio: studio) }
                 else { Home(studio: studio) }
             }.tint(Palette.action)
-                .task(id: studio.account?.store_token) { if runsStoreListeners { await studio.observePurchases() } }
-                .task { if runsStoreListeners { await studio.selfHostAccess.observe() } }
-                .task(id: phase) {
-                    if phase == .active && runsStoreListeners { await studio.selfHostAccess.reconcile() }
-                }
+            #if DEBUG
+            .task { await studio.consumeDevelopmentPairing() }
+            #endif
         }
     }
 }
@@ -71,17 +58,11 @@ final class Studio {
     var hasPendingRemovals: Bool { !pendingRemovals.isEmpty }
     private var refreshGeneration = 0
     private var fullRefreshes = 0
-    @ObservationIgnored var unfinishedPurchases: AsyncStream<Void>.Continuation?
     private let transport: URLSession
-    let selfHostAccess = SelfHostStore()
-    @ObservationIgnored private var testedServer: Connection?
-    private let selfHostAuthorized: () -> Bool
 
-    init(connection: Connection? = Connection.read(), transport: URLSession = API.session,
-         selfHostAuthorized: @escaping () -> Bool = { SelfHostEntitlement.isCached }) {
+    init(connection: Connection? = Connection.read(), transport: URLSession = API.session) {
         self.connection = connection
         self.transport = transport
-        self.selfHostAuthorized = selfHostAuthorized
         restoreLibrary()
     }
 
@@ -98,7 +79,7 @@ final class Studio {
         connection?.base == api.connection.base && connection?.token == api.connection.token
     }
     private func matches(_ api: API) -> Bool {
-        sameConnection(api) && (api.connection.isHosted || selfHostAuthorized())
+        sameConnection(api)
     }
     func localMovie(_ id: String) -> URL? { saved[id] == nil ? nil : library?.movie(id) }
 
@@ -123,19 +104,11 @@ final class Studio {
         return try await api.movie(id)
     }
     var jobs = [Job]()
+    var processingCount: Int { jobs.filter { $0.state == "running" }.count }
     var account: Account?
     var failure: String?
-    var welcomeMessage: String?
-    var sending = false
     private var libraryRevision = 0
-    private var pending: (url: String, target: String, id: UUID)?
-    var api: API? {
-        guard let connection, connection.isHosted || selfHostAuthorized() else { return nil }
-        return API(connection: connection, transport: transport, selfHostAuthorized: selfHostAuthorized)
-    }
-    var needsSelfHostUnlock: Bool {
-        connection?.isHosted == false && selfHostAccess.checked && !selfHostAccess.owned
-    }
+    var api: API? { connection.map { API(connection: $0, transport: transport) } }
 
     func progressDelay(failures: Int) -> Int? {
         guard jobs.contains(where: { $0.rdPhase.isActive }) else { return nil }
@@ -165,20 +138,11 @@ final class Studio {
                         return
                     }
                 }
-                // A completion or deletion needs a full reconciliation, including the balance and downloads.
+                // A completion or deletion needs a full reconciliation, including any new downloads.
             }
             let legacyProgress = progressOnly && account != nil && account?.batch_progress != true
             async let concurrentProfile: Data? = legacyProgress ? nil : api.data("v1/me")
-            let payload: Data
-            do { payload = try await api.data("v1/jobs") }
-            catch let denial as ServiceError where denial.status == 403 {
-                let data: Data
-                if let profile = try await concurrentProfile { data = profile }
-                else { data = try await api.data("v1/me") }
-                let profile = try JSONDecoder().decode(Account.self, from: data)
-                if current(), profile.tier == "suspended" { account = profile }
-                throw denial
-            }
+            let payload = try await api.data("v1/jobs")
             guard current() else { return }
             let remote = try JSONDecoder().decode([Job].self, from: payload)
             if legacyProgress, remote.contains(where: { $0.rdPhase.isActive }) {
@@ -192,11 +156,12 @@ final class Studio {
             else { profileData = try await api.data("v1/me") }
             let profile = try JSONDecoder().decode(Account.self, from: profileData)
             guard current() else { return }
-            if connection?.libraryID != profile.library_id || connection?.outputLanguages != profile.output_languages {
+            if connection?.libraryID != profile.library_id || connection?.outputLanguages != profile.output_languages || connection?.qualityLanguages != profile.quality_languages {
                 let changedLibrary = connection?.libraryID != profile.library_id
                 var upgraded = api.connection
                 upgraded.libraryID = profile.library_id
                 upgraded.outputLanguages = profile.output_languages
+                upgraded.qualityLanguages = profile.quality_languages
                 try upgraded.save()
                 connection = upgraded
                 if changedLibrary {
@@ -235,8 +200,7 @@ final class Studio {
             startTransfer()
         } catch is SessionError {
             guard current() else { return }
-            clearSession()
-            welcomeMessage = "Your session ended. Sign in again to see your dubs."
+            failure = SessionError.expired.localizedDescription
         } catch {
             if current(), !Task.isCancelled { failure = error.localizedDescription }
         }
@@ -267,76 +231,32 @@ final class Studio {
     func retryTransfers() {
         startTransfer()
     }
-    func testSelfHost(_ candidate: Connection) async throws {
-        testedServer = nil
-        guard !candidate.isHosted, !candidate.token.isEmpty else {
-            throw Problem("Enter the address and connection key for your own ReelDub server.")
+    func connect(_ candidate: Connection) async throws {
+        let api = API(connection: candidate, transport: transport)
+        let profile = try JSONDecoder().decode(Account.self, from: await api.data("v1/me"))
+        guard let id = profile.library_id, !id.isEmpty, !(profile.quality_languages?["best"] ?? []).isEmpty else {
+            throw Problem("Update this server to the self-hosted edition of ReelDub, then try again.")
         }
-        let data = try await API(connection: candidate, transport: transport).data("v1/me")
-        _ = try JSONDecoder().decode(Account.self, from: data)
-        try Task.checkCancellation()
-        testedServer = candidate
-    }
-
-    func purchaseSelfHost(for candidate: Connection) async throws -> Bool {
-        guard !candidate.isHosted, testedServer?.base == candidate.base, testedServer?.token == candidate.token else {
-            throw Problem("Test this server connection before purchasing.")
-        }
-        return try await selfHostAccess.purchase {
-            let proof = try await AppTransaction.shared
-            _ = try proof.payloadValue
-            let billing = API(connection: Connection(base: Connection.hosted, token: ""), transport: self.transport)
-            let data = try await billing.data("v1/store/self-host/intents", method: "POST", body: ["signed_app": proof.jwsRepresentation])
-            let intent = try JSONDecoder().decode(PurchaseIntent.self, from: data)
-            guard intent.product == SelfHostEntitlement.productID, intent.account == intent.id else {
-                throw Problem("Purchases are temporarily unavailable. Try again later.")
-            }
-            return intent.id
-        }
-    }
-
-    func connect(_ new: Connection) async throws {
-        if !new.isHosted {
-            await selfHostAccess.refresh()
-            guard selfHostAccess.owned, selfHostAuthorized() else { throw Problem("Unlock or restore self-hosting to use this server.") }
-        }
-        let me = try await API(connection: new, transport: transport).data("v1/me")
-        let profile = try JSONDecoder().decode(Account.self, from: me)
-        var verified = new
-        verified.libraryID = profile.library_id
+        var verified = candidate
+        verified.libraryID = id
         verified.outputLanguages = profile.output_languages
-        guard new.isHosted || selfHostAuthorized() else { throw Problem("Restore self-hosting to use this server.") }
+        verified.qualityLanguages = profile.quality_languages
         try verified.save()
-        testedServer = nil
         resetTransfers()
-        pending = nil; connection = verified; restoreLibrary(); account = profile; welcomeMessage = nil
+        connection = verified
+        restoreLibrary()
+        account = profile
+        failure = nil
         await refresh()
     }
-    func deleteAccount(identity: String, challenge: String, code: String) async throws {
-        guard let api, api.connection.isHosted else { throw Problem("Sign in to ReelDub Cloud first.") }
-        let local = library
-        struct Receipt: Decodable { let apple_revoked: Bool; let state: String? }
-        let response = try await api.data("v1/account", method: "DELETE", body: [
-            "identity_token": identity, "challenge": challenge, "authorization_code": code])
-        let receipt = try JSONDecoder().decode(Receipt.self, from: response)
-        let currentAccount = matches(api)
-        if currentAccount { clearSession() }
-        // Refresh may have signed out the revoked session while the receipt was in flight.
-        // Always erase the original library and leave any newly connected account alone.
-        var message = receipt.state == "pending"
-            ? "Your account is closed. ReelDub will finish deleting your data automatically."
-            : "Your ReelDub account and dubs were deleted."
-        do { try local?.erase() }
-        catch { message += " Remove ReelDub from this device to clear its remaining files." }
-        if !receipt.apple_revoked {
-            message += " To disconnect Apple, open Settings → your name → Sign in with Apple → ReelDub."
-        }
-        if currentAccount || connection == nil { welcomeMessage = message }
-    }
-    func disconnect() async {
-        let previous = api
-        clearSession()
-        if let previous { _ = try? await previous.data("v1/session", method: "DELETE") }
+
+    func disconnect() {
+        resetTransfers()
+        Connection.clear()
+        connection = nil
+        jobs = []
+        account = nil
+        failure = nil
     }
     private func resetTransfers() {
         libraryRevision += 1
@@ -346,12 +266,6 @@ final class Studio {
         saved = [:]; retainedJobs = [:]; unrecordedMarkers = []; library = nil
     }
 
-    private func clearSession() {
-        resetTransfers()
-        testedServer = nil
-        unfinishedPurchases = nil
-        Connection.clear(); connection = nil; jobs = []; account = nil; failure = nil; pending = nil
-    }
     private func startTransfer() {
         guard transferTask == nil, let api, let library,
               let job = jobs.first(where: { job in
@@ -386,8 +300,8 @@ final class Studio {
                 transferErrors[job.id] = nil; transferRetries[job.id] = nil
             } catch is SessionError {
                 guard !Task.isCancelled, matches(api) else { return }
-                clearSession()
-                welcomeMessage = "Your session ended. Sign in again to see your dubs."
+                failure = SessionError.expired.localizedDescription
+                transferRetries[job.id] = .stopped(lastRequest: job.last_requested)
             } catch {
                 guard !Task.isCancelled, matches(api) else { return }
                 if let error = error as? ServiceError, [404, 410].contains(error.status),
@@ -466,16 +380,8 @@ final class Studio {
         if newerRequest, matches(api) { Task { await refresh() } }
     }
 
-    @discardableResult func submit(_ url: String, target: String = "en") async throws -> Job {
-        guard let api, !sending else { throw Problem("Connect to a server first.") }
-        sending = true
-        defer { sending = false }
-        if pending?.url != url || pending?.target != target { pending = (url, target, UUID()) }
-        let job = try await api.submit(url, id: pending!.id, target: target)
-        guard matches(api) else { throw Problem("Your connection changed.") }
-        pending = nil
-        jobs.removeAll { $0.id == job.id }; jobs.insert(job, at: 0)
-        await refresh()
-        return job
+    func didSubmit(_ job: Job) {
+        jobs.removeAll { $0.id == job.id }
+        jobs.insert(job, at: 0)
     }
 }

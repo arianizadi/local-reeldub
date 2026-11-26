@@ -41,7 +41,7 @@ struct DuoHingeFixture {
 
 @MainActor
 final class DuoLayouts: XCTestCase {
-    func testFormAndHelpSurviveFoldingAndRotation() async throws {
+    func testConnectionFormSurvivesFoldingAndRotation() async throws {
         let device = XCUIDevice.shared
         guard let hinge = DuoHingeFixture() else {
             throw XCTSkip("Run deploy/qa/test_duo_layout.py to control the simulated hinge.")
@@ -57,17 +57,11 @@ final class DuoLayouts: XCTestCase {
         device.orientation = .portrait
         let app = XCUIApplication()
         app.launch()
-        let selfHost = app.buttons["Use my own server"]
-        if !selfHost.waitForExistence(timeout: 8) {
-            throw XCTSkip("Run on a signed-out iPhone Duo simulator.")
-        }
-        add(try await hinge.screenshot(named: "Duo closed — Welcome"))
-        selfHost.tap()
-        let field = app.textFields["Server address"]
-        XCTAssertTrue(field.waitForExistence(timeout: 4))
+        let field = app.textFields["server-address"]
+        guard field.waitForExistence(timeout: 8) else { throw XCTSkip("Use an unpaired QA simulator.") }
+        add(try await hinge.screenshot(named: "Duo closed — Server form"))
         field.tap()
         field.typeText("https://duo.example")
-        let restore = app.buttons["self-host-restore"]
         let closed = try await hinge.move(to: "closed")
         let open = try await hinge.move(to: "open")
         XCTAssertGreaterThan(min(open.width, open.height), min(closed.width, closed.height))
@@ -85,26 +79,9 @@ final class DuoLayouts: XCTestCase {
         XCTAssertTrue(field.waitForExistence(timeout: 4))
         XCTAssertEqual(field.value as? String, "https://duo.example")
         add(try await hinge.screenshot(named: "Duo half-open — Server form"))
-        XCTAssertTrue(app.buttons["Cancel"].isHittable)
-        XCTAssertEqual(field.value as? String, "https://duo.example")
-        app.buttons["Cancel"].tap()
-        let faq = app.buttons["Help & FAQ"]
-        if !faq.isHittable { app.swipeUp() }
-        faq.tap()
-        let question = app.buttons["How long can my video be?"]
-        XCTAssertTrue(question.waitForExistence(timeout: 5))
-        question.tap()
-        let answer = app.staticTexts.containing(NSPredicate(format: "label BEGINSWITH %@", "Choose a video up to 2 minutes")).firstMatch
-        XCTAssertTrue(answer.exists)
-        add(try await hinge.screenshot(named: "Duo half-open — Help"))
         try await hinge.move(to: "closed")
         device.orientation = .portrait
-        XCTAssertTrue(answer.waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons["Done"].isHittable)
-        add(try await hinge.screenshot(named: "Duo closed again — Help"))
-        app.buttons["Done"].tap()
-        selfHost.tap()
-        XCTAssertTrue(restore.waitForExistence(timeout: 5))
-        XCTAssertTrue(restore.isHittable)
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        XCTAssertEqual(field.value as? String, "https://duo.example")
     }
 }

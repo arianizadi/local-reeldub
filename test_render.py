@@ -14,6 +14,19 @@ from voices import write_references
 
 
 class SoundtrackTest(unittest.TestCase):
+    def test_kitten_reference_gap_transcribes_the_selected_pcm_window(self):
+        from reeldub import transcribe_reference
+        from unittest.mock import Mock
+
+        speech = np.arange(16000, dtype=np.float32)
+        model = Mock()
+        model.transcribe.return_value = ([SimpleNamespace(text=" test")], {})
+        self.assertEqual(transcribe_reference(model, speech, (.25, .5), "fa", 1), "test")
+        call = model.transcribe.call_args
+        self.assertTrue(np.shares_memory(call.args[0], speech))
+        np.testing.assert_array_equal(call.args[0], speech[4000:8000])
+        self.assertEqual(call.kwargs["language"], "fa")
+
     def test_matching_needs_isolated_speech_from_the_attributed_speaker(self):
         line = {"start": 0, "end": 1, "speaker": 0}
         speaker = SimpleNamespace(start=0, end=1, speaker=0)
@@ -23,7 +36,7 @@ class SoundtrackTest(unittest.TestCase):
             source = folder / "source.wav"
             sf.write(source, np.zeros(RATE), RATE)
             for turns in ([], [overlap], [speaker, overlap]):
-                with self.subTest(turns=turns), self.assertRaisesRegex(ValueError, "Choose a narrator"):
+                with self.subTest(turns=turns), self.assertRaisesRegex(ValueError, "could not isolate"):
                     write_references([line], turns, source, folder, require_isolated=True)
                 self.assertFalse((folder / "reference-0.wav").exists())
             write_references([line], [speaker], source, folder, require_isolated=True)

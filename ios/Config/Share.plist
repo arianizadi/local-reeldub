@@ -27,13 +27,14 @@
 		<dict>
 			<key>NSExtensionActivationRule</key>
 			<string>
-				extensionItems.@count == 1 AND SUBQUERY(extensionItems, $item,
-					$item.attachments.@count == 1 AND SUBQUERY($item.attachments, $attachment,
-						ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.movie"
-						OR ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.file-url"
-					).@count == 1
-				).@count == 1
-			</string>
+				SUBQUERY(extensionItems, $item,
+                    SUBQUERY($item.attachments, $attachment,
+                        ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.url"
+                        OR ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.text"
+                        OR ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.movie"
+                    ).@count &gt; 0
+                ).@count &gt; 0
+            </string>
 		</dict>
 		<key>NSExtensionPointIdentifier</key>
 		<string>com.apple.share-services</string>
@@ -43,8 +44,6 @@
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Connect to your own ReelDub server on your network.</string>
 	<key>ReelDubKeychainGroup</key>
-	<string>$(AppIdentifierPrefix)com.arianizadi.reeldub.shared</string>
-	<key>ReelDubHostedURL</key>
-	<string>https://$(REELDUB_HOSTED_HOST)</string>
+	<string>$(AppIdentifierPrefix)$(REELDUB_BUNDLE_ID).shared</string>
 </dict>
 </plist>

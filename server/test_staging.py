@@ -119,7 +119,7 @@ class StagingTests(TestCase):
         self.assertEqual(len(self.fetches), 1)
         for original in jobs:
             attached = db().jobs.find_one({"_id": original["_id"]})
-            self.assertEqual(attached["slot"], original["slot"])
+            self.assertNotIn("slot", attached)
             self.assertEqual((attached["staged_source"], attached["title"], attached["author"]),
                              (source, "Fixture title", "Fixture author"))
         self.assertNotEqual(sources.for_job(self.admitted(self.users[1]))["_id"], source)
@@ -172,13 +172,11 @@ class StagingTests(TestCase):
         self.assertEqual(db().jobs.find_one({"_id": job["_id"]})["quoted_seconds"], 6)
         self.assertFalse(self.fetches)
 
-    def test_daily_admission_charges_only_existing_slots_and_does_no_eager_fetch(self):
+    def test_admission_accepts_multiple_jobs_without_eager_fetch(self):
         for _ in range(5):
             self.admitted(self.users[0])
-        with self.assertRaises(HTTPException) as denied:
-            self.admitted(self.users[0])
-        self.assertEqual(denied.exception.status_code, 429)
-        self.assertEqual(db().jobs.count_documents({"owner": self.users[0]}), 5)
+        self.admitted(self.users[0])
+        self.assertEqual(db().jobs.count_documents({"owner": self.users[0]}), 6)
         self.assertFalse(self.fetches)
 
     def test_creator_upload_inspects_once_and_keeps_private_bytes(self):
@@ -201,6 +199,7 @@ class StagingTests(TestCase):
         with self.assertRaises(HTTPException):
             sources.get(self.users[1], str(stage))
 
+    @patch("server.sources.MAX_SOURCE_SECONDS", 120)
     def test_old_intake_cannot_stage_an_oversized_upload_or_reel(self):
         self.seconds = 121
         owner = self.users[0]
@@ -228,6 +227,7 @@ class StagingTests(TestCase):
 
 
 class IntakeTransportTests(TestCase):
+    @patch("server.source.MAX_SOURCE_SECONDS", 120)
     def test_inspects_track_and_container_durations_before_rounding(self):
         path = Mock()
         path.stat.return_value.st_size = 1000

@@ -51,7 +51,7 @@ def fixture(key):
             if not self.authenticated():
                 return
             if self.path == "/v1/me":
-                self.reply(200, {"tier": "free", "used": 0, "library_id": key})
+                self.reply(200, {"library_id": key, "output_languages": ["en"], "quality_languages": {"best": ["en"], "fast": ["en"]}})
             elif self.path == "/v1/jobs":
                 self.reply(200, jobs)
             else:
@@ -91,14 +91,12 @@ def main():
                     "-scheme", "ReelDub", "-configuration", "Debug",
                     "-destination", f"platform=iOS Simulator,id={simulator}",
                     "-parallel-testing-enabled", "NO",
-                    "-only-testing:ReelDubTests/StoreCatalogTests/testPrepareSelfHostUITestStore",
                     "-only-testing:ReelDubUITests/StudioSmoke/testRangeSelectionAndConfirmedDeletion",
                     *sys.argv[2:],
                 ],
                 cwd=root,
                 env={
                     **os.environ,
-                    "TEST_RUNNER_REELDUB_UI_STORE": "owned",
                     "TEST_RUNNER_REELDUB_DRAG_FIXTURE_PORT": str(server.server_port),
                     "TEST_RUNNER_REELDUB_DRAG_FIXTURE_KEY": key,
                 },

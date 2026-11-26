@@ -58,7 +58,7 @@ def require_reel_links():
 def check_duration(seconds):
     if type(seconds) is not int or seconds < 1:
         raise HTTPException(422, "ReelDub could not verify this video's duration.")
-    if seconds > MAX_SOURCE_SECONDS:
+    if MAX_SOURCE_SECONDS and seconds > MAX_SOURCE_SECONDS:
         raise HTTPException(422, TOO_LONG)
 
 
@@ -181,31 +181,41 @@ def cached_source(user, identity, max_bytes):
     return doc
 
 
-def fetch_reel(stage, user, url, slot, daily):
+def download_to(file, url, *, daily=True):
+    """Fetch through the isolated intake, validating every byte before GPU processing."""
+    url = reel_url(url)
     max_bytes = DAILY_REEL_BYTES if daily else MAX_BYTES
     deadline = time.monotonic() + 155
-    with TemporaryFile() as file:
-        try:
-            with intake_post(
-                "/reel", json={"url": url, "daily": daily}, stream=True, timeout=(4, 155)
-            ) as r:
-                check(r)
-                seconds = int(r.headers["X-Duration"])
-                check_duration(seconds)
-                declared = int(r.headers["Content-Length"]) if "Content-Length" in r.headers else None
-                if declared is not None and not 0 < declared <= max_bytes:
+    try:
+        with intake_post(
+            "/reel", json={"url": url, "daily": daily}, stream=True, timeout=(4, 155)
+        ) as r:
+            check(r)
+            seconds = int(r.headers["X-Duration"])
+            check_duration(seconds)
+            declared = int(r.headers["Content-Length"]) if "Content-Length" in r.headers else None
+            if declared is not None and not 0 < declared <= max_bytes:
+                raise HTTPException(413, f"Choose a video under {max_bytes // (1024 * 1024)} MiB.")
+            title, author = (unquote(r.headers.get(k, "")) for k in ("X-Title", "X-Author"))
+            for part in r.iter_content(256 * 1024):
+                if time.monotonic() >= deadline:
+                    raise HTTPException(503, "Video intake timed out. Try again.")
+                if file.tell() + len(part) > max_bytes:
                     raise HTTPException(413, f"Choose a video under {max_bytes // (1024 * 1024)} MiB.")
-                title, author = (unquote(r.headers.get(k, "")) for k in ("X-Title", "X-Author"))
-                for part in r.iter_content(256 * 1024):
-                    if time.monotonic() >= deadline:
-                        raise HTTPException(503, "Video intake timed out. Try again.")
-                    if file.tell() + len(part) > max_bytes:
-                        raise HTTPException(413, f"Choose a video under {max_bytes // (1024 * 1024)} MiB.")
-                    file.write(part)
-                if declared is not None and file.tell() != declared:
-                    raise HTTPException(503, "The source transfer was interrupted.")
-        except (requests.RequestException, ValueError, KeyError):
-            raise HTTPException(503, "The Reel could not be prepared. Try again.")
+                file.write(part)
+            if declared is not None and file.tell() != declared:
+                raise HTTPException(503, "The source transfer was interrupted.")
+    except (requests.RequestException, ValueError, KeyError):
+        raise HTTPException(503, "The Reel could not be prepared. Try again.")
+    if not file.tell():
+        raise HTTPException(422, "Instagram returned an empty video.")
+    return seconds, title or "Instagram Reel", author
+
+
+def fetch_reel(stage, user, url, slot, daily):
+    max_bytes = DAILY_REEL_BYTES if daily else MAX_BYTES
+    with TemporaryFile() as file:
+        seconds, title, author = download_to(file, url, daily=daily)
         pin = db().sources.update_one({"_id": stage, "slot": slot, "owner": user, "retiring": {"$ne": True},
                                       "expires": {"$gt": now()}}, {"$set": {"expires": now() + PREPARATION_LEASE}})
         if not pin.matched_count:

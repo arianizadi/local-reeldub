@@ -23,7 +23,7 @@ from psycopg import OperationalError
 import requests
 import uvicorn
 
-from . import api, console, fleet, fleet_health, worker
+from . import api, fleet, fleet_health, worker
 from .db import db, media_db, now, separate_metadata, setup_indexes, uses_postgres
 from .postgres import install
 from .wakeup import notify
@@ -107,7 +107,7 @@ class FleetIntegration(TestCase):
 
     def claim(self, node="alpha", request=None, slot=0):
         return self.req("POST", f"/v1/slots/{slot}/claim", node,
-                        json={"request_id": request or str(uuid4()), "upload_voice_protocol": 1})
+                        json={"request_id": request or str(uuid4()), "upload_voice_protocol": 1, "match_quality_protocol": 1})
 
     def test_clone_requires_its_own_worker_capability_and_rejects_original_engine_result(self):
         queued = self.queue(url="upload:clone", voice_mode="match", voice_consent="own_voice", voice_consent_version=1,
@@ -188,6 +188,7 @@ class FleetIntegration(TestCase):
 
     def test_oversized_source_ends_job_before_render_and_releases_funding(self):
         raw = ObjectId()
+        self.enterContext(patch("server.sources.MAX_SOURCE_SECONDS", 120))
         original = self.queue(slot=0, source_file=raw, quoted_seconds=60, trimmed=True)
         db().sources.insert_one({"_id": raw, "owner": original["owner"], "identity": original["url"],
                                  "ready": True, "seconds": 121, "title": "Long", "expires": now()+timedelta(hours=1)})
@@ -197,19 +198,13 @@ class FleetIntegration(TestCase):
         failed = db().jobs.find_one({"_id": original["_id"]})
         self.assertEqual((failed["state"], failed["error"]), ("failed", TOO_LONG))
         self.assertFalse({"lease", "slot", "minute_units", "artifact"} & failed.keys())
-        with patch.dict(os.environ, {"REELDUB_OUTPUT_PROFILE": "studio"}), self.assertRaises(HTTPException) as retry:
-            api.submit(api.Submission(url=original["url"], target_language="es", request_id=uuid4()), original["owner"])
-        self.assertEqual((retry.exception.status_code, retry.exception.detail), (422, TOO_LONG))
-        self.assertEqual(db().jobs.count_documents({"owner": original["owner"]}), 1)
         self.assertEqual(self.claim().status_code, 204)
 
     def test_burst_worker_joins_and_recovers_existing_customers_job(self):
-        owner = "apple:" + uuid4().hex
+        owner = "self-host"
         self.users.append(owner)
         bearer = secrets.token_urlsafe(36)
-        db().sessions.insert_one({"_id": api.hash_value(bearer), "owner": owner,
-                                  "expires": now() + timedelta(minutes=5)})
-        self.addCleanup(db().sessions.delete_one, {"_id": api.hash_value(bearer)})
+        self.enterContext(patch.dict(os.environ, {"SELF_HOST_KEY": bearer}))
         registry = {"nodes": {"alpha": fleet_health.registry()["alpha"]}}
         registry_file = Path(self.enterContext(TemporaryDirectory())) / "fleet-registry.json"
         registry_file.write_text(json.dumps(registry))
@@ -244,7 +239,7 @@ class FleetIntegration(TestCase):
             path = "/v1/jobs/" + job["_id"]
             source = self.req("GET", path + "/source", "rental", job["lease"])
             self.assertEqual((source.status_code, source.content), (200, b"fixture source"))
-            details = base64.b64encode(b'{"media_seconds":1,"source_language":"en"}').decode()
+            details = base64.b64encode(b'{"media_seconds":1,"source_language":"en","voice_model":"Qwen3-TTS-12Hz-1.7B-Base","rendered_voice_mode":"match"}').decode()
             result = self.req("PUT", path + "/result", "rental", job["lease"], headers={
                 "Content-Type": "application/octet-stream", "X-ReelDub-Details": details},
                 data=bytes(4) + video)
@@ -285,7 +280,7 @@ class FleetIntegration(TestCase):
         self.assertEqual((delivered.status_code, delivered.content), (200, video))
         allowance = client.get(base + "/v1/me", timeout=5)
         allowance.raise_for_status()
-        self.assertEqual((allowance.json()["used"], allowance.json()["limit"]), (3, 5))
+        self.assertIn("best", allowance.json()["quality_languages"])
 
     def test_job_transfer_heartbeat_and_result_respect_owner_lease_trim_and_metadata(self):
         source = ObjectId()
@@ -397,26 +392,6 @@ class FleetIntegration(TestCase):
             self.assertEqual(self.claim().status_code, 200)
             self.assertEqual(dequeue.call_count, 2)
 
-    def test_telemetry_is_node_scoped_rate_limited_and_expires_from_admin(self):
-        target = "/v1/slots/0/telemetry"
-        sample = {"name": "Fixture GPU", "load": 65, "used_mib": 4096, "total_mib": 16384,
-                  "temperature": 62, "watts": 180.5}
-        store = media_db().fleet_telemetry
-        self.addCleanup(store.delete_many, {"_id": {"$in": ["alpha", "beta"]}})
-        with patch.object(fleet, "db", side_effect=AssertionError("idle telemetry touched PostgreSQL")):
-            self.assertEqual(self.req("POST", target, json=sample).status_code, 204)
-            self.assertEqual(self.req("POST", target, json={**sample, "load": 90}).status_code, 204)
-            self.assertEqual(self.req("POST", target, "beta", json={**sample, "name": "Second GPU"}).status_code, 204)
-            self.assertEqual(self.req("POST", "/v1/slots/1/telemetry", json=sample).status_code, 403)
-            self.assertEqual(self.req("POST", target, json={**sample, "used_mib": 17000}).status_code, 422)
-        values = console.metrics()
-        self.assertEqual(values["gpu"], values["fleet"][0])
-        self.assertEqual({row["node"]: row["load"] for row in values["fleet"]}, {"alpha": 65, "beta": 65})
-        store.update_many({"_id": {"$in": ["alpha", "beta"]}}, {"$set": {"sampled": now() - timedelta(minutes=4)}})
-        with patch.object(console, "gpu_snapshot", return_value=None):
-            values = console.metrics()
-        self.assertEqual(values["fleet"], [])
-        self.assertIsNone(values["gpu"])
 
     def test_unknown_claim_outcome_never_assigns_a_second_job_to_same_request(self):
         original = self.queue(slot=1)

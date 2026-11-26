@@ -9,9 +9,7 @@ import numpy as np
 import sherpa_onnx as so
 import soundfile as sf
 
-from server.languages import LANGUAGES
-from server.upload_voice import KITTEN_ENGINE, KITTEN_MATCH, KITTEN_ROOT, VOICE_ERRORS
-from server.progress import report
+from server.upload_voice import KITTEN_MATCH, VOICE_ERRORS
 from assets import CACHE, SPEAKER
 
 
@@ -105,9 +103,9 @@ def write_references(lines, turns, source, folder, *, require_isolated=False):
     return bounds
 
 
-def synthesize(lines, folder, match, target="en", runtime="standard", narrator_engine=None, match_engine=None):
+def synthesize(lines, folder, target="en", runtime="standard", match_engine=None):
     if match_engine is not None:
-        if match_engine != KITTEN_MATCH or not match or target != "en" or narrator_engine is not None:
+        if match_engine != KITTEN_MATCH or target != "en":
             raise ValueError("Unsupported speaker-matching engine.")
         from server.gpu import stage
         refs = [{"text": line["text"], "reference_text": line["reference_text"]} for line in lines]
@@ -123,46 +121,22 @@ def synthesize(lines, folder, match, target="en", runtime="standard", narrator_e
             print("GPU stage: Voicing", flush=True)
             subprocess.run([*command, folder], check=True)
         return
-    if narrator_engine is not None:
-        if narrator_engine != KITTEN_ENGINE or match or target != "en":
-            raise ValueError("Unsupported narrator selection.")
-        from server.gpu import stage
-
-        (folder / "lines.json").write_text(json.dumps([line["text"] for line in lines]))
-        env = dict(os.environ, HF_HOME=str(KITTEN_ROOT / "hf"), HF_HUB_OFFLINE="1")
-        with stage("exclusive"):
-            print("GPU stage: Voicing", flush=True)
-            subprocess.run([KITTEN_ROOT / "env/bin/python", Path(__file__).with_name("kitten_voice.py"), folder],
-                           check=True, env=env)
-        return
-    if match:
-        python = Path(__file__).resolve().parent / ".qwen-venv/bin/python"
-        (folder / "lines.json").write_text(json.dumps(lines))
-        if runtime == "standard":
-            subprocess.run([python, Path(__file__).with_name("qwen_voice.py"), folder, target], check=True)
-        else:
-            root = Path(__file__).resolve().parent
-            env = os.environ.copy()
-            if runtime == "omni":
-                python = root / ".omni-venv/bin/python"
-                # vLLM ships a different PyTorch/CUDA build from the Studio environment.
-                env["LD_LIBRARY_PATH"] = os.pathsep.join(
-                    path for path in env.get("LD_LIBRARY_PATH", "").split(os.pathsep)
-                    if path and not Path(path).is_relative_to(root / ".qwen-venv")
-                )
-            elif runtime == "graph":
-                env["PYTHONPATH"] = str(root / ".tts-graph")
-            else:
-                raise ValueError("Unsupported lab voice runtime.")
-            subprocess.run([python, root / "lab_voice.py", folder, target, runtime], env=env, check=True)
+    python = Path(__file__).resolve().parent / ".qwen-venv/bin/python"
+    (folder / "lines.json").write_text(json.dumps(lines))
+    if runtime == "standard":
+        subprocess.run([python, Path(__file__).with_name("qwen_voice.py"), folder, target], check=True)
     else:
-        from kokoro_onnx import Kokoro
-
-        model = Kokoro(str(CACHE / "kokoro-v1.0.fp16.onnx"), str(CACHE / "voices-v1.0.bin"))
-        voices = LANGUAGES[target].voices
-        assigned = {}
-        for i, line in enumerate(lines):
-            voice = assigned.setdefault(line["speaker"], voices[len(assigned) % len(voices)])
-            samples, rate = model.create(line["text"], voice=voice, lang=LANGUAGES[target].preset_lang, speed=1.0)
-            sf.write(folder / f"{i}.wav", samples, rate)
-            report(completed=i+1, total=len(lines))
+        root = Path(__file__).resolve().parent
+        env = os.environ.copy()
+        if runtime == "omni":
+            python = root / ".omni-venv/bin/python"
+            # vLLM ships a different PyTorch/CUDA build from the Studio environment.
+            env["LD_LIBRARY_PATH"] = os.pathsep.join(
+                path for path in env.get("LD_LIBRARY_PATH", "").split(os.pathsep)
+                if path and not Path(path).is_relative_to(root / ".qwen-venv")
+            )
+        elif runtime == "graph":
+            env["PYTHONPATH"] = str(root / ".tts-graph")
+        else:
+            raise ValueError("Unsupported lab voice runtime.")
+        subprocess.run([python, root / "lab_voice.py", folder, target, runtime], env=env, check=True)

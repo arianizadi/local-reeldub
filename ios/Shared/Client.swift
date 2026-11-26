@@ -6,20 +6,8 @@ struct Connection: Codable {
     let token: String
     var libraryID: String? = nil
     var outputLanguages: [String]? = nil
+    var qualityLanguages: [String: [String]]? = nil
 
-    static var hosted: URL {
-        guard let value = Bundle.main.object(forInfoDictionaryKey: "ReelDubHostedURL") as? String,
-              let url = try? server(value), url.scheme == "https" else {
-            preconditionFailure("ReelDubHostedURL must be an HTTPS origin")
-        }
-        return url
-    }
-    var isHosted: Bool {
-        let cloud = Self.hosted
-        guard base.scheme?.lowercased() == "https", (base.port ?? 443) == (cloud.port ?? 443),
-              let hostname = base.host()?.lowercased(), let cloudName = cloud.host()?.lowercased() else { return false }
-        return hostname == cloudName || hostname == cloudName + "."
-    }
     static func server(_ text: String) throws -> URL {
         guard let parts = URLComponents(string: text.trimmingCharacters(in: .whitespacesAndNewlines)),
               let host = parts.host, !host.isEmpty, parts.user == nil, parts.password == nil, parts.query == nil,
@@ -72,14 +60,13 @@ struct Connection: Codable {
 
 enum SessionError: LocalizedError {
     case expired
-    var errorDescription: String? { "Your session ended. Sign in again." }
+    var errorDescription: String? { "The server rejected this connection key. Check it in ReelDub settings." }
 }
 
 struct ServiceError: LocalizedError {
     let status: Int
     let errorDescription: String?
     var reason: String? = nil
-    var needsBalance: Bool { status == 402 || reason == "daily_allowance_used" }
 }
 
 struct Problem: LocalizedError {
@@ -91,14 +78,14 @@ struct Job: Codable, Identifiable, Hashable {
     let started, finished, error: String?
     let ahead: Int?
     var voice_mode: String? = nil
-    var narrator_engine: String? = nil
     var match_engine: String? = nil
+    var quality_requested: String? = nil
+    var quality_fallback: String? = nil
+    var quality: String? = nil
     var dubVoiceLabel: String? {
-        switch voice_mode {
-        case "narrator": narrator_engine == VoiceEngine.kittenNarratorID ? "KittenTTS 2 narrator" : "Original narrator"
-        case "match": match_engine == VoiceEngine.kittenMatchID ? "Matched speaker · KittenTTS 2" : "Matched speaker · Original"
-        default: nil
-        }
+        guard voice_mode == "match" || quality != nil else { return nil }
+        let mode = quality.flatMap(DubQuality.init(rawValue:)) ?? (match_engine == "kitten2_vllm" ? .fast : .best)
+        return "Matched speaker · " + mode.engine
     }
     var recovery_count: Int? = nil
     var recovery_switched_server: Bool? = nil
@@ -159,7 +146,7 @@ struct Job: Codable, Identifiable, Hashable {
         return (Self.isReel(url) ? "Reel" : "Video") + (Self.date(created).map { " · " + $0.formatted(.dateTime.month(.abbreviated).day().hour().minute()) } ?? "")
     }
     static func isReel(_ value: String) -> Bool {
-        value.range(of: #"(?i)^https://(?:(?:www|m)\.)?instagram\.com/reels?/[A-Za-z0-9_-]{5,32}/?(?:[?#][^\s]*)?$"#, options: .regularExpression) != nil
+        value.range(of: #"(?i)^https://(?:(?:www|m)\.)?instagram\.com/(?:reels?|share/reel)/[A-Za-z0-9_-]{5,32}/?(?:[?#][^\s]*)?$"#, options: .regularExpression) != nil
     }
     var code: String { URL(string: url)?.lastPathComponent ?? "Reel" }
     static func date(_ value: String?) -> Date? {
@@ -168,16 +155,20 @@ struct Job: Codable, Identifiable, Hashable {
         parser.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return parser.date(from: value) ?? ISO8601DateFormatter().date(from: value)
     }
-    func timing(at now: Date) -> String {
+    func queuePosition(processing: Int) -> String {
+        guard let ahead else { return "Queued" }
+        if ahead > 0 { return ahead == 1 ? "1 dub queued ahead" : "\(ahead) dubs queued ahead" }
+        return processing > 0 ? "Next in line · \(processing) processing" : "Next in line"
+    }
+    func timing(at now: Date, processing: Int = 0) -> String {
         guard let created = Self.date(created) else { return stage }
         let start = Self.date(started)
         let end = Self.date(finished)
         let elapsed = max(0, Int((end ?? now).timeIntervalSince(start ?? created)))
         let time = Self.duration(elapsed)
         if state == "queued" {
-            let priority = (recovery_count ?? 0) > 0 ? "Recovery priority · " : (lane == "premium" ? "Priority · " : "")
-            let position = ahead.map { "\($0) ahead · " } ?? ""
-            return priority + position + time + " waiting"
+            let priority = (recovery_count ?? 0) > 0 ? "Recovery priority · " : ""
+            return priority + queuePosition(processing: processing) + " · " + time + " waiting"
         }
         if state == "running" { return "\(stage) · \(time) elapsed" }
         return "\(time) processing · \(Self.duration(max(0, Int((start ?? created).timeIntervalSince(created))))) queued"
@@ -187,41 +178,11 @@ struct Job: Codable, Identifiable, Hashable {
     }
 }
 struct Account: Codable {
-    var dailyRemaining: String { limit.map { String(max(0, $0 - used)) } ?? "Unlimited" }
-    static func minuteBalance(_ seconds: Int?) -> String {
-        let seconds = max(0, seconds ?? 0)
-        if seconds % 60 == 0 { return "\(seconds / 60) min" }
-        return Duration.seconds(seconds).formatted(.units(allowed: [.minutes, .seconds], width: .abbreviated))
-    }
-    static var dailyResetNotice: String {
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
-        let reset = calendar.startOfDay(for: Date()).addingTimeInterval(86_400)
-        return "Daily dubs reset at " + reset.formatted(date: .omitted, time: .shortened) + " local time."
-    }
-
-    let tier: String
-    let used: Int
-    let limit: Int?
-    let email, library_id: String?
+    let library_id: String?
     let output_languages: [String]?
-    var lab_runtimes: [String]? = nil
-    var admin_console: Bool? = nil
-    var video_uploads: Bool? = nil
-    var upload_voice_modes: [String: [String]]? = nil
-    var kitten_narrator_languages: [String]? = nil
-    var kitten_match_languages: [String]? = nil
-    var creator_minutes: Bool? = nil
-    var batch_progress: Bool? = nil
-    var video_suggestions: Bool? = nil
-    var monthly_seconds: Int? = nil
-    var pack_seconds: Int? = nil
-    let store_token: UUID?
-    let extra_translations, queue_skips: Int?
-    let purchase_preflight: Bool?
+    let quality_languages: [String: [String]]?
+    let batch_progress: Bool?
 }
-struct Challenge: Decodable { let challenge: String }
-struct SessionKey: Decodable { let token: String }
 
 private final class NoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
@@ -230,16 +191,9 @@ private final class NoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sen
 struct API {
     let connection: Connection
     let transport: URLSession
-    let adminGrant: String?
-    let adminExpired: (@MainActor @Sendable () -> Void)?
-    let selfHostAuthorized: () -> Bool
-    init(connection: Connection, transport: URLSession = API.session, selfHostAuthorized: @escaping () -> Bool = { SelfHostEntitlement.isCached }, adminGrant: String? = nil,
-         adminExpired: (@MainActor @Sendable () -> Void)? = nil) {
-        self.adminExpired = adminExpired
-        self.adminGrant = adminGrant
+    init(connection: Connection, transport: URLSession = API.session) {
         self.connection = connection
         self.transport = transport
-        self.selfHostAuthorized = selfHostAuthorized
     }
     static let session: URLSession = {
         let config = URLSessionConfiguration.ephemeral
@@ -253,18 +207,8 @@ struct API {
     func request(_ path: String, method: String = "GET", body: [String: String]? = nil) throws -> URLRequest {
         // Restored Keychain connections also pass this check before sending credentials.
         let base = try Connection.server(connection.base.absoluteString)
-        // A free compatibility test can only read the profile. Every other private
-        // server request, including job submission from the extension, needs the unlock.
-        if !connection.isHosted && !(path == "v1/me" && method == "GET" && body == nil) && !selfHostAuthorized() {
-            throw Problem("Open ReelDub to unlock or restore your self-hosted connection.")
-        }
         var req = URLRequest(url: base.appending(path: path))
         req.httpMethod = method
-        if path.hasPrefix("v1/admin/") {
-            guard connection.isHosted else { throw Problem("Administrator access requires ReelDub Cloud.") }
-            if let adminGrant { req.setValue(adminGrant, forHTTPHeaderField: "X-ReelDub-Admin") }
-        }
-        if path == "v1/me" { req.setValue("1", forHTTPHeaderField: "X-ReelDub-Checkout") }
         req.timeoutInterval = 30
         if !connection.token.isEmpty { req.setValue("Bearer " + connection.token, forHTTPHeaderField: "Authorization") }
         if let body {
@@ -295,17 +239,25 @@ struct API {
         if (response as? HTTPURLResponse)?.statusCode == 401 && !connection.token.isEmpty { throw SessionError.expired }
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             let error = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-            if (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "X-ReelDub-Reason") == "admin_verification_required",
-               let adminExpired { Task { @MainActor in adminExpired() } }
             throw ServiceError(status: (response as? HTTPURLResponse)?.statusCode ?? 0, errorDescription: error?["detail"] as? String ?? "The server could not complete the request.",
                                reason: (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "X-ReelDub-Reason"))
         }
         return data
     }
-    func submit(_ value: String, id: UUID, target: String = "en") async throws -> Job {
-        var body = ["url": value, "request_id": id.uuidString]
-        if target != "en" { body["target_language"] = target }
+    func submit(_ source: DubSource, id: UUID, target: String, quality: DubQuality) async throws -> Job {
+        let body = [source.field: source.value, "request_id": id.uuidString, "target_language": target, "quality": quality.rawValue]
         return try JSONDecoder().decode(Job.self, from: await data("v1/jobs", method: "POST", body: body))
+    }
+
+    func upload(_ movie: ImportedMovie) async throws -> String {
+        struct Receipt: Decodable { let id: String }
+        var req = try request("v1/sources/upload", method: "POST")
+        req.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+        req.setValue(String(movie.title.prefix(140)).addingPercentEncoding(withAllowedCharacters: .alphanumerics),
+                     forHTTPHeaderField: "X-Video-Title")
+        req.timeoutInterval = 600
+        let (result, response) = try await transport.upload(for: req, fromFile: movie.file)
+        return try JSONDecoder().decode(Receipt.self, from: checked(result, response)).id
     }
     func playback(_ id: String) async throws -> URL {
         struct Ticket: Decodable { let ticket: String }

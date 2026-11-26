@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="referrer" content="no-referrer">
+  <title>ReelDub · Your dubs</title>
+  <link rel="stylesheet" href="/ui/library.css">
+  <script src="/ui/library.js" defer></script>
+</head>
+<body>
+<header class="mast"><strong>ReelDub</strong><button id="disconnect" class="quiet" hidden>Disconnect</button></header>
+<main>
+  <section id="connection">
+    <h1>Connect to your server</h1>
+    <form id="connect">
+      <label for="key">Server key</label>
+      <input id="key" name="key" type="password" autocomplete="current-password" required>
+      <p class="hint">Use the key from your ReelDub setup.</p>
+      <button>Connect</button>
+    </form>
+  </section>
+  <section id="studio" hidden>
+    <h1>Dub a Reel</h1>
+    <form id="create">
+      <label for="source">Instagram Reel link</label>
+      <input type="url" id="source" placeholder="https://www.instagram.com/reel/…" required autocomplete="off">
+      <div class="settings">
+        <div><label for="target">Translate into</label><select id="target" required></select></div>
+        <fieldset><legend>Voice matching</legend><div class="modes"><label><input type="radio" name="quality" value="fast">Fast</label><label><input type="radio" name="quality" value="best" checked>Best</label></div></fieldset>
+      </div>
+      <p class="hint" id="mode-description"></p>
+      <button>Dub Reel</button>
+    </form>
+    <p id="receipt" role="status"></p>
+    <section id="result" hidden aria-labelledby="result-title">
+      <h2 id="result-title">Your dub</h2>
+      <p id="job-status" role="status"></p>
+      <progress id="progress" max="1" aria-label="Dub progress" hidden></progress>
+      <video id="video" controls playsinline preload="metadata" hidden></video>
+      <button id="retry-play" hidden>Reload video</button>
+    </section>
+    <section id="recent" hidden><h2>Recent dubs</h2><ul id="jobs"></ul></section>
+  </section>
+  <p id="message" role="alert"></p>
+  <noscript>Enable JavaScript to connect and dub a Reel in this browser.</noscript>
+</main>
+</body>
+</html>

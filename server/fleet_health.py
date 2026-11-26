@@ -117,6 +117,13 @@ def admin_nodes():
             for doc in media_db().fleet_nodes.find({}).sort("_id", 1)]
 
 
+def has_kitten_worker(exclude):
+    stamp = now()
+    nodes = media_db().fleet_nodes.find({"_id": {"$ne": exclude}, "studio": True, "kitten_match": True,
+                                         "last_seen": {"$gt": stamp - SUSPECT}, "ready": True})
+    return any(status(doc, stamp) == "online" for doc in nodes)
+
+
 def idle_alternative_engines(node):
     """Engines available on at least one compatible, currently idle alternate GPU."""
     stamp = now()
@@ -151,7 +158,11 @@ def recover(job, reason, *, only_expired=False):
         gate["lease_end"] = job["lease_end"]
     release = ["lease", "lease_end", "fleet_slot", "fleet_request", "upload_lease", "upload_until", "upload_token"]
     fields = {"recovery_reason": reason, "recovery_from_node": node, "estimated_finish": None}
-    if job.get("attempt", 0) >= MAX_ATTEMPTS:
+    if job.get("quality_requested") == "fast" and job.get("match_engine") == KITTEN_MATCH:
+        fields.update(state="queued", stage="Retrying with Best", render_quality="best", progress=0, recovery_rank=1,
+                      quality_fallback="The Kitten render was interrupted. Retrying with Best.")
+        release.append("match_engine")
+    elif job.get("attempt", 0) >= MAX_ATTEMPTS:
         fields.update(state="failed", stage="Failed", finished=stamp, error="The render server could not complete this dub after repeated interruptions.")
         release += ["slot", "minute_grants", "minute_units", "render_key", "extra_ticket", "skip_ticket"]
     else:

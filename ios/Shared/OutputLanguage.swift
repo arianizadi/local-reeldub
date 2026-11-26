@@ -8,19 +8,24 @@ enum OutputLanguage {
     static func selected(_ preferred: String, supported: [String]) -> String {
         supported.contains(preferred) ? preferred : supported.first ?? "en"
     }
-    private static var key: [String: Any] {
+    private static func key(_ name: String) -> [String: Any] {
         var key = Connection.vault
-        key[kSecAttrAccount as String] = "output-language"
+        key[kSecAttrAccount as String] = name
         return key
     }
-    static func read() -> String {
-        var query = key
+    static func read() -> String { read("output-language") ?? "en" }
+    static func readQuality() -> String { read("voice-quality") ?? "best" }
+    private static func read(_ name: String) -> String? {
+        var query = key(name)
         query[kSecReturnData as String] = true
         var result: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess, let data = result as? Data else { return "en" }
+        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess, let data = result as? Data else { return nil }
         return String(decoding: data, as: UTF8.self)
     }
-    static func save(_ code: String) {
+    static func save(_ code: String) { save(code, as: "output-language") }
+    static func saveQuality(_ code: String) { save(code, as: "voice-quality") }
+    private static func save(_ code: String, as name: String) {
+        let key = key(name)
         let data = Data(code.utf8)
         let update = [kSecValueData as String: data] as CFDictionary
         if SecItemUpdate(key as CFDictionary, update) == errSecItemNotFound {
@@ -43,8 +48,8 @@ struct OutputLanguagePicker: View {
             OutputLanguage.save(code)
         })) {
             ForEach(supported, id: \.self) { code in
-                Text(OutputLanguage.name(code) + (code == "hi" ? " · preset voice" : "")).tag(code)
+                Text(OutputLanguage.name(code)).tag(code)
             }
-        }.pickerStyle(.menu).accessibilityIdentifier("dub-language")
+        }.pickerStyle(.menu).labelsHidden().accessibilityIdentifier("dub-language")
     }
 }

@@ -150,11 +150,9 @@ def main():
                 run_monitored(["xcodebuild", "test", "-project", str(root / "ios/ReelDub.xcodeproj"),
                                "-scheme", "ReelDub", "-configuration", "Debug", "-destination", f"id={device}",
                                "-derivedDataPath", build, "-jobs", "2", "-parallel-testing-enabled", "NO",
-                               "-only-testing:ReelDubTests/StoreCatalogTests/testPrepareSelfHostUITestStore",
-                               "-only-testing:ReelDubUITests/DuoLayouts/testFormAndHelpSurviveFoldingAndRotation",
+                               "-only-testing:ReelDubUITests/DuoLayouts/testConnectionFormSurvivesFoldingAndRotation",
                                "-only-testing:ReelDubUITests/StudioSmoke/testLibrarySelectionSurvivesUnfolding",
                                "-resultBundlePath", str(result)], device, before, env={
-                                   **os.environ, "TEST_RUNNER_REELDUB_UI_STORE": "owned",
                                    "TEST_RUNNER_REELDUB_DRAG_FIXTURE_PORT": str(server.server_port),
                                    "TEST_RUNNER_REELDUB_DRAG_FIXTURE_KEY": key,
                                    "TEST_RUNNER_REELDUB_DUO_HINGE_URL": f"http://127.0.0.1:{hinge.server_port}/{key}",

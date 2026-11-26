@@ -27,24 +27,19 @@ def prepare():
     (cache / "refs/main").write_text(revision)
 
 
-def render(folder, *, match=False):
+def render(folder):
     from kittenml import KittenTTS
 
     texts = json.loads((folder / "lines.json").read_text())
-    options = {"device": "cuda", "weights": "packed", "decoder": "default"}
-    if match:
-        options.update(backend="vllm", vllm_options={"max_model_len": 2048, "max_num_seqs": 4,
-                                                    "gpu_memory_utilization": 0.50})
+    options = {"device": "cuda", "weights": "packed", "decoder": "default", "backend": "vllm",
+               "vllm_options": {"max_model_len": 2048, "max_num_seqs": 4, "gpu_memory_utilization": 0.50}}
     model = KittenTTS(str(KITTEN_SNAPSHOT), **options)
     for i, cue in enumerate(texts):
-        if match:
-            text = cue["text"]
-            reference_text = cue["reference_text"].strip()
-            if not reference_text:
-                raise ValueError("The source voice requires an aligned transcript.")
-            speaker = {"reference": str(folder / f"reference-{i}.wav"), "reference_text": reference_text}
-        else:
-            text, speaker = cue, {"voice": "Bella"}
+        text = cue["text"]
+        reference_text = cue["reference_text"].strip()
+        if not reference_text:
+            raise ValueError("The source voice requires an aligned transcript.")
+        speaker = {"reference": str(folder / f"reference-{i}.wav"), "reference_text": reference_text}
         audio = model.generate(text, **speaker, preset="stable", advanced={"seed": 9261 + i})
         if not len(audio) or not np.isfinite(audio).all():
             raise ValueError("KittenTTS returned an invalid audio segment.")
@@ -56,6 +51,6 @@ if __name__ == "__main__":
     if sys.argv[1:] == ["--prepare"]:
         prepare()
     elif len(sys.argv) == 3 and sys.argv[1] == "--match":
-        render(Path(sys.argv[2]), match=True)
+        render(Path(sys.argv[2]))
     else:
-        render(Path(sys.argv[1]))
+        raise SystemExit("Usage: kitten_voice.py --prepare | --match FOLDER")

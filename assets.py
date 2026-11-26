@@ -11,15 +11,12 @@ import tempfile
 from faster_whisper.utils import download_model
 
 CACHE = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "local-reeldub"
-KOKORO = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0"
 SHERPA = "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models"
 SPEAKER = "wespeaker_en_voxceleb_resnet34.onnx"
 SEG_ARCHIVE = "sherpa-onnx-pyannote-segmentation-3-0.tar.bz2"
 ASSETS = {
     SEG_ARCHIVE: ("https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models",
                   "24615ee884c897d9d2ba09bb4d30da6bb1b15e685065962db5b02e76e4996488"),
-    "kokoro-v1.0.fp16.onnx": (KOKORO, "c1610a859f3bdea01107e73e50100685af38fff88f5cd8e5c56df109ec880204"),
-    "voices-v1.0.bin": (KOKORO, "bca610b8308e8d99f32e6fe4197e7ec01679264efed0cac9140fe9c29f1fbf7d"),
     SPEAKER: (SHERPA, "5ef208a9da1453335308a6b6f4e6dfbd7e183a38b604de0a57664f45d257fe94"),
 }
 

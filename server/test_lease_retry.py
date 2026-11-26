@@ -98,10 +98,11 @@ class LeaseRetryTests(TestCase):
         self.enterContext(patch.object(worker.subprocess, "run", return_value=Mock(returncode=1)))
         self.enterContext(patch.object(worker, "media_db"))
         self.enterContext(patch.object(worker.gridfs, "GridFS", return_value=bucket))
-        self.jobs.update_one.side_effect = [Mock(matched_count=1), OperationalError()]
+        self.enterContext(patch("server.sources.download_to", return_value=(12, "Reel", "")))
+        self.jobs.update_one.side_effect = [Mock(matched_count=1), Mock(matched_count=1), OperationalError()]
         worker.process({**self.fence, "lease_end": self.stamp + worker.LEASE,
                         "url": "https://www.instagram.com/reel/TestReel/"})
-        self.assertEqual(self.jobs.update_one.call_count, 2)
+        self.assertEqual(self.jobs.update_one.call_count, 3)
         query, update = self.jobs.update_one.call_args.args
         self.assertEqual(query, {**self.fence, "lease_end": {"$gt": self.stamp}})
         self.assertEqual(update["$set"]["state"], "done")

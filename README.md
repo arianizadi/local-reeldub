@@ -1,131 +1,92 @@
-<img src="ios/Art/reeldub-mark.svg" width="72" height="72" alt="ReelDub app icon">
+<p align="center"><img src="ios/Art/reeldub-mark.svg" width="80" height="80" alt=""></p>
+<h1 align="center">ReelDub</h1>
+<p align="center">Share an Instagram Reel. Hear it in another language, in the speaker’s voice.</p>
 
-# ReelDub
+ReelDub is a self-hosted video translator with an iPhone share extension and a browser player. Paste a Reel in your browser or share a Reel or video file from your iPhone. Use media and voices you have permission to dub. Your server downloads the source, translates the dialogue, matches the voices and returns a captioned MP4. A connection key is all you need to use the server.
 
-Share a video from Photos or Files to get a dubbed MP4 with switchable captions. Choose a standard narrator or use speech from the video to match an authorized speaker. ReelDub runs the speech and translation models on the connected server. A self-hosted installation downloads its model weights during setup.
+[Quick start](#quick-start) · [Connect your iPhone](#connect-your-iphone) · [Voice modes](#voice-modes) · [Hosting guide](HOSTING.md)
 
-On iPhone, open **Dubs** to download finished videos for offline playback and sharing. **Select** lets you delete several finished or failed dubs together. After the first device confirms its download, the server keeps a copy for 24 hours. Requesting the same Reel again within that window renews it and uses no additional translation credit. Choose **Remove from Library** to remove one or more entries and free their device storage, even offline. ReelDub syncs removals when the server is reachable. Copies exported to Photos or Files stay there, and the private server cache expires on its normal schedule.
+## Quick start
 
-Authenticated MP4/MOV uploads are available with the ordinary daily allowance, independently of Creator billing. Each upload must have audio and fit within two minutes and 80 MiB. The server quotes the cost for each language before you commit. On servers with Creator billing enabled, the included daily slot covers up to 60 seconds or you can use available minutes for a longer dub. [Product and queue guide](PRODUCT.md) · [Hosted database setup](HOSTING.md)
+Run the following **on the GPU server**. The packaged renderer uses **Linux x86-64, an NVIDIA GPU, Docker Engine with Compose v2.30+ and the NVIDIA Container Toolkit**. The reference machine has a 16 GB RTX 4070 Ti SUPER and driver 575.57.08. Allow about **60 GB of free space** for environments, weights, installation caches and the first render. Models are downloaded on first install. [NVIDIA Docker setup](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
 
-## Use ReelDub on iPhone
-
-On first launch, tap **Continue with Apple** to create an account or sign in to the preconfigured ReelDub Cloud service. The same button handles returning users. In **Use my own server**, you can test your address and connection key for free. The official iOS app unlocks private-server connections for a one-time purchase ($4.99 in the U.S.). On a new phone, sign in to the same App Store account, tap **Restore Purchases**, and enter your server details. The server and CLI are open source.
-
-In **Photos** or **Files**, select one video, tap **Share → ReelDub**, then **Upload and review**. If ReelDub is hidden, open **More** in the share sheet. In the app you can also use **Dubs → Add video**. Choose the voice and language, check the quote, then confirm. Turn on captions or unmute from the video details screen.
-
-**Narrator** uses a preset voice. **Match speaker** is available on compatible Studio workers and requires affirmative permission for the current video. Choose *Only my voice* for your own single-speaker clip. If you hold written authorization from every speaker to synthesize and export the translated speech, enter a reference to that release. The server records the declaration with the quote and job. The app displays the languages available for each voice mode.
-
-For an uploads-only deployment, set `REELDUB_REEL_LINKS=0` for the API, operator and intake. Older clients can still read their libraries. Update the API, fleet coordinator and GPU workers together before enabling uploads for customers.
-
-**Help & FAQ** is available before sign-in and in Account. Signed-in Cloud users can suggest other types of videos from that screen. Their latest answer appears in the administrator’s account detail view.
-
-The library groups jobs under **Processing**, **Queued**, **Ready**, and **Failed**. Swipe left on a ready or failed dub, or use its **•••** menu, then choose **Remove from Library** and confirm. ReelDub removes the device copy immediately. When it syncs, the server hides the entry and clears its issue report. The private hosted video keeps its normal cache deadline. Copies exported to Photos or Files stay there.
-
-Start your own server with Docker Compose v2:
-
-```bash
+```sh
 git clone https://github.com/arianizadi/local-reeldub.git
 cd local-reeldub
 ./start-local.sh
-curl http://127.0.0.1:8300/health
 ```
 
-Setup generates a private `.env`, starts MongoDB and the API, and downloads the Light worker models on first use. Follow the first download with `docker compose logs -f worker`. Open `ios/ReelDub.xcodeproj` in Xcode and run **ReelDub** on an iPhone simulator. In **Use my own server**, enter `http://127.0.0.1:8300` and your private `SELF_HOST_KEY` from `.env`. That key has unlimited access. ReelDub Cloud uses individual Apple sessions.
+1. Open **http://127.0.0.1:8300** in a browser on the server. A remote server needs a tunnel or an HTTPS address as described below.
+2. Copy the value of **`SELF_HOST_KEY`** from the generated `.env` into ReelDub. Keep this file private. People with that key share the server’s library and GPU.
+3. Paste an Instagram Reel permalink, choose **Best** or **Fast**, and start the dub. The player shows queue and render progress, then lets you play the result with captions.
 
-A physical phone needs a reachable HTTPS address for the API. TestFlight delivers the app over the internet. A private network such as NetBird can carry API traffic to your home server. For the Studio GPU worker, remote nodes, Apple account setup and private TestFlight distribution, see the [operator and product guide](PRODUCT.md).
+The first startup prepares both models and runs a synthetic speaker-match test before the worker takes jobs. To follow installation, run `docker compose logs -f models` in another terminal. To check an installation before downloading models, use `./start-local.sh --check`.
 
-The hosted owner can open **Account → Admin console** to inspect requests and reports, review allowances, suspend accounts and compare fresh dubs in the render lab. See the [hosted console setup and GPU timings](HOSTING.md#hosted-administrator-console).
+## Connect your iPhone
 
-## Use the standalone command line
+**Browser:** Make the API reachable on an HTTPS address you control and open it in Safari. For a quick private connection with Tailscale, join the phone and server to the same tailnet, then run the following on the server. Use the HTTPS URL it prints. [Tailscale Serve guide](https://tailscale.com/kb/1242/tailscale-serve)
 
-On macOS, Linux, or Windows with WSL2, run:
+```sh
+tailscale serve --bg http://127.0.0.1:8300
+```
 
-```bash
-git clone https://github.com/arianizadi/local-reeldub.git
-cd local-reeldub
+**Native Instagram sharing:** On a Mac with Xcode, clone this repository. Create the private file `ios/Config/LocalSigning.xcconfig` with your Apple development team and a bundle ID you control. Xcode uses these settings for the app, its share extension and their shared Keychain.
+
+```xcconfig
+DEVELOPMENT_TEAM = YOUR_TEAM_ID
+REELDUB_BUNDLE_ID = com.example.yourname.reeldub
+```
+
+Open `ios/ReelDub.xcodeproj`, choose the **ReelDub** scheme and your iPhone, then press **Run**. Complete device pairing or enable Developer Mode if Xcode asks. In **Connect your server**, enter the HTTPS address and connection key.
+
+In Instagram, tap **Share → Share to… → ReelDub**, choose a mode, then **Dub video**. If ReelDub is hidden, use **More** in the iOS share sheet. The extension submits directly to your server, shows **Submitted**, then dismisses. Return to **Dubs** to check progress and watch the finished video. Sharing a video file from Photos or Files works too.
+
+<details>
+<summary>Preview the iPhone share sheet</summary>
+
+<img src="docs/iphone-share.png" width="280" alt="ReelDub share sheet with Best and Fast voice matching, English output, and the Dub video button">
+
+</details>
+
+## Voice modes
+
+| Mode | Speaker matching | Output languages |
+| --- | --- | --- |
+| **Best** | Qwen3-TTS 1.7B follows references from the original speakers. | English, Chinese, French, German, Italian, Japanese, Korean, Portuguese, Russian and Spanish |
+| **Fast** | KittenTTS 2 1.7B with vLLM matches the speaker in English. ReelDub switches to Best if Kitten is unavailable, fails or the selected language needs Qwen. | English with Kitten, other supported languages with Qwen |
+
+**Fast** is a processing preset. On a 20.5-second Spanish test clip, an earlier hosted configuration took 70 seconds with Kitten and 46 seconds with Qwen. Real time depends on the GPU, model startup, clip and queue. Clear dialogue and several seconds of isolated speech per speaker give both engines a better reference.
+
+## What runs where?
+
+- **Downloader** accepts individual Instagram Reel permalinks and fetches the media in a separate container. Private accounts, regional availability and Instagram rate limits can prevent a download. A video you already have can be uploaded directly.
+- **GPU worker** detects and groups the speakers, translates their words, synthesizes the chosen voices and mixes them over the separated music and effects. Download, translation and synthesis require no commercial API credentials. AI models can mistranslate lines or confuse overlapping speakers.
+- **API and MongoDB** track the queue and store private media. Matching recent requests can reuse a completed render. On iPhone, **Remove from Library** also frees the downloaded app copy. Videos exported to Photos or Files stay there.
+
+For updates, recovery, TLS, cache behavior and additional GPUs, see the [hosting guide](HOSTING.md) and [GPU fleet notes](GPU-FLEET.md).
+
+## Command line
+
+The CLI can translate a local file or a Reel without running the web service. On the same supported Linux GPU hardware, install FFmpeg, Git, curl, a C/C++ toolchain, espeak-ng and SoX, then run:
+
+```sh
 ./setup.sh
-./dub
+./dub 'https://www.instagram.com/reel/SHORTCODE/' --quality best
+./dub ./interview.mp4 --quality fast --target-language en -o interview-en.mp4
 ```
 
-Paste a **single video link** at the prompt. The finished video appears in `output/`. You can also pass a quoted URL or a file directly:
+The default output directory is `output/`. `--language` overrides input language detection and `--target-language` sets the spoken and subtitle language. Run `./dub --help` for options.
 
-```bash
-./dub 'https://www.instagram.com/reel/SHORTCODE/'
-./dub ~/Videos/interview.mp4 -o interview-english.mp4
-```
+## License and model credits
 
-Setup uses an isolated Python 3.12 environment and installs a project-local copy of uv when needed. It can install FFmpeg using an existing Homebrew or apt installation. Other systems need `git`, `curl`, `ffmpeg`, and `ffprobe` on PATH. Wait for the first setup to finish before disconnecting. Subsequent runs reuse the downloaded weights.
+ReelDub’s application, web player, iOS client and deployment code are [MIT licensed](LICENSE). The setup downloads model weights separately. Each publisher licenses its own weights.
 
-## Choose a setup
-
-| | Studio | Light |
-|---|---|---|
-| Good fit | Linux with a recent NVIDIA GPU. Tested on a 16 GB RTX 4070 Ti SUPER. | Macs, CPU-only computers, and smaller configurations |
-| Translation | Whisper transcribes in the original language. A 4-bit Gemma 3 12B translates groups of lines together to retain context. | Whisper translates directly into English. |
-| Voices | Qwen3-TTS samples the speakers and synthesizes the chosen supported language in their approximate voices. Hindi uses a local preset. | Kokoro assigns a stock English voice to each detected speaker group. |
-| Background | BandIt v2 separates speech, music, and sound effects. Music and effects are used continuously under the dub in stereo. | Continuous stereo center cancellation. Mono recordings yield a voice-only dub. |
-| Setup | `./setup.sh --studio` | `./setup.sh --light` |
-
-Automatic setup selects Studio on Linux when the first NVIDIA GPU reports at least 15,000 MiB of total VRAM. Other configurations use Light. Allow about **25 GB of free disk space for a Studio install**, plus room for package caches and each video's temporary PCM audio. Downloads and package caches can increase peak usage. The model stages run sequentially so the GPU can be reused. The GPU profile uses PyTorch CUDA 12.4 wheels and needs a compatible NVIDIA driver. WSL2 needs GPU passthrough for Studio.
-
-If you want a smaller first download or faster CPU translation:
-
-```bash
-./setup.sh --light --model small
-./dub
-```
-
-The default translation model is `large-v3`. Select `small`, `medium`, or `large-v3` during setup to cache a model and make it the default. Presets affect future runs. You can override individual stages on an installed Studio system:
-
-```bash
-./dub interview.mp4 --voice-mode preset
-./dub interview.mp4 --translation whisper
-./dub interview.mp4 --background stereo
-./dub interview.mp4 --language es -o interview-en.mp4
-```
-
-## Output languages
-
-Studio offers matched voices in English, Mandarin Chinese, French, German, Italian, Japanese, Korean, Portuguese, Russian and Spanish. Hindi uses a local preset voice. The Light profile translates to English. The server advertises its output languages to the iPhone app and share extension. Both remember your preferred language. A new language for the same Reel is a new translation, and each language has its own cache entry. Earlier dubs and links sent by older apps default to English.
-
-For the CLI, `--target-language` sets the voice and subtitle language. `--language` optionally overrides source detection. For example:
-
-```bash
-./dub interview.mp4 --target-language es
-./dub interview.mp4 --language fa --target-language ja
-```
-
-[Qwen multilingual voice model](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-Base) · [Kokoro preset voices](https://huggingface.co/hexgrad/Kokoro-82M/blob/main/VOICES.md)
-
-## How the cut is made
-
-1. **Fetch and decode.** yt-dlp fetches the video. Only individual Instagram Reel permalinks are accepted. FFmpeg reads the first audio track and creates a stereo timeline.
-2. **Find the speech.** Whisper listens to the full mix, including vocalizations outside ordinary speech. Studio uses the isolated dialogue stem for speaker analysis. Whisper detects the source language. A segmentation model and speaker embeddings group recurring voices within the video.
-3. **Translate in context.** Studio sends the original speaker turns to the local translation model. It processes long scripts in batches in scene order.
-4. **Build the voices.** Studio samples the original utterance for each line, avoids detected overlap where possible, and extends very short references within the same speaker turn. This helps when the same character changes delivery between scenes. Voice samples stay inside the temporary job directory. The Light profile works with assigned preset voices.
-5. **Mix and export.** Each translated line starts on the source timeline. Longer lines are sped up with pitch-preserving time compression. Studio builds one full-length soundtrack from the separated music and effects plus synthesized speech. The same mix runs through pauses and the last frame. Studio checks the background for residual speech. Where voices persist, a second local separator removes estimated vocals and fades back into the original music and effects. A missed vocalization may be absent, and quiet overlapping voices can still leak through. FFmpeg writes H.264 video, AAC audio, and subtitles in the selected language to an MP4.
-
-## What to listen for
-
-The easiest material is clear, non-overlapping dialogue. Listen for speaker swaps near interruptions, rushed lines when the translation takes more syllables, and accent or timbre changes when a speaker has very little isolated speech. Loud crowds, singing, and effects that resemble speech can enter the wrong stem. A finished stereo mix only permits an estimate of its original layers. The video retains its original mouth animation.
-
-**Input and output details**
-
-- ReelDub handles downloadable individual videos and local video files. Platform login requirements, region blocks, and rate limits can prevent a link from downloading. A local copy works through the same dubbing stages.
-- If automatic language detection misses a short clip, pass `--language` with the source language code. Whisper uses a primary source language for the video.
-- A clip with no detected speech exits with a message. An existing output file is protected. Choose a fresh name with `-o` to render another version.
-- AI synthesis and temporary speech samples stay local. Output MP4s, input videos, voice recordings, and model weights are excluded from the source distribution. Use source material and voices you have permission to dub and share.
-
-## Models and credits
-
-- Source recognition and direct translation use [faster-whisper](https://github.com/SYSTRAN/faster-whisper) and [Whisper](https://github.com/openai/whisper).
-- Speaker grouping uses [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx), a pyannote segmentation model, and WeSpeaker embeddings.
-- The local contextual translator is [Gemma 3 12B](https://huggingface.co/google/gemma-3-12b-it), loaded from the [4-bit checkpoint](https://huggingface.co/unsloth/gemma-3-12b-it-bnb-4bit). Voice matching uses the Base model's speaker-embedding mode. [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS)
-- Preset voices come from [Kokoro](https://huggingface.co/hexgrad/Kokoro-82M) through [kokoro-onnx](https://github.com/thewh1teagle/kokoro-onnx).
-- Dialogue, music, and effects separation uses the multilingual [BandIt v2 checkpoint](https://zenodo.org/records/12701995) by Karn Watcharasupat and collaborators, through [bandit-infer](https://github.com/openmirlab/bandit-infer). Its published weights carry CC BY-SA 4.0.
-- Studio checks the background for both acoustic speech and words that match the time-aligned original transcript. It uses Hybrid Demucs on flagged intervals and fades the background out through a confirmed source line when speech persists. This also covers slowed voices that outlast their translation. [TorchAudio Hybrid Demucs](https://docs.pytorch.org/audio/2.6/tutorials/hybrid_demucs_tutorial.html)
-- On Linux x86-64 with NVIDIA CUDA 12.8, `./setup.sh --studio --index` adds Index-Translate-9B Q5_K_M. Each render runs it locally over a private Unix socket and validates the number of translated lines. Gemma handles failures. The speech and subtitle language options still follow the installed voice models. [Index-Translate model card](https://huggingface.co/IndexTeam/Index-Translate-9B)
-- Downloads and rendering use [yt-dlp](https://github.com/yt-dlp/yt-dlp) and [FFmpeg](https://ffmpeg.org/).
-
-ReelDub's application code is available under the [MIT license](LICENSE). Dependencies and downloaded weights retain their respective licenses.
+| Component | Upstream |
+| --- | --- |
+| Speech recognition | [Whisper](https://github.com/openai/whisper) and [faster-whisper](https://github.com/SYSTRAN/faster-whisper) |
+| Local translation | [Index-Translate-9B](https://huggingface.co/IndexTeam/Index-Translate-9B) and [llama.cpp](https://github.com/ggml-org/llama.cpp) |
+| Best voice | [Qwen3-TTS Base, Apache 2.0](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-Base) |
+| Fast voice | Powered by KittenML. Flagship weights use the [Stellon Labs Community License](https://huggingface.co/KittenML/kitten-tts-2/blob/c93cb7c271baa51d9ae8204d5277988906f235a2/LICENSE.md). Review its terms and [commercial registration](https://kittenml.com/license/) before commercial use. The decoder uses [Chatterbox Turbo](https://huggingface.co/ResembleAI/chatterbox-turbo). |
+| Speaker identification | [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx), [pyannote segmentation](https://huggingface.co/pyannote/segmentation-3.0) and [WeSpeaker](https://github.com/wenet-e2e/wespeaker) |
+| Dialogue and background | [BandIt v2 weights, CC BY-SA 4.0](https://zenodo.org/records/12701995), [BandIt inference](https://github.com/openmirlab/bandit-infer) and [TorchAudio Hybrid Demucs](https://docs.pytorch.org/audio/2.6/tutorials/hybrid_demucs_tutorial.html) |
+| Download and export | [yt-dlp](https://github.com/yt-dlp/yt-dlp) and [FFmpeg](https://ffmpeg.org/) |

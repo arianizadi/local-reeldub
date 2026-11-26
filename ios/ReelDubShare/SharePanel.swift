@@ -1,151 +1,79 @@
 import SwiftUI
 
 struct SharePanel: View {
-    @ObservedObject var attachment: SharedMovieRequest
+    let items: [NSExtensionItem]
     let close: () -> Void
+    @State private var input: DubInput?
     @State private var connection = Connection.read()
-    @State private var account: Account?
-    @State private var profileAttempt = 0
-    @State private var selfHostLocked = false
-    @State private var results: [Job] = []
+    @State private var languages: [String: [String]] = [:]
+    @State private var submitted = false
+    @State private var closed = false
     @State private var message: String?
+    @State private var retry = 0
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 16) {
                 HStack {
                     Label("ReelDub", systemImage: "waveform").font(.headline)
                     Spacer()
-                    if results.isEmpty { Button("Cancel", action: close) }
+                    Button(submitted ? "Done" : "Cancel", action: finish)
                 }
-                if !results.isEmpty {
-                    ShareConfirmation(jobs: results, close: close, balanceAPI: connection.map { API(connection: $0) })
-                } else if attachment.provider == nil {
-                    Text("Share one video").font(.title.bold())
-                    Text("Choose a video in Photos or Files, then share it to ReelDub.").foregroundStyle(.secondary)
-                    Button("Close", action: close)
-                } else if let connection {
-                    if selfHostLocked {
-                        Text("Self-host unlock needed").font(.title.bold())
-                        Text("Open ReelDub to unlock or restore your private-server connection, then share this video again.")
-                            .foregroundStyle(.secondary)
-                    } else if let account {
-                        if account.video_uploads == true, !(account.upload_voice_modes ?? [:]).isEmpty {
-                            Text("Translate this video").font(.system(.largeTitle, design: .serif, weight: .semibold))
-                            if let name = attachment.provider?.suggestedName, !name.isEmpty {
-                                Label((name as NSString).lastPathComponent, systemImage: "film")
-                                    .font(.subheadline.weight(.medium)).lineLimit(2)
-                            }
-                            Text("Upload to " + (connection.isHosted ? "ReelDub Cloud" : (connection.base.host() ?? "your server")) + " to choose a language and voice.")
-                                .foregroundStyle(.secondary)
-                            if attachment.loading {
-                                ProgressView("Preparing video…")
-                            } else {
-                                Button(action: attachment.prepare) {
-                                    Text("Upload and review").font(.headline).frame(maxWidth: .infinity, minHeight: 45)
-                                }
-                                .buttonStyle(.borderedProminent).foregroundStyle(Palette.onAction)
-                            }
-                            if let issue = attachment.error { Text(issue).font(.footnote).foregroundStyle(.red) }
-                        } else {
-                            Text("Video uploads unavailable").font(.title.bold())
-                            Text("This server needs support for video uploads and voice choices.").foregroundStyle(.secondary)
-                        }
-                    } else if let message {
-                        Text(message).foregroundStyle(.secondary)
-                        Button("Check account again") { profileAttempt += 1 }
-                    } else {
-                        ProgressView("Checking account…")
+                if submitted {
+                    Label("Submitted", systemImage: "checkmark.circle.fill").font(.title.bold())
+                        .accessibilityIdentifier("dub-submitted")
+                    Text("Find your video in Dubs.").foregroundStyle(.secondary)
+                } else if connection == nil {
+                    Text("Connect your server").font(.title.bold())
+                    Text("Open ReelDub once to enter your server address and key, then share again.").foregroundStyle(.secondary)
+                } else if let input, let connection {
+                    switch input {
+                    case .reel: Text("Dub this Reel").font(.title.bold())
+                    case .file(let movie): Text(movie.title).font(.title.bold())
                     }
-                } else {
-                    Text("Sign in to ReelDub first").font(.title.bold())
-                    Text(message ?? "Open ReelDub to sign in or connect your own server, then share this video again.")
-                        .foregroundStyle(.secondary)
-                    Button("Close", action: close)
+                    DubForm(api: API(connection: connection), input: input, languages: languages) { _ in
+                        submitted = true
+                        AccessibilityNotification.Announcement("Submitted").post()
+                    }
+                } else if message == nil {
+                    Text("Reading shared video…").foregroundStyle(.secondary)
                 }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(24)
+                if let message, !submitted {
+                    Text(message).foregroundStyle(.secondary)
+                    Button("Try again") { retry += 1 }
+                }
+            }.frame(maxWidth: 550, alignment: .leading).frame(maxWidth: .infinity).padding(22)
         }
         .tint(Palette.action)
-        .sheet(item: $attachment.project, onDismiss: attachment.discard) { input in
-            if let connection, let account {
-                QuoteSheet(api: API(connection: connection), input: input, voiceModes: account.upload_voice_modes ?? [:],
-                           kittenLanguages: account.kitten_narrator_languages ?? [],
-                           kittenMatchLanguages: account.kitten_match_languages ?? [],
-                           target: OutputLanguage.read(), creatorMinutes: account.creator_minutes == true,
-                           liveOffers: account.purchase_preflight == true) { jobs in
-                    results = jobs
-                }
-            }
-        }
-        .task(id: profileAttempt) {
-            guard attachment.provider != nil, let connection else { return }
-            if !connection.isHosted, !(await SelfHostEntitlement.current()) {
-                selfHostLocked = true
-                return
-            }
+        .task(id: retry) {
             message = nil
+            guard let connection else { return }
             do {
-                let data = try await API(connection: connection).data("v1/me")
-                account = try JSONDecoder().decode(Account.self, from: data)
-            } catch is SessionError {
-                self.connection = nil
-                message = "Your session ended. Open ReelDub to sign in again."
-            } catch {
-                if !Task.isCancelled { message = "Couldn’t check your account. Try again when connected." }
-            }
-        }
-    }
-}
-
-struct ShareConfirmation: View {
-    let jobs: [Job]
-    let close: () -> Void
-    var balanceAPI: API? = nil
-    @State private var balance: Account?
-    @State private var loading = false
-    @State private var balanceIssue: String?
-    var body: some View {
-        Image(systemName: "checkmark.circle.fill").font(.largeTitle).foregroundStyle(.green).accessibilityHidden(true)
-        Text(jobs.count == 1 ? "Dub confirmed" : "\(jobs.count) dubs confirmed").font(.title.bold())
-        ForEach(jobs) { job in
-            DubValueRow(job.targetName, value: status(of: job))
-        }
-        Text("Open Dubs in ReelDub to watch or check progress.").foregroundStyle(.secondary)
-        if let balance {
-            DubValueRow("Daily dubs left", value: balance.dailyRemaining)
-            if balance.creator_minutes == true, balance.tier != "admin" {
-                DubValueRow("Monthly time", value: Account.minuteBalance(balance.monthly_seconds))
-                DubValueRow("Purchased time", value: Account.minuteBalance(balance.pack_seconds))
-            }
-        } else if let balanceAPI {
-            Button(loading ? "Checking balance…" : "Check remaining balance") {
-                Task {
-                    guard !loading else { return }
-                    loading = true
-                    defer { loading = false }
-                    do {
-                        let data = try await balanceAPI.data("v1/me")
-                        balance = try JSONDecoder().decode(Account.self, from: data)
-                        balanceIssue = nil
-                    } catch { balanceIssue = error.localizedDescription }
+                if input == nil {
+                    let shared = try await SharedReel.extract(from: items)
+                    if Task.isCancelled {
+                        if case .file(let movie) = shared { movie.remove() }
+                        return
+                    }
+                    input = shared
                 }
-            }.disabled(loading)
-            if let balanceIssue { Text(balanceIssue).font(.footnote).foregroundStyle(.secondary) }
+                if let cached = connection.qualityLanguages, !cached.isEmpty { languages = cached }
+                else {
+                    languages = try JSONDecoder().decode(Account.self, from: await API(connection: connection).data("v1/me")).quality_languages ?? [:]
+                }
+            } catch { if !Task.isCancelled { message = error.localizedDescription } }
         }
-        Button(action: close) {
-            Text("Done").foregroundStyle(Palette.onAction).frame(maxWidth: .infinity, minHeight: 44)
-        }.buttonStyle(.borderedProminent)
+        .task(id: submitted) {
+            guard submitted else { return }
+            do { try await Task.sleep(for: .milliseconds(650)) } catch { return }
+            finish()
+        }
+        .onDisappear { if case .file(let movie) = input { movie.remove() } }
     }
 
-    private func status(of job: Job) -> String {
-        switch job.state {
-        case "done": return "Ready"
-        case "queued": return "Queued"
-        case "running": return "Processing"
-        case "failed": return "Failed"
-        default: return job.stage
-        }
+    private func finish() {
+        guard !closed else { return }
+        closed = true
+        close()
     }
 }

@@ -32,9 +32,26 @@ final class ShareLayoutTests: XCTestCase {
         }
         XCTAssertTrue(reelDub.waitForExistence(timeout: 6), safari.debugDescription)
         reelDub.tap()
-        let close = safari.buttons["Close"].firstMatch
+        let close = safari.buttons["Cancel"].firstMatch
         XCTAssertTrue(close.waitForExistence(timeout: 8), safari.debugDescription)
-        XCTAssertTrue(safari.staticTexts["Sign in to ReelDub first"].exists)
+        if ProcessInfo.processInfo.environment["REELDUB_TEST_SHARED_DUB"] == "1" {
+            let submit = safari.buttons["submit-dub"].firstMatch
+            XCTAssertTrue(submit.waitForExistence(timeout: 12), safari.debugDescription)
+            XCTAssertTrue(submit.isEnabled)
+            let preview = XCTAttachment(screenshot: safari.screenshot())
+            preview.name = "ReelDub share options"
+            preview.lifetime = .keepAlways
+            add(preview)
+            submit.tap()
+            // Our server fixture leaves the job queued. Returning to the host
+            // here demonstrates that dismissing the sheet does not wait for rendering.
+            let returned = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+                share.exists && share.isHittable && !submit.exists
+            }, object: nil)
+            XCTAssertEqual(XCTWaiter.wait(for: [returned], timeout: 5), .completed, safari.debugDescription)
+            return
+        }
+        XCTAssertTrue(safari.staticTexts["Connect your server"].exists || safari.buttons["submit-dub"].exists)
         XCTAssertTrue(close.isHittable)
         let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         attachment.name = "ReelDub share extension"

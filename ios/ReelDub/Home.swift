@@ -21,9 +21,10 @@ struct Home: View {
     @State private var rangeSelection = LibraryDragSelection()
     private var eligible: [String] { sections.flatMap { $0.jobs }.filter { !$0.rdPhase.isActive }.map(\.id) }
     @State private var deletionError: String?
+    @State private var submissionNotice: UUID?
 
     private enum LibrarySheet: String, Identifiable {
-        case composer, account, selfHost
+        case composer, settings
         var id: Self { self }
     }
 
@@ -88,8 +89,7 @@ struct Home: View {
             }
             .sheet(item: $sheet) { item in
                 switch item {
-                case .account: SettingsView(studio: studio).presentationDragIndicator(.visible)
-                case .selfHost: SelfHost(studio: studio).presentationDragIndicator(.visible)
+                case .settings: SettingsView(studio: studio).presentationDragIndicator(.visible)
                 case .composer:
                     VStack(alignment: .leading, spacing: 0) {
                         HStack(alignment: .center, spacing: 12) {
@@ -105,13 +105,29 @@ struct Home: View {
                             .buttonStyle(.plain).foregroundStyle(.primary).accessibilityLabel("Close")
                         }.padding(.horizontal, 18).padding(.top, 18).padding(.bottom, 6)
                         ScrollView {
-                            RDComposer(studio: studio) { query = ""; filter = .all; sheet = nil }
+                            RDComposer(studio: studio) { _ in
+                                query = ""; filter = .all; sheet = nil; submissionNotice = UUID()
+                                AccessibilityNotification.Announcement("Submitted").post()
+                            }
                         }
                     }
                     .presentationDetents(typeSize.isAccessibilitySize ? [.large] : [.medium, .large])
                     .presentationDragIndicator(.visible)
                 }
             }
+        }
+        .overlay(alignment: .bottom) {
+            if submissionNotice != nil {
+                Label("Submitted", systemImage: "checkmark.circle.fill")
+                    .font(.headline).padding(.horizontal, 18).padding(.vertical, 12)
+                    .background(.thickMaterial, in: Capsule()).padding(.bottom, 8)
+                    .allowsHitTesting(false).accessibilityIdentifier("dub-submitted")
+            }
+        }
+        .task(id: submissionNotice) {
+            guard submissionNotice != nil else { return }
+            do { try await Task.sleep(for: .seconds(1.5)) } catch { return }
+            submissionNotice = nil
         }
         .preferredColorScheme(.dark).tint(leaf)
         .onChange(of: selecting) { _, active in if !active { rangeSelection.detach() } }
@@ -138,11 +154,9 @@ struct Home: View {
                 delay = min(delay * 2, 300)
             }
         }
-        .task(id: scenePhase == .active && (studio.connection?.isHosted == true || studio.selfHostAccess.owned)) {
+        .task(id: scenePhase == .active) {
             guard scenePhase == .active else { return }
-            if studio.connection?.isHosted == true || studio.selfHostAccess.owned {
-                await studio.refresh()
-            }
+            await studio.refresh()
             hasLoaded = true
         }
         .task(id: scenePhase == .active && studio.jobs.contains { $0.rdPhase.isActive }) {
@@ -190,7 +204,7 @@ struct Home: View {
                         .accessibilityIdentifier("select-dubs")
                 }
                 Button("Search library", systemImage: "magnifyingglass") { searching = true }
-                Button("Account", systemImage: "person.crop.circle") { sheet = .account }.accessibilityIdentifier("account")
+                Button("Settings", systemImage: "gearshape") { sheet = .settings }.accessibilityIdentifier("settings")
             } label: {
                 Image(systemName: "ellipsis.circle").font(.title3).frame(width: 44, height: 44)
             }.accessibilityLabel("Library options").accessibilityIdentifier("library-options")
@@ -199,8 +213,8 @@ struct Home: View {
     }
 
     private var addReel: some View {
-        Button { sheet = studio.needsSelfHostUnlock ? .selfHost : .composer } label: {
-            Label("Add video", systemImage: "plus").font(.headline)
+        Button { sheet = .composer } label: {
+            Label("Add Reel", systemImage: "plus").font(.headline)
                 .padding(.horizontal, 14).padding(.vertical, 7)
                 .foregroundStyle(.black).background(leaf, in: Capsule())
                 .frame(minHeight: 44)
@@ -233,10 +247,6 @@ struct Home: View {
     private var transfers: some View {
         let items = visible
         return List {
-            if studio.needsSelfHostUnlock {
-                Button("Unlock or restore self-hosting") { sheet = .selfHost }
-                    .accessibilityIdentifier("self-host-library-unlock")
-            }
             if let failure = studio.failure {
                 RDNotice(message: failure) { Task { await studio.refresh() } }
                     .listRowBackground(Color.clear)
@@ -247,8 +257,8 @@ struct Home: View {
                     else if studio.jobs.isEmpty {
                         ContentUnavailableView {
                             Label("Your first dub", systemImage: "film.stack")
-                        } description: { Text("Choose a video or share one from Photos or Files.") }
-                        actions: { Button("Add video") { sheet = studio.needsSelfHostUnlock ? .selfHost : .composer } }
+                        } description: { Text("In Instagram, tap Share, then ReelDub. You can also paste a Reel link here.") }
+                        actions: { Button("Add Reel") { sheet = .composer } }
                     } else {
                         ContentUnavailableView(query.isEmpty ? filter.emptyTitle : "No matching dubs",
                                                systemImage: query.isEmpty ? "tray" : "magnifyingglass")
@@ -277,7 +287,7 @@ struct Home: View {
                                     Image(systemName: selected.contains(job.id) ? "checkmark.circle.fill" : "circle")
                                         .frame(width: 24).foregroundStyle(selected.contains(job.id) ? leaf : .secondary)
                                 }
-                                TransferRow(job: job, api: studio.api, storage: studio.storageLabel(job))
+                                TransferRow(job: job, api: studio.api, storage: studio.storageLabel(job), processing: studio.processingCount)
                             }
                             .contentShape(Rectangle())
                         }
@@ -344,6 +354,7 @@ private struct TransferRow: View {
     let job: Job
     let api: API?
     let storage: String?
+    let processing: Int
     private let leaf = Palette.leaf
     var body: some View {
         HStack(spacing: 13) {
@@ -373,7 +384,7 @@ private struct TransferRow: View {
                         Label(cue, systemImage: "arrow.clockwise").font(.caption.weight(.semibold)).foregroundStyle(.orange)
                     }
                     TimelineView(.periodic(from: .now, by: 1)) { context in
-                        Text(job.timing(at: context.date)).font(.caption.monospacedDigit()).foregroundStyle(leaf)
+                        Text(job.timing(at: context.date, processing: processing)).font(.caption.monospacedDigit()).foregroundStyle(leaf)
                     }
                     if job.rdPhase == .running {
                         if let start = Job.date(job.started), let created = Job.date(job.created) {
@@ -405,62 +416,41 @@ private struct TransferRow: View {
 @MainActor
 struct RDComposer: View {
     let studio: Studio
-    let onQueued: () -> Void
-
-    @State private var project: ProjectInput?
-    @State private var tempImport: URL?
+    let onQueued: (Job) -> Void
+    @State private var text = ""
+    @State private var movie: ImportedMovie?
     @State private var problem: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            if let account = studio.account {
-                if account.video_uploads == true, let modes = account.upload_voice_modes, !(modes["narrator"] ?? []).isEmpty {
-                    Text("Choose a video you have permission to translate. It will upload to your connected server for review.")
-                        .foregroundStyle(.secondary)
-                    VideoImportButton(receive: { movie in
-                        tempImport = movie.file
-                        project = .file(movie.file, movie.title)
-                        problem = nil
-                    }, failed: { problem = $0 }, title: "Choose video")
-                    .buttonStyle(.borderedProminent)
-                    .accessibilityIdentifier("choose-video")
-                    Text("Up to 2 minutes · 80 MiB")
-                        .font(.footnote).foregroundStyle(.secondary)
-                } else {
-                    Label("This server needs an update to accept video uploads.", systemImage: "arrow.triangle.2.circlepath")
-                }
+            if let movie {
+                LabeledContent("Video", value: movie.title)
+                Button("Choose another video") { movie.remove(); self.movie = nil }
             } else {
-                Text("Connect to your server to upload a video.").foregroundStyle(.secondary)
-                Button("Check connection") { Task { await studio.refresh() } }
+                TextField("Paste an Instagram Reel link", text: $text)
+                    .textInputAutocapitalization(.never).autocorrectionDisabled()
+                    .keyboardType(.URL).textFieldStyle(.roundedBorder)
+                    .accessibilityIdentifier("reel-link")
+                VideoImportButton(receive: { movie = $0; problem = nil }, failed: { problem = $0 }, title: "Choose a video file")
             }
-            if let problem { Text(problem).font(.footnote).foregroundStyle(.orange) }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(18)
-        .sheet(item: $project, onDismiss: {
-            if let tempImport { try? FileManager.default.removeItem(at: tempImport); self.tempImport = nil }
-        }) { input in
-            if let api = studio.api, let account = studio.account {
-                QuoteSheet(api: api, input: input, voiceModes: account.upload_voice_modes ?? [:],
-                           kittenLanguages: account.kitten_narrator_languages ?? [],
-                           kittenMatchLanguages: account.kitten_match_languages ?? [],
-                           target: OutputLanguage.read(), creatorMinutes: account.creator_minutes == true,
-                           liveOffers: account.purchase_preflight == true,
-                           plans: AnyView(CloudPlanSheet(studio: studio))) { _ in
-                    if let tempImport { try? FileManager.default.removeItem(at: tempImport); self.tempImport = nil }
-                    Task { await studio.refresh() }
-                    onQueued()
+            if let api = studio.api {
+                let source = movie.map(DubInput.file) ?? RDLink.reel(in: text).map(DubInput.reel)
+                DubForm(api: api, input: source, languages: studio.account?.quality_languages ?? api.connection.qualityLanguages ?? [:]) { job in
+                    studio.didSubmit(job)
+                    onQueued(job)
                 }
+                .id(source?.identity)
             }
+            if let problem { Text(problem).font(.footnote).foregroundStyle(.red) }
         }
-        .onDisappear {
-            if let tempImport, project == nil { try? FileManager.default.removeItem(at: tempImport) }
-        }
+        .frame(maxWidth: .infinity, alignment: .leading).padding(18)
+        .onDisappear { movie?.remove() }
     }
 }
 
 struct ProgressRow: View {
     let job: Job
+    var processing = 0
 
     var body: some View {
         let phase = job.rdPhase
@@ -519,12 +509,7 @@ struct ProgressRow: View {
         if let cue = job.recoveryCue { return cue }
         switch phase {
         case .queued:
-            guard let ahead = job.ahead else { return "Queued" }
-            switch ahead {
-            case ...0: return "Queued · next up"
-            case 1: return "Queued · 1 ahead"
-            default: return "Queued · \(ahead) ahead"
-            }
+            return job.queuePosition(processing: processing)
         case .running:
             return job.rdStageName
         case .done:

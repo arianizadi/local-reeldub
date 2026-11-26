@@ -1,6 +1,8 @@
 """The two known-compatible Studio stages can overlap on a single 16 GiB GPU."""
 from contextlib import ExitStack, contextmanager
+from datetime import datetime, timezone
 import os
+import subprocess
 from pathlib import Path
 import sys
 
@@ -79,3 +81,44 @@ def transcription_device(requested, cuda_available, overflow=False):
                 return
     with stage("exclusive"):
         yield "cuda"
+
+
+def gpu_snapshot():
+    if os.getenv("REELDUB_LOCAL_GPU_METRICS") != "1":
+        return None
+    fields = [
+        "name",
+        "utilization.gpu",
+        "memory.used",
+        "memory.total",
+        "temperature.gpu",
+        "power.draw",
+    ]
+    try:
+        result = subprocess.run(
+            [
+                "nvidia-smi",
+                "-i",
+                os.getenv("REELDUB_DEVICE_ID", "0"),
+                "--query-gpu=" + ",".join(fields),
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=True,
+        )
+        name, utilization, used, total, temperature, power = (
+            result.stdout.strip().split(", ")
+        )
+        return {
+            "name": name[:100],
+            "load": int(utilization),
+            "used_mib": int(used),
+            "total_mib": int(total),
+            "temperature": int(temperature),
+            "watts": float(power) if power.replace(".", "", 1).isdigit() else None,
+            "sampled": datetime.now(timezone.utc),
+        }
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None

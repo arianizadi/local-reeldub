@@ -1,4 +1,5 @@
-// Each developer may set DEVELOPMENT_TEAM in their local override.
+// Override both values in LocalSigning.xcconfig when building for your own device.
+REELDUB_BUNDLE_ID = com.arianizadi.reeldub
 #include? "LocalSigning.xcconfig"
 
 INFOPLIST_PREPROCESS = YES

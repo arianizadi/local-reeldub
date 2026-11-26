@@ -1,17 +1,32 @@
+from contextlib import nullcontext
 import fcntl
 import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import TestCase
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 from psycopg import OperationalError
 
-from .fleet_worker import AssignedJob, VideoBody, preflight_window
+from .fleet_worker import AssignedJob, VideoBody, preflight_window, report_health
 from .worker import LeaseLost
 
 
 class FleetTransferTests(TestCase):
+    def test_health_reports_gpu_metrics_on_configured_workers(self):
+        client = MagicMock()
+        self.enterContext(patch.dict(os.environ, {"REELDUB_LOCAL_GPU_METRICS": "1"}))
+        self.enterContext(patch("server.fleet_worker.preflight_window", return_value=nullcontext(True)))
+        self.enterContext(patch("server.fleet_worker.preflight", return_value=None))
+        self.enterContext(patch("server.gpu.subprocess.run", return_value=Mock(stdout="Test GPU, 20, 256, 4096, 50, 35.0")))
+        self.enterContext(patch("server.fleet_worker.time.sleep", side_effect=StopIteration))
+        with self.assertRaises(StopIteration):
+            report_health(client)
+        health, telemetry = client.request.call_args_list
+        self.assertEqual(health.args[1], "/v1/slots/0/health")
+        self.assertEqual(telemetry.args[1], "/v1/slots/0/telemetry")
+        self.assertEqual(telemetry.kwargs["json"]["used_mib"], 256)
+
     def test_retry_same_render_and_stop_if_lease_was_fenced(self):
         job = AssignedJob(Mock(), {"_id":"one", "lease":"original"})
         lease = Mock()

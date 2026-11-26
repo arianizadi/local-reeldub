@@ -5,23 +5,12 @@ import PhotosUI
 import SwiftUI
 import UniformTypeIdentifiers
 
-enum DubGuidance {
-  static let durationLimit = CMTime(value: 120, timescale: 1)
-  static let lengthError = "This video is longer than 2 minutes. Choose a shorter video."
-  static let accuracy = "AI translations can miss words or change their meaning."
-  static func checkDuration(_ duration: CMTime) throws {
-    if duration.isNumeric && CMTimeCompare(duration, durationLimit) > 0 { throw Problem(lengthError) }
-  }
-}
-
 struct ImportedMovie: Transferable {
   let file: URL
   let title: String
   static var transferRepresentation: some TransferRepresentation {
     FileRepresentation(importedContentType: .movie) { item in try await copy(item.file) }
   }
-  static let maxBytes = 80 * 1024 * 1024
-  static let sizeError = "Choose a smaller video. The upload limit is 80 MiB."
   static let typeError = "Choose a video file from Photos or Files."
 
   /// NSItemProvider removes its temporary file as soon as its completion block returns.
@@ -34,7 +23,6 @@ struct ImportedMovie: Transferable {
     let attributes = try files.attributesOfItem(atPath: url.path)
     guard attributes[.type] as? FileAttributeType == .typeRegular else { throw Problem(typeError) }
     guard let size = attributes[.size] as? NSNumber, size.int64Value > 0 else { throw Problem("This video is empty.") }
-    guard size.int64Value <= Int64(maxBytes) else { throw Problem(sizeError) }
 
     let folder = files.temporaryDirectory.appending(path: "ReelDubImports", directoryHint: .isDirectory)
     try files.createDirectory(at: folder, withIntermediateDirectories: true,
@@ -45,7 +33,7 @@ struct ImportedMovie: Transferable {
       try files.copyItem(at: url, to: dest)
       try files.setAttributes([.protectionKey: FileProtectionType.complete, .creationDate: Date()], ofItemAtPath: dest.path)
       guard let stagedSize = try dest.resourceValues(forKeys: [.fileSizeKey]).fileSize,
-            stagedSize > 0, stagedSize <= maxBytes else { throw Problem(sizeError) }
+            Int64(stagedSize) == size.int64Value else { throw Problem("The video copy was incomplete.") }
     } catch {
       try? files.removeItem(at: dest)
       throw error
@@ -64,7 +52,6 @@ struct ImportedMovie: Transferable {
       guard let tracks = try? await asset.loadTracks(withMediaType: .video), !tracks.isEmpty else {
         throw Problem(Self.typeError)
       }
-      if let duration = try? await asset.load(.duration) { try DubGuidance.checkDuration(duration) }
       try Task.checkCancellation()
       return self
     } catch {

@@ -1,5 +1,4 @@
-"""Output languages supported by the installed Studio translator and speech engines."""
-import os
+"""Output languages supported by ReelDub speaker matching."""
 from typing import NamedTuple
 
 
@@ -7,37 +6,21 @@ class Language(NamedTuple):
     name: str
     mp4: str
     matched: bool = True
-    preset_lang: str = ""
-    voices: tuple[str, ...] = ()
 
 
 LANGUAGES = {
-    "en": Language("English", "eng", True, "en-us", ("af_heart", "am_fenrir", "bf_emma", "bm_george", "af_bella", "am_michael")),
+    "en": Language("English", "eng"),
     "zh": Language("Chinese", "zho"),
-    "fr": Language("French", "fra", True, "fr-fr", ("ff_siwis",)),
+    "fr": Language("French", "fra"),
     "de": Language("German", "deu"),
-    "hi": Language("Hindi", "hin", False, "hi", ("hf_alpha", "hm_omega", "hf_beta", "hm_psi")),
-    "it": Language("Italian", "ita", True, "it", ("if_sara", "im_nicola")),
+    "it": Language("Italian", "ita"),
     "ja": Language("Japanese", "jpn"),
     "ko": Language("Korean", "kor"),
-    "pt": Language("Portuguese", "por", True, "pt-br", ("pf_dora", "pm_alex", "pm_santa")),
+    "pt": Language("Portuguese", "por"),
     "ru": Language("Russian", "rus"),
-    "es": Language("Spanish", "spa", True, "es", ("ef_dora", "em_alex", "em_santa")),
+    "es": Language("Spanish", "spa"),
 }
 
 
-def default_render_quality():
-    """Studio admissions request the explicit Best preset. Light uses its installed models."""
-    return "best" if os.getenv("REELDUB_OUTPUT_PROFILE") == "studio" else None
-
-
 def outputs(profile):
-    return list(LANGUAGES) if profile == "studio" else ["en"]
-
-
-def upload_voice_modes(profile):
-    targets = outputs(profile)
-    return {
-        "narrator": [code for code in targets if LANGUAGES[code].voices],
-        "match": [code for code in targets if profile == "studio" and LANGUAGES[code].matched],
-    }
+    return list(LANGUAGES) if profile == "studio" else []

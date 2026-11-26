@@ -8,9 +8,6 @@ from unittest.mock import Mock, patch
 from uuid import uuid4
 
 import gridfs
-import jwt
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from fastapi import HTTPException
 
 from . import api, erasure, erasure_journal, erasure_replay
@@ -18,39 +15,7 @@ from .db import db, media_db, now
 
 
 class JournalTests(unittest.TestCase):
-    def test_signin_client_secret_has_a_short_lifetime_and_matches_app(self):
-        private_key = ec.generate_private_key(ec.SECP256R1())
-        with TemporaryDirectory() as folder:
-            path = Path(folder) / "test.p8"
-            path.write_bytes(private_key.private_bytes(serialization.Encoding.PEM,
-                             serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
-            with patch.dict(os.environ, {"APPLE_SIGNIN_TEAM_ID": "fixture-team",
-                        "APPLE_SIGNIN_KEY_ID": "fixture-key", "APPLE_SIGNIN_PRIVATE_KEY_FILE": str(path)}):
-                signed = erasure.apple_client_secret("test.reeldub")
-        claims = jwt.decode(signed, private_key.public_key(), algorithms=["ES256"],
-                            audience="https://appleid.apple.com", issuer="fixture-team")
-        self.assertEqual(jwt.get_unverified_header(signed)["kid"], "fixture-key")
-        self.assertEqual(claims["sub"], "test.reeldub")
-        self.assertEqual(claims["exp"] - claims["iat"], 300)
 
-    def test_only_revokes_tokens_exchanged_for_the_verified_apple_subject(self):
-        signing_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-        token = jwt.encode({"iat": now(), "exp": now() + timedelta(minutes=5),
-                            "sub": "matching", "aud": "app", "iss": "https://appleid.apple.com"},
-                           signing_key, algorithm="RS256")
-        keys = Mock()
-        keys.get_signing_key_from_jwt.return_value.key = signing_key.public_key()
-        with patch.dict(os.environ, {"APPLE_CLIENT_ID": "app"}), patch.object(
-                erasure, "apple_client_secret", return_value="test"), patch.object(erasure.requests, "post") as post:
-            exchanged = Mock()
-            exchanged.json.return_value = {"id_token": token, "refresh_token": "dummy"}
-            post.side_effect = [exchanged, exchanged, Mock(status_code=200)]
-            self.assertFalse(erasure.revoke_apple("code", "apple:other", keys))
-            self.assertEqual(post.call_count, 1)
-            self.assertTrue(erasure.revoke_apple("code", "apple:matching", keys))
-            url, = post.call_args.args
-            self.assertEqual(url, "https://appleid.apple.com/auth/revoke")
-            self.assertEqual(post.call_args.kwargs["data"]["token_type_hint"], "refresh_token")
 
     def test_private_idempotent_receipt_and_aged_pruning(self):
         stamp = now()
@@ -66,16 +31,6 @@ class JournalTests(unittest.TestCase):
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
             erasure_journal.prune(stamp + timedelta(days=16))
             self.assertFalse(path.exists())
-
-    def test_confirmation_requires_configured_mirror(self):
-        with TemporaryDirectory() as journal, patch.dict(os.environ, {
-            "REELDUB_ERASURE_JOURNAL_DIR": journal, "REELDUB_ERASURE_MIRROR_COMMAND": "/usr/bin/false"
-        }), patch.object(api, "verify_identity", return_value={"sub": "alice"}), patch.object(api, "db") as database:
-            with self.assertRaises(HTTPException) as result:
-                api.delete_account(api.DeleteAccount(identity_token="fixture", challenge="a" * 32), "apple:alice")
-            self.assertEqual(result.exception.status_code, 503)
-            database.assert_not_called()
-            self.assertFalse(list(Path(journal).glob("*.json")))
 
 
 @unittest.skipUnless(os.getenv("REELDUB_TEST_DATABASE") == "1", "Requires disposable MongoDB")
@@ -128,24 +83,3 @@ class RestoreTests(unittest.TestCase):
         api.delete_dub(job, user, stamp.isoformat())
         self.assertTrue(db().jobs.find_one({"_id": job})["cache_retained"])
         self.assertTrue(gridfs.GridFS(media_db()).exists(blob))
-
-    def test_live_erasure_retries_pending_cleanup(self):
-        owner = "apple:" + uuid4().hex
-        database = db()
-        database.accounts.insert_one({"_id": owner, "video_suggestion": {"note": "personal"}})
-        database.sessions.insert_one({"_id": uuid4().hex, "owner": owner})
-        source = gridfs.GridFS(media_db()).put(b"private input")
-        database.sources.insert_one({"_id": source, "owner": owner})
-        body = api.DeleteAccount(identity_token="fixture", challenge="a" * 32)
-        with TemporaryDirectory() as journal, patch.dict(os.environ, {
-            "REELDUB_ERASURE_JOURNAL_DIR": journal, "REELDUB_ERASURE_MIRROR_COMMAND": ""
-        }), patch.object(api, "verify_identity", return_value={"sub": owner[6:]}):
-            with patch.object(erasure, "erase", side_effect=OSError("temporary file issue")):
-                self.assertEqual(api.delete_account(body, owner)["state"], "pending")
-            self.assertTrue(erasure.closing(owner))
-            erasure.resume()
-            self.assertIsNone(database.accounts.find_one({"_id": owner}))
-            self.assertIsNone(database.sessions.find_one({"owner": owner}))
-            self.assertFalse(gridfs.GridFS(media_db()).exists(source))
-            self.assertIn("expires", database.account_deletions.find_one({"_id": owner}))
-            self.assertEqual(len(list(Path(journal).glob("*.json"))), 1)

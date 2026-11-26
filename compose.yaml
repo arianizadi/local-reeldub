@@ -1,17 +1,24 @@
 name: reeldub
+x-worker-image: &worker-image
+  image: reeldub-local-worker
+  build: {context: ., target: worker}
+x-harden: &harden
+  security_opt: [no-new-privileges:true]
+  cap_drop: [ALL]
 services:
   mongo:
     image: mongo:8.0.38
     environment:
       MONGO_INITDB_ROOT_USERNAME: bootstrap
       MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:?Run ./start-local.sh first}
-      REELDUB_WORKER_PASSWORD: ${MONGO_WORKER_PASSWORD:-}
+      REELDUB_WORKER_PASSWORD: ${MONGO_WORKER_PASSWORD:?Run ./start-local.sh first}
       REELDUB_DB_PASSWORD: ${MONGO_PASSWORD:?Run ./start-local.sh first}
     volumes:
       - mongo-data:/data/db
       - ./server/configure-worker.sh:/opt/reeldub/configure-worker.sh:ro
       - ./server/worker-role.js:/opt/reeldub/worker-role.js:ro
       - ./server/init-mongo.js:/docker-entrypoint-initdb.d/01-reeldub.js:ro
+      - ./server/worker-role.js:/docker-entrypoint-initdb.d/02-worker.js:ro
     networks: [database]
     healthcheck:
       test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
@@ -19,58 +26,131 @@ services:
       timeout: 4s
       retries: 30
     restart: unless-stopped
+
   intake:
+    <<: *harden
     build: {context: ., target: intake}
     environment:
-      REELDUB_REEL_LINKS: ${REELDUB_REEL_LINKS:-1}
+      REELDUB_REEL_LINKS: "1"
+      REELDUB_MAX_SOURCE_SECONDS: ${REELDUB_MAX_SOURCE_SECONDS:-0}
     networks: [intake, fetch]
     read_only: true
     tmpfs: ["/tmp:size=768m,mode=1777"]
     mem_limit: 1g
     pids_limit: 80
-    security_opt: ["no-new-privileges:true"]
-    cap_drop: [ALL]
     restart: unless-stopped
+
   api:
+    <<: *harden
     build: {context: ., target: api}
     environment:
       MONGO_URI: ${REELDUB_MONGO_URI:-mongodb://reeldub:${MONGO_PASSWORD}@mongo:27017/reeldub}
-      REELDUB_OUTPUT_PROFILE: ${REELDUB_OUTPUT_PROFILE:-light}
-      REELDUB_KITTEN_NARRATOR: ${REELDUB_KITTEN_NARRATOR:-0}
-      REELDUB_CREATOR_MINUTES: ${REELDUB_CREATOR_MINUTES:-1}
-      REELDUB_REEL_LINKS: ${REELDUB_REEL_LINKS:-1}
+      REELDUB_OUTPUT_PROFILE: studio
+      REELDUB_KITTEN_MATCH: ${REELDUB_KITTEN_MATCH:-1}
+      REELDUB_REEL_LINKS: "1"
       REELDUB_ACCESS_MODE: operator
-      SELF_HOST_KEY: ${SELF_HOST_KEY}
-      APPLE_CLIENT_ID: ""
-      REELDUB_LAB_RUNTIMES: ${REELDUB_LAB_RUNTIMES:-}
-      ADMIN_APPLE_SUB: ${ADMIN_APPLE_SUB:-}
+      REELDUB_MAX_SOURCE_SECONDS: ${REELDUB_MAX_SOURCE_SECONDS:-0}
+      SELF_HOST_KEY: ${SELF_HOST_KEY:?Run ./start-local.sh first}
     ports: ["127.0.0.1:${REELDUB_PORT:-8300}:8300"]
     networks: [database, web, intake]
     depends_on: {mongo: {condition: service_healthy}, intake: {condition: service_started}}
     read_only: true
     tmpfs: [/tmp]
-    security_opt: ["no-new-privileges:true"]
-    cap_drop: [ALL]
+    healthcheck:
+      test: ["CMD", "python", "-c", "from urllib.request import urlopen; urlopen('http://127.0.0.1:8300/health', timeout=3).close()"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
     restart: unless-stopped
-  worker:
-    build: {context: ., target: worker}
+
+  # Downloads models before the offline worker starts. No database credentials or media.
+  models:
+    <<: [*worker-image, *harden]
+    gpus: all
     environment:
-      MONGO_URI: ${REELDUB_WORKER_MONGO_URI:-mongodb://worker:${MONGO_WORKER_PASSWORD:-}@mongo:27017/reeldub}
+      REELDUB_KITTEN_MATCH: ${REELDUB_KITTEN_MATCH:-1}
+      REELDUB_KITTEN_MATCH_SPOOL: /run/reeldub-match
+    volumes:
+      - model-cache:/home/reel/.cache
+      - studio-env:/app/.qwen-venv
+      - kitten-env:/app/.kitten2
+      - match-spool:/run/reeldub-match
+    networks: [downloads]
+    depends_on: {kitten-match: {condition: service_started}}
+    command:
+      - /bin/bash
+      - -ec
+      - |
+        ./setup.sh --best-only
+        if printenv REELDUB_KITTEN_MATCH | grep -qx 1; then
+          ./setup-lab.sh kitten-match || echo "Kitten setup failed. Starting the worker with Best. Check the model logs before retrying Fast." >&2
+        fi
+
+  kitten-match:
+    <<: [*worker-image, *harden]
+    network_mode: none
+    gpus: all
+    environment:
+      REELDUB_KITTEN_MATCH_SPOOL: /run/reeldub-match
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      XDG_CACHE_HOME: /home/reel/.cache
+      VLLM_CACHE_ROOT: /home/reel/.cache/vllm
+      TRITON_CACHE_DIR: /home/reel/.cache/triton
+      TORCHINDUCTOR_CACHE_DIR: /home/reel/.cache/inductor
+    command: ["python", "deploy/fleet/match-runner.py", "--serve"]
+    volumes:
+      - kitten-env:/app/.kitten2:ro
+      - kitten-compile:/home/reel/.cache
+      - match-spool:/run/reeldub-match
+    healthcheck:
+      test: ["CMD", "python", "-c", "from pathlib import Path; import time; p=Path('/run/reeldub-match/heartbeat'); assert p.is_file() and -5 <= time.time()-p.stat().st_mtime <= 60"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    read_only: true
+    # The sandboxed vLLM process loads native JIT output during generation.
+    tmpfs: ["/tmp:exec,nosuid,nodev,mode=1777"]
+    shm_size: 1gb
+    init: true
+    restart: unless-stopped
+
+  worker:
+    <<: [*worker-image, *harden]
+    gpus: all
+    environment:
+      MONGO_URI: ${REELDUB_WORKER_MONGO_URI:-mongodb://worker:${MONGO_WORKER_PASSWORD}@mongo:27017/reeldub}
+      REELDUB_INTAKE_URL: http://intake:8310
+      REELDUB_REEL_LINKS: "1"
+      REELDUB_KITTEN_MATCH_SPOOL: /run/reeldub-match
+      REELDUB_MAX_SOURCE_SECONDS: ${REELDUB_MAX_SOURCE_SECONDS:-0}
       WORKER_PROCESSES: ${WORKER_PROCESSES:-1}
-      REELDUB_REEL_LINKS: ${REELDUB_REEL_LINKS:-1}
-      REELDUB_MODEL: ${REELDUB_MODEL:-small}
-    volumes: [model-cache:/home/reel/.cache]
-    networks: [database, web]
-    depends_on: {mongo: {condition: service_healthy}}
-    security_opt: ["no-new-privileges:true"]
-    cap_drop: [ALL]
+      REELDUB_GPU_SCHEDULER: "1"
+      REELDUB_GPU_PIPELINE_SLOTS: ${WORKER_PROCESSES:-1}
+      HF_HUB_OFFLINE: "1"
+    volumes:
+      - model-cache:/home/reel/.cache
+      - studio-env:/app/.qwen-venv:ro
+      - kitten-env:/app/.kitten2:ro
+      - match-spool:/run/reeldub-match
+    networks: [database, intake]
+    depends_on:
+      mongo: {condition: service_healthy}
+      intake: {condition: service_started}
+      models: {condition: service_completed_successfully}
+    command: ["python", "-m", "server.worker"]
     init: true
     restart: unless-stopped
 networks:
   intake: {internal: true}
   fetch: {}
+  downloads: {}
   database: {internal: true}
   web: {}
 volumes:
   mongo-data: {}
   model-cache: {}
+  studio-env: {}
+  kitten-env: {}
+  kitten-compile: {}
+  match-spool: {}

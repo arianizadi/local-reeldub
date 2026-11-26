@@ -28,7 +28,7 @@
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Connect to your own ReelDub server on your network.</string>
 	<key>ReelDubKeychainGroup</key>
-	<string>$(AppIdentifierPrefix)com.arianizadi.reeldub.shared</string>
+	<string>$(AppIdentifierPrefix)$(REELDUB_BUNDLE_ID).shared</string>
 	<key>UIAppFonts</key>
 	<array><string>InstrumentSerif-Italic.ttf</string></array>
 	<key>UILaunchScreen</key>
@@ -46,7 +46,5 @@
 		<string>UIInterfaceOrientationLandscapeRight</string>
 		<string>UIInterfaceOrientationPortraitUpsideDown</string>
 	</array>
-	<key>ReelDubHostedURL</key>
-	<string>https://$(REELDUB_HOSTED_HOST)</string>
 </dict>
 </plist>

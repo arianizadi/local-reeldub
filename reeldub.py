@@ -15,8 +15,8 @@ from faster_whisper import WhisperModel
 from server.progress import report
 from server.gpu import transcription_device
 from server.languages import LANGUAGES
-from server.upload_voice import (KITTEN_ENGINE, KITTEN_MATCH, KITTEN_MATCH_MODEL, KITTEN_MODEL,
-                                 VOICE_ERRORS, kitten_match_ready, kitten_ready)
+from server.upload_voice import (KITTEN_MATCH, KITTEN_MATCH_MODEL,
+                                 VOICE_ERRORS, kitten_match_ready)
 from server.source import inspect_video, reel_url
 from server.download import download_reel
 from clean_background import leakage_regions, matching_dialogue, merge_regions, suppress_unresolved
@@ -68,6 +68,17 @@ def recognize(audio, model_size, device, language, native, target="en", bed=None
     return result, info.language, drafts, leaks
 
 
+def transcribe_reference(model, speech_16k, span, language, beam):
+    # Match the isolated reference window using the same decoded samples as diarization.
+    left, right = (round(seconds * 16000) for seconds in span)
+    heard, _ = model.transcribe(speech_16k[left:right], language=language, beam_size=beam,
+                                condition_on_previous_text=False)
+    text = "".join(segment.text for segment in heard).strip()
+    if not text:
+        raise ValueError(VOICE_ERRORS["unclear_speaker"])
+    return text
+
+
 def timed_lines(candidates, duration):
     lines = []
     for cue in sorted(candidates, key=lambda item: item["start"]):
@@ -82,43 +93,19 @@ def run(args):
     value = args.input or input("Paste an Instagram Reel link (or a video path): ").strip()
     target = args.target_language
     output = LANGUAGES[target]
-    beam = 5
-    if args.quality:
-        args.model = "large-v3"
-        args.background = "separate"
-        args.translation = "whisper" if args.quality == "fast" and target == "en" else "context"
-        args.voice_mode = "preset" if args.quality in ("medium", "fast") and output.voices else "auto"
-        if args.lab_voice:
-            args.voice_mode = "preset" if args.lab_voice == "preset" else "match"
-        beam = 1 if args.quality == "fast" else 5
-        os.environ["REELDUB_QWEN_SIZE"] = "0.6B" if args.lab_voice == "small" else "1.7B"
-        os.environ["REELDUB_TTS_BATCH_SIZE"] = str(args.voice_batch or os.getenv("REELDUB_TTS_BATCH_SIZE") or 2)
-    matched_default = (APP / ".qwen-venv/ready").is_file() and output.matched
-    match = matched_default if args.voice_mode == "auto" else args.voice_mode == "match"
-    if args.upload_voice:
-        # A quality or experiment preset must never select the voice for an upload.
-        match = args.upload_voice in ("own_voice", "documented_permission")
-    if args.narrator_engine:
-        if args.upload_voice != "narrator" or target != "en":
-            raise ValueError("KittenTTS requires an English upload in narrator mode.")
-        if not kitten_ready():
-            raise ValueError("Run ./setup-lab.sh kitten2 before choosing KittenTTS.")
-    if args.match_engine:
-        if not match or args.upload_voice not in ("own_voice", "documented_permission") or target != "en":
-            raise ValueError("Kitten vLLM requires a consented upload for English speaker matching.")
-        if not kitten_match_ready():
-            raise ValueError("Install and validate the Kitten vLLM speaker-matching runtime first.")
-        # References require a transcript in the speaker's original language.
-        args.translation = "context"
-    if match and not output.matched:
-        raise ValueError(f"{output.name} uses a preset voice. Select --voice-mode auto.")
-    if not match and not output.voices:
-        raise ValueError(f"{output.name} requires the Studio voice matching model.")
-    if target != "en" and args.translation != "context":
-        raise ValueError("Install Studio and use --translation context for this output language.")
-    studio = args.background == "separate" or args.translation == "context" or match
-    if studio and not (APP / ".qwen-venv/bin/python").is_file():
-        raise ValueError("Run ./setup.sh --studio to install the local GPU models.")
+    if not output.matched:
+        raise ValueError(f"No installed speaker-matching engine supports {output.name} output.")
+    if not (APP / ".qwen-venv/bin/python").is_file():
+        raise ValueError("Install the Studio models with ./setup.sh --studio.")
+    if args.match_engine and args.quality != "fast":
+        raise ValueError("Only Fast mode uses Kitten.")
+    args.match_engine = KITTEN_MATCH if args.quality == "fast" else None
+    if args.match_engine and (target != "en" or not kitten_match_ready()):
+        raise ValueError("Kitten speaker matching is unavailable for this output.")
+    beam = 1 if args.match_engine else 5
+    args.translation = "context"
+    os.environ["REELDUB_QWEN_SIZE"] = "1.7B"
+    os.environ["REELDUB_TTS_BATCH_SIZE"] = str(args.voice_batch or os.getenv("REELDUB_TTS_BATCH_SIZE") or 2)
     output_dir = args.output.expanduser().resolve().parent if args.output else Path.cwd() / "output"
     output_dir.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=".reeldub-", dir=output_dir) as temp:
@@ -156,42 +143,15 @@ def run(args):
                                                              contextual, target, bed, beam)
         if bed is not None:
             regions = merge_regions(leakage_regions(bed) + confirmed, len(bed) / 16000)
-            if regions and args.upload_voice:
-                # Use the Bandit bed and suppress residual speech without invoking
-                # the legacy HDemucs scientific-use checkpoint for uploads.
+            if regions:
                 suppress_unresolved(folder / "background.wav", regions)
-            elif regions:
-                print("Cleaning residual voices from the background…", flush=True)
-                (folder / "leakage.json").write_text(json.dumps(regions))
-                subprocess.run([worker, APP / "clean_background.py", folder], check=True)
-                if confirmed:
-                    cleaned = mono(folder / "background.wav", "clean.f32")
-                    remaining = leakage_regions(cleaned, min_total=0)
-                    def contains_speech(span):
-                        return any(c < span[1] and d > span[0] for c, d in remaining)
-                    quiet = [span for span in confirmed if not contains_speech(span)]
-                    if quiet:
-                        # A distorted voice can evade the same acoustic detector twice.
-                        # Check only the previously matched dialogue windows after separation.
-                        with transcription_device(args.device, ctranslate2.get_cuda_device_count() > 0, overflow) as device:
-                            verifier = whisper_model(args.model, device)
-                            check, _ = verifier.transcribe(cleaned, beam_size=beam, language=language,
-                                task="transcribe" if contextual else "translate", word_timestamps=True,
-                                condition_on_previous_text=False, clip_timestamps=[t for span in quiet for t in span])
-                            remaining += matching_dialogue(segments, check, len(cleaned)/16000)
-                            del check, verifier
-                    suppress_unresolved(folder / "background.wav", [span for span in confirmed if contains_speech(span)])
         if not (segments or drafts):
             raise ValueError("No translatable speech detected.")
         gc.collect()
         print("Identifying speakers and timing lines…", flush=True)
-        turns = []
-        if args.upload_voice != "narrator":
-            speech = mono(analysis_audio, "speech.f32") if analysis_audio != source else audio
-            turns = identify_turns(speech)
-        if args.upload_voice == "own_voice" and len({turn.speaker for turn in turns}) != 1:
-            raise ValueError(VOICE_ERRORS["single_speaker"])
-        if args.upload_voice == "documented_permission" and not turns:
+        speech = mono(analysis_audio, "speech.f32") if analysis_audio != source else audio
+        turns = identify_turns(speech)
+        if not turns:
             raise ValueError(VOICE_ERRORS["unclear_speaker"])
         candidates = assign_lines(segments, turns)
         english_cues = assign_lines(drafts, turns)
@@ -207,19 +167,20 @@ def run(args):
         if not lines:
             raise ValueError("No spoken lines to render.")
         print(f"Rendering {len(lines)} lines across {len({line['speaker'] for line in lines})} speaker group(s).", flush=True)
-        if contextual and language != target:
+        if args.match_engine and language != target:
+            print("Translating the source with Whisper…", flush=True)
+            lines = timed_lines(english_cues, duration)
+            if not lines:
+                raise ValueError("Whisper could not produce an English translation for Fast.")
+        elif contextual and language != target:
             print("Translating the source transcript in context…", flush=True)
             script = folder / "lines.json"
             script.write_text(json.dumps(lines, ensure_ascii=False))
-            translation = [worker, APP / "translate_lines.py", folder, language, target]
-            if args.upload_voice:
-                translation.append("--index-only")
+            translation = [worker, APP / "translate_lines.py", folder, language, target, "--index-only"]
             translated = subprocess.run(translation)
             if translated.returncode == 0:
                 lines = json.loads(script.read_text())
             elif target != "en":
-                if args.upload_voice:
-                    raise ValueError(VOICE_ERRORS["upload_translation"])
                 raise ValueError(f"The translator could not complete the {output.name} dialogue.")
             else:
                 # Whisper already produced a direct English pass with its own word timings.
@@ -227,35 +188,27 @@ def run(args):
                 if not lines:
                     raise ValueError("Neither translator produced an English dub.")
                 print("Using the timed English translation from Whisper.", flush=True)
-        if match:
-            spans = write_references(lines, turns, analysis_audio, folder, require_isolated=bool(args.upload_voice))
-            if args.match_engine:
-                words = [word for segment in segments for word in (segment.words or [])]
-                missing = []
-                for i, (line, (left, right)) in enumerate(zip(lines, spans, strict=True)):
-                    line["reference_text"] = "".join(word.word for word in words
-                                                     if left <= (word.start + word.end) / 2 < right).strip()
-                    if not line["reference_text"]:
-                        missing.append(i)
-                if missing:
-                    # A short clip may fall between word midpoints. Transcribe its exact
-                    # isolated WAV with the same local multilingual model, once per gap.
-                    verifier = whisper_model(args.model, "cpu")
-                    for i in missing:
-                        heard, _ = verifier.transcribe(str(folder / f"reference-{i}.wav"), language=language,
-                                                       beam_size=beam, condition_on_previous_text=False)
-                        text = "".join(seg.text for seg in heard).strip()
-                        if not text:
-                            raise ValueError(VOICE_ERRORS["unclear_speaker"])
-                        lines[i]["reference_text"] = text
-                    del verifier
+        spans = write_references(lines, turns, analysis_audio, folder, require_isolated=True)
+        if args.match_engine:
+            words = [word for segment in segments for word in (segment.words or [])]
+            missing = []
+            for i, (line, (left, right)) in enumerate(zip(lines, spans, strict=True)):
+                line["reference_text"] = "".join(word.word for word in words
+                                                 if left <= (word.start + word.end) / 2 < right).strip()
+                if not line["reference_text"]:
+                    missing.append(i)
+            if missing:
+                # Some short cues lie between word midpoints in the full-video transcript.
+                verifier = whisper_model(args.model, "cpu")
+                for i in missing:
+                    lines[i]["reference_text"] = transcribe_reference(verifier, speech, spans[i], language, beam)
+                del verifier
         print(f"Synthesizing {output.name} voices…", flush=True)
-        synthesize(lines, folder, match, target, args.lab_runtime, args.narrator_engine, args.match_engine)
+        synthesize(lines, folder, target, args.lab_runtime, args.match_engine)
         print("Mixing soundtrack…", flush=True)
         mix(lines, source, folder)
         print("Encoding video…", flush=True)
-        voice_label = ("Matched speaker" if match else "Narrator") if args.upload_voice else None
-        render(media, lines, folder, target, voice_label=voice_label)
+        render(media, lines, folder, target, voice_label="Matched speaker")
         metadata_file = os.getenv("REELDUB_METADATA_FILE")
         if metadata_file:
             path = Path(metadata_file)
@@ -265,14 +218,8 @@ def run(args):
                            asr_model=f"Whisper {args.model}",
                            translation_model=translator.read_text() if translator.exists() else (
                                "Same language" if language == target else f"Whisper {args.model}"),
-                           voice_model=f"Qwen3-TTS-12Hz-{os.getenv('REELDUB_QWEN_SIZE', '1.7B')}-Base" if match else "Kokoro v1.0",
-                           audio_mix_version=2)
-            if args.narrator_engine == KITTEN_ENGINE:
-                details["voice_model"] = KITTEN_MODEL
-            if args.match_engine == KITTEN_MATCH:
-                details["voice_model"] = KITTEN_MATCH_MODEL
-            if args.upload_voice:
-                details["rendered_voice_mode"] = "match" if match else "narrator"
+                           voice_model=KITTEN_MATCH_MODEL if args.match_engine else "Qwen3-TTS-12Hz-1.7B-Base",
+                           rendered_voice_mode="match", audio_mix_version=2)
             path.write_text(json.dumps(details, ensure_ascii=False))
         os.link(folder / "finished.mp4", dest)  # Publish atomically without overwriting another job.
         print(dest)
@@ -286,23 +233,26 @@ def main():
     installed = APP / ".venv/reeldub-model"
     parser.add_argument("--model", choices=["small", "medium", "large-v3"],
                         default=installed.read_text().strip() if installed.exists() else "large-v3")
-    parser.add_argument("--target-language", choices=list(LANGUAGES), default="en", help="output audio and subtitle language")
-    parser.add_argument("--quality", choices=["best", "medium", "fast"], help="Use a Studio benchmark preset")
+    parser.add_argument("--target-language", choices=[k for k,v in LANGUAGES.items() if v.matched], default="en", help="output audio and subtitle language")
+    parser.add_argument("--quality", choices=["best", "fast"], default="best", help="Best uses Qwen; Fast tries Kitten then Best")
     parser.add_argument("--lab-separation", choices=["fp32", "fp16"], default="fp32")
     parser.add_argument("--lab-runtime", choices=["standard","omni","graph"], default="standard")
-    parser.add_argument("--lab-voice", choices=["matched", "small", "preset"], help="Override the voice in a Studio preset")
     parser.add_argument("--voice-batch", type=int, choices=[1, 2], help="Override matched voices per batch in a Studio preset")
     parser.add_argument("--language", help="optional source language code, for example fa or es")
-    studio = (APP / ".qwen-venv/ready").exists()
-    parser.add_argument("--background", choices=["separate", "stereo"], default="separate" if studio else "stereo")
-    parser.add_argument("--translation", choices=["context", "whisper"], default="context" if studio else "whisper")
-    parser.add_argument("--voice-mode", choices=["auto", "preset", "match"], default="auto")
-    parser.add_argument("--match-engine", choices=[KITTEN_MATCH], help="Use Kitten vLLM for a consented English speaker match")
-    parser.add_argument("--narrator-engine", choices=[KITTEN_ENGINE], help="Use the experimental English upload narrator")
-    parser.add_argument("--upload-voice", choices=["narrator", "own_voice", "documented_permission"],
-                        help="Render a user-supplied video in the confirmed voice mode and consent scope")
+    parser.add_argument("--background", choices=["separate", "stereo"], default="separate")
+    parser.add_argument("--match-engine", choices=[KITTEN_MATCH], help=argparse.SUPPRESS)
+    args = parser.parse_args()
+    if args.input is None:
+        args.input = input("Paste an Instagram Reel link (or a video path): ").strip()
     try:
-        run(parser.parse_args())
+        try:
+            run(args)
+        except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError):
+            if args.quality != "fast" or os.getenv("REELDUB_SERVICE_LIMITS"):
+                raise
+            print("Fast could not finish this dub. Trying Best with Qwen.", file=sys.stderr)
+            args.quality, args.match_engine = "best", None
+            run(args)
     except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as error:
         parser.exit(1, f"ReelDub: {error}\n")
 

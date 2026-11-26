@@ -20,47 +20,18 @@ struct JobView: View {
     @State private var preparingShare = false
     @State private var sharing: ShareFile?
     @State private var problem: String?
-    @State private var project: ProjectInput?
-    @State private var importedFile: URL?
-    @State private var confirmSkip = false
+    @State private var retrying = false
+    @State private var retryID = UUID()
     private var job: Job { studio.jobs.first { $0.id == initial.id } ?? initial }
 
     private var originalURL: URL? { Job.isReel(job.url) ? URL(string: job.url) : nil }
     private var expired: Bool { studio.isExpired(job) }
-
-    private var comparisonEngine: VoiceEngine? {
-        guard !expired, job.state == "done", job.voice_mode == "match", job.source_id != nil,
-              studio.account?.kitten_match_languages?.contains(job.target) == true else { return nil }
-        return job.match_engine == VoiceEngine.kittenMatchID ? .original : .kitten2
-    }
 
     var body: some View {
         GeometryReader { viewport in
             details(in: viewport.size)
         }
         .background(Palette.canvas).navigationTitle("Video details").navigationBarTitleDisplayMode(.inline)
-            .sheet(item: $project, onDismiss: {
-                if let importedFile { try? FileManager.default.removeItem(at: importedFile); self.importedFile = nil }
-            }) { input in
-                if let api = studio.api {
-                    QuoteSheet(api: api, input: input, voiceModes: studio.account?.upload_voice_modes ?? [:],
-                               kittenLanguages: studio.account?.kitten_narrator_languages ?? [],
-                               kittenMatchLanguages: studio.account?.kitten_match_languages ?? [],
-                               target: job.target, trim: job.trimmed ?? false, compareMatchUsing: comparisonEngine,
-                               creatorMinutes: studio.account?.creator_minutes == true,
-                               liveOffers: studio.account?.purchase_preflight == true,
-                               plans: AnyView(CloudPlanSheet(studio: studio))) { _ in Task { await studio.refresh() } }
-                }
-            }
-            .confirmationDialog("Join the end of the priority line?", isPresented: $confirmSkip, titleVisibility: .visible) {
-                Button("Use 1 queue pass") {
-                    Task {
-                        guard let api = studio.api else { return }
-                        do { _ = try await api.data("v1/jobs/" + job.id + "/skip", method: "POST"); await studio.refresh() }
-                        catch { problem = error.localizedDescription }
-                    }
-                }
-            } message: { Text("Earlier priority dubs keep their places. A job already processing will finish its turn.") }
             .sheet(isPresented: $reporting) { ReportView(studio: studio, job: job) }
             .sheet(item: $sharing) { file in ExportSheet(url: file.url) }
             .task(id: job.state) {
@@ -162,22 +133,14 @@ struct JobView: View {
                           systemImage: "waveform")
                         .font(.subheadline).foregroundStyle(.secondary)
                 }
-                if let comparisonEngine, let sourceID = job.source_id {
-                    Button {
-                        player?.pause()
-                        project = .source(sourceID)
-                    } label: {
-                        Label(comparisonEngine == .kitten2 ? "Compare with KittenTTS 2" : "Compare with Original",
-                              systemImage: "waveform")
-                    }
-                }
+                if let reason = job.quality_fallback { Text(reason).font(.footnote).foregroundStyle(.secondary) }
                 if let recovery = job.recoveryNotice {
                     Label(recovery, systemImage: "arrow.clockwise")
                         .font(.body).padding(14).frame(maxWidth: .infinity, alignment: .leading)
                         .background(Color.orange.opacity(0.13), in: RoundedRectangle(cornerRadius: 12))
                         .accessibilityIdentifier("render-recovery")
                 }
-                if job.state == "running" || job.state == "queued" { ProgressRow(job: job) }
+                if job.state == "running" || job.state == "queued" { ProgressRow(job: job, processing: studio.processingCount) }
                 else {
                     Label(job.state == "done" ? (studio.storageLabel(job) ?? "\(job.targetName) dub ready") : "Couldn’t finish this dub", systemImage: job.state == "done" ? "checkmark.circle" : "exclamationmark.circle")
                     if let error = job.error {
@@ -199,23 +162,22 @@ struct JobView: View {
                 if job.state != "failed", let quality = job.lab_mode ?? job.render_quality {
                     LabeledContent("Render quality", value: quality.capitalized)
                 }
-                if job.state == "queued", let lane = job.lane {
-                    let recovering = (job.recovery_count ?? 0) > 0 || job.stage == "Recovering render"
-                    DubValueRow("Queue", value: recovering ? "Recovery priority" : lane == "premium" ? "Priority" : "Standard")
-                    if !recovering, lane == "free", (job.ahead ?? 0) > 0, (studio.account?.queue_skips ?? 0) > 0 {
-                        Button("Use 1 queue pass") { confirmSkip = true }
-                    }
-                }
-                if job.state == "failed" || expired {
-                    if Job.isReel(job.url) || job.source_id == nil {
-                        VideoImportButton(receive: { movie in
-                            importedFile = movie.file
-                            project = .file(movie.file, movie.title)
-                        }, failed: { problem = $0 }, title: "Choose video again")
-                    } else {
-                        Button(expired ? "Translate again" : "Try again", systemImage: "arrow.clockwise") {
-                            if let source = job.source_id { project = .source(source) }
-                        }.buttonStyle(.bordered)
+                if (job.state == "failed" || expired), let api = studio.api {
+                    if let source = RDLink.reel(in: job.url).map(DubSource.reel) ?? job.source_id.map(DubSource.uploaded) {
+                        Button("Translate again", systemImage: "arrow.clockwise") {
+                            Task {
+                                guard !retrying else { return }
+                                retrying = true
+                                defer { retrying = false }
+                                do {
+                                    let quality = job.quality.flatMap(DubQuality.init(rawValue:)) ?? (job.match_engine == "kitten2_vllm" ? .fast : .best)
+                                    let next = try await api.submit(source, id: retryID, target: job.target, quality: quality)
+                                    studio.didSubmit(next)
+                                    retryID = UUID()
+                                    if next.id != job.id { problem = "Submitted. Find your new dub in the library." }
+                                } catch { problem = error.localizedDescription }
+                            }
+                        }.buttonStyle(.bordered).disabled(retrying)
                     }
                 }
                 if let problem { Text(problem).font(.footnote).foregroundStyle(.secondary) }
@@ -244,7 +206,7 @@ struct JobView: View {
             if let local = studio.localMovie(job.id) { url = local }
             else {
                 guard let api = studio.api else {
-                    throw Problem("Restore your self-host unlock in Account to play the server copy.")
+                    throw Problem("Connect to your server to play this dub.")
                 }
                 url = try await api.playback(job.id)
                 if url.isFileURL {
@@ -346,7 +308,6 @@ struct JobView: View {
     }
 }
 
-/// The session belongs to the app, while mute belongs to each visible player.
 @MainActor
 enum DubPlaybackAudio {
     private static let audible = NSHashTable<AVPlayer>.weakObjects()
@@ -383,20 +344,6 @@ enum DubPlaybackAudio {
     }
 }
 
-/// The inline video shares its viewport with sound, captions and the share button.
-struct DubVideoFrame: View {
-    static let contentWidth: CGFloat = 650
-    static let inset: CGFloat = 20
-    let viewport: CGSize
-
-    var body: some View {
-        let width = max(0, min(Self.contentWidth, viewport.width) - 2 * Self.inset)
-        let controls: CGFloat = Self.inset + 2 * 18 + 44 + 50
-        let height = min(width / 0.83, max(0, viewport.height - controls))
-        Color.black.frame(height: height)
-    }
-}
-
 struct DubSubtitles {
     let item: AVPlayerItem
     let group: AVMediaSelectionGroup
@@ -418,6 +365,21 @@ struct DubSubtitles {
         item.select(enabled ? option : nil, in: group)
     }
 }
+
+/// The inline video shares its viewport with sound, captions and the share button.
+struct DubVideoFrame: View {
+    static let contentWidth: CGFloat = 650
+    static let inset: CGFloat = 20
+    let viewport: CGSize
+
+    var body: some View {
+        let width = max(0, min(Self.contentWidth, viewport.width) - 2 * Self.inset)
+        let controls: CGFloat = Self.inset + 2 * 18 + 44 + 50
+        let height = min(width / 0.83, max(0, viewport.height - controls))
+        Color.black.frame(height: height)
+    }
+}
+
 private struct ShareFile: Identifiable { let url: URL; var id: URL { url } }
 private struct ExportSheet: UIViewControllerRepresentable {
     let url: URL

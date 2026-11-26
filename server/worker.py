@@ -21,7 +21,7 @@ from .upload_voice import (KITTEN_ENGINE, KITTEN_MATCH, VOICE_ERRORS, correct_ki
                            kitten_ready, upload_mode, voice_scope)
 from .db import media_db, QUEUE_ORDER, db, now, uses_postgres
 from .gpu import pipeline_slot
-from .wakeup import Wake
+from .wakeup import Wake, notify
 from .progress import PREFIX, STEPS, line_progress, nearby_runtime
 from psycopg import Error as PostgresError, OperationalError
 from psycopg_pool import PoolTimeout
@@ -54,7 +54,7 @@ def render_error(stage, diagnostic):
 
 
 def claim(studio=None, fleet_slot=None, fleet_request=None, avoid_recovery_node=None, upload_voices=True,
-          kitten_narrator=None, alternatives=None, kitten_match=None):
+          kitten_narrator=None, alternatives=None, kitten_match=None, match_qualities=True, allow_best_fallback=True):
     database = db()
     stamp = now()
     expired = {"state": "running", "fleet_slot": None, "lease_end": {"$lt": stamp}}
@@ -73,8 +73,15 @@ def claim(studio=None, fleet_slot=None, fleet_request=None, avoid_recovery_node=
         candidate["narrator_engine"] = None
     if kitten_match is None:
         kitten_match = kitten_match_ready(require_service=True)
+    if not match_qualities:
+        candidate["quality_requested"] = None
     if not (studio and upload_voices and kitten_match):
         candidate["match_engine"] = None
+        if studio and match_qualities and allow_best_fallback:
+            database.jobs.update_many({"state": "queued", "quality_requested": "fast", "match_engine": KITTEN_MATCH,
+                                       "deleted": {"$ne": True}},
+                                      {"$set": {"render_quality": "best", "quality_fallback":
+                                       "The Kitten worker is unavailable. Using Best."}, "$unset": {"match_engine": ""}})
     if not upload_voices:
         # Earlier workers don't understand upload voices, including uploaded jobs
         # that predate the voice_mode field. They may still render ordinary Reels.
@@ -110,29 +117,41 @@ def claim(studio=None, fleet_slot=None, fleet_request=None, avoid_recovery_node=
 
 
 def quality_options(job):
-    if upload_mode(job) is not None:
-        options = ["--quality", job["render_quality"]] if job.get("render_quality") else []
-        scope = voice_scope(job)
-        options += ["--upload-voice", scope]
-        if engine := job.get("narrator_engine"):
-            if engine != KITTEN_ENGINE or scope != "narrator" or job.get("target_language", "en") != "en":
-                raise ValueError("Unsupported upload narrator.")
-            options += ["--narrator-engine", engine]
-        if engine := job.get("match_engine"):
-            if engine != KITTEN_MATCH or scope not in ("own_voice", "documented_permission") or job.get("target_language", "en") != "en":
-                raise ValueError("Unsupported upload speaker match.")
-            options += ["--match-engine", engine]
-        return options
-    if mode := job.get("lab_mode"):
-        options = ["--quality", mode, "--voice-batch", str(job.get("voice_batch", 2)),
-                   "--lab-runtime", job.get("lab_runtime", "standard"),
-                   "--lab-separation", job.get("lab_separation", "fp32")]
-        if job.get("lab_voice", "default") != "default":
-            options += ["--lab-voice", job["lab_voice"]]
-        return options
-    if quality := job.get("render_quality"):
-        return ["--quality", quality]
-    return []
+    if upload_mode(job) == "narrator":
+        raise ValueError("This older job used a narrator. Share the video again to match its speakers.")
+    if job.get("voice_mode") == "match" and not job.get("quality_requested"):
+        raise ValueError("Share this video again to use the current speaker matching settings.")
+    if job.get("match_engine") == KITTEN_MATCH:
+        if job.get("target_language", "en") != "en" or job.get("render_quality") != "fast":
+            raise ValueError("Unexpected Kitten speaker-matching settings.")
+        return ["--quality", "fast", "--match-engine", KITTEN_MATCH]
+    return ["--quality", "best"]
+
+
+def best_retry_reason(stage, message):
+    if message == VOICE_ERRORS["unclear_speaker"]:
+        return "Kitten could not isolate a clear voice sample. Using Best."
+    if stage == "Translating":
+        return "Fast could not translate or align the voice sample. Using Best."
+    if stage == "Voicing":
+        return "Kitten could not generate the matched voice. Using Best."
+    return "Kitten could not finish this dub. Using Best."
+
+
+def retry_as_best(jobs, fence, reason):
+    """Fence the first attempt and retry this same job once through Qwen."""
+    ticket = notify(preparing=True)
+    if not ticket:
+        raise ConnectionFailure("Queue temporarily unavailable")
+    try:
+        return jobs.update_one({**fence, "quality_requested": "fast", "match_engine": KITTEN_MATCH,
+                                "deleted": {"$ne": True}},
+            {"$set": {"state": "queued", "stage": "Retrying with Best", "quality_fallback": reason,
+                      "render_quality": "best", "estimated_finish": None, "progress": 0, "recovery_rank": 1},
+             "$unset": dict.fromkeys(("match_engine", "lease", "lease_end", "fleet_slot", "fleet_request",
+                                      "upload_token", "upload_lease", "upload_until"), "")}).matched_count
+    finally:
+        notify(ticket=ticket)
 
 
 class InfrastructureFailure(Exception):
@@ -219,7 +238,7 @@ def process(job, fleet=None):
             log = Path(temp) / "render.log"
             names = {"PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "CUDA_VISIBLE_DEVICES",
                      "LD_LIBRARY_PATH", "HF_HOME", "XDG_CACHE_HOME", "REELDUB_GPU_LOCK_DIR", "REELDUB_LANDRUN",
-                     "OMP_NUM_THREADS", "MKL_NUM_THREADS", "REELDUB_TTS_BATCH_SIZE"}
+                     "REELDUB_MAX_SOURCE_SECONDS", "OMP_NUM_THREADS", "MKL_NUM_THREADS", "REELDUB_TTS_BATCH_SIZE"}
             if job.get("match_engine") == KITTEN_MATCH:
                 names.add("REELDUB_KITTEN_MATCH_SPOOL")
             env = {k: v for k, v in os.environ.items() if k in names}
@@ -248,7 +267,20 @@ def process(job, fleet=None):
                 env["REELDUB_MAX_SECONDS"]=str(job["quoted_seconds"])
                 input_arg=str(source)
             else:
-                input_arg=reel_url(job["url"])
+                from . import sources
+                from fastapi import HTTPException
+                stage = "Downloading"
+                if not lease.renew({"stage": stage, "progress": STEPS[stage]}):
+                    raise LeaseLost()
+                source = Path(temp) / "source.mp4"
+                try:
+                    with source.open("wb") as file:
+                        duration, title, author = sources.download_to(file, job["url"])
+                except HTTPException as error:
+                    raise RuntimeError(str(error.detail)) from error
+                env.update(REELDUB_STAGED_INPUT=str(source), REELDUB_MAX_SECONDS=str(duration))
+                metadata.write_text(json.dumps({"title": title, "author": author}))
+                input_arg = str(source)
             with log.open("w") as writer, log.open() as reader:
                 command = [engine, input_arg, "--target-language", job.get("target_language", "en"), "-o", dest]
                 command += options
@@ -281,7 +313,7 @@ def process(job, fleet=None):
                                 if not isinstance(event, dict):
                                     continue
                                 seconds = event.get("duration")
-                                if not fleet and type(seconds) in (int, float) and 0 < seconds <= MAX_SOURCE_SECONDS and seconds != sampled_duration:
+                                if not fleet and type(seconds) in (int, float) and seconds > 0 and (not MAX_SOURCE_SECONDS or seconds <= MAX_SOURCE_SECONDS) and seconds != sampled_duration:
                                     sampled_duration = seconds
                                     try:
                                         rows = jobs.find({"state": "done", "lab_mode": job.get("lab_mode"),
@@ -319,6 +351,8 @@ def process(job, fleet=None):
                 for message in VOICE_ERRORS.values():
                     if message.lower() in diagnostic:
                         raise RuntimeError(message)
+                if job.get("quality_requested") == "fast" and stage not in ("Downloading", "Saving"):
+                    raise RuntimeError(render_error(stage, diagnostic))
                 if fleet:
                     if any(x in diagnostic for x in ("cuda out of memory", "cuda error", "cuda was explicitly requested", "driver version is insufficient")):
                         raise InfrastructureFailure("gpu_unavailable")
@@ -382,6 +416,10 @@ def process(job, fleet=None):
                 fleet.interrupt("runtime_unavailable")
                 return
             fleet.fail(stage, message)
+            return
+        if (job.get("match_engine") == KITTEN_MATCH and stage not in ("Downloading", "Saving")
+                and message != TOO_LONG and retry_as_best(jobs, lease.current_fence(now()),
+                    best_retry_reason(stage, message))):
             return
         jobs.update_one(lease.current_fence(now()), {"$set": {"state": "failed", "stage": "Failed", "error": message, "finished": now()},
                                "$unset": {"slot": "", "minute_grants": "", "minute_units": "", "render_key": "", "extra_ticket": "", "skip_ticket": "", "lease": "", "lease_end": ""}})

@@ -4,8 +4,7 @@ import logging
 import os
 import re
 import secrets
-import subprocess
-from contextlib import asynccontextmanager, nullcontext
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import Annotated, Literal
 from uuid import UUID, uuid4
@@ -14,7 +13,6 @@ from urllib.parse import unquote
 import time
 
 import gridfs
-import jwt
 from psycopg import OperationalError
 from psycopg_pool import PoolTimeout
 from fastapi.responses import JSONResponse
@@ -26,18 +24,15 @@ from pymongo import ReturnDocument
 from pymongo.errors import ConnectionFailure, DuplicateKeyError, ExecutionTimeout, WTimeoutError
 from starlette.concurrency import run_in_threadpool
 
+from .web import router as web_router
 from .wakeup import next_hour, notify
 from .db import separate_metadata, uses_postgres, media_db, db, now, setup_indexes
-from . import console, checkout, erasure, erasure_journal, store, store_history, minutes, sources, launch_metrics
-from .source import TOO_LONG, reel_url
-from .languages import default_render_quality, outputs, upload_voice_modes
+from . import sources
+from .source import reel_url
+from .languages import LANGUAGES
+from .upload_voice import KITTEN_MATCH
 
 MEDIA_WINDOW = timedelta(hours=24)
-LIMITS = {"free": 5, "paid": 50, "admin": None}
-BETA_REVIEWER = "review:apple-beta"
-apple_keys = jwt.PyJWKClient("https://appleid.apple.com/auth/keys", timeout=8)
-
-
 def hash_value(value):
     return hashlib.sha256(value.encode()).hexdigest()
 
@@ -51,42 +46,15 @@ def canonical_url(value):
 
 
 def owner(authorization: str = Header(default="")):
-    return session_owner(authorization)
-
-
-def restricted_owner(authorization: str = Header(default="")):
-    return session_owner(authorization, allow_banned=True)
-
-
-def session_owner(authorization, allow_banned=False):
     scheme, _, key = authorization.partition(" ")
-    if scheme.lower() != "bearer" or not 20 <= len(key) <= 256:
-        raise HTTPException(401, "Connect a server or sign in.")
-    mode = os.getenv("REELDUB_ACCESS_MODE", "hosted")
-    if mode == "operator":
-        local = os.getenv("SELF_HOST_KEY", "")
-        if len(local) >= 32 and secrets.compare_digest(hash_value(key), hash_value(local)):
-            return "self-host"
-        raise HTTPException(401, "A private server connection key is required.")
-    if mode != "hosted":
-        raise HTTPException(503, "Server access is not configured.")
-    digest, stamp = hash_value(key), now()
-    if uses_postgres():
-        record = db().live_session(digest, stamp)
-    else:
-        record = db().sessions.find_one({"_id": digest, "expires": {"$gt": stamp}}, {"owner": 1, "purpose": 1})
-    if record and record["owner"] == BETA_REVIEWER and record.get("purpose") == "beta-review":
-        return BETA_REVIEWER
-    if not record or record.get("purpose") or not (record.get("owner") or "").startswith("apple:"):
-        raise HTTPException(401, "Your connection has expired. Sign in again.")
-    closing = record["closing"] if uses_postgres() else erasure.closing(record["owner"])
-    if closing:
-        raise HTTPException(401, "Your connection has expired. Sign in again.")
-    if not allow_banned:
-        banned = record.get("banned") if uses_postgres() else db().accounts.find_one({"_id":record["owner"], "banned":True}, {"_id":1})
-        if banned:
-            raise HTTPException(403, "This account is suspended.")
-    return record["owner"]
+    expected = os.getenv("SELF_HOST_KEY", "")
+    if len(expected) < 32:
+        raise HTTPException(503, "Set SELF_HOST_KEY to a private key of at least 32 characters.")
+    if scheme.lower() != "bearer" or not 32 <= len(key) <= 256 or not secrets.compare_digest(
+        hash_value(key), hash_value(expected)
+    ):
+        raise HTTPException(401, "Enter the connection key for this server.")
+    return "self-host"
 
 
 def limit_writes(user, operation, ceiling):
@@ -97,42 +65,6 @@ def limit_writes(user, operation, ceiling):
         upsert=True, return_document=ReturnDocument.AFTER)
     if row["count"] > ceiling:
         raise HTTPException(429, "Please wait a minute before trying again.")
-
-
-def tier(user, account=None):
-    if user == BETA_REVIEWER:
-        return "free"
-    if user == "self-host" or user == "apple:" + os.getenv("ADMIN_APPLE_SUB", "disabled"):
-        return "admin"
-    if account is None:
-        account = db().accounts.find_one({"_id": user}, {"tier": 1}) or {}
-    manual = account.get("tier", "free")
-    return "paid" if manual == "free" and store.premium(user) else manual
-
-
-def beta_invite_id(email):
-    return hash_value("reeldub/beta/" + email.strip().casefold())
-
-
-def daily_limit(user, plan):
-    if user == BETA_REVIEWER:
-        return LIMITS["free"]
-    if plan == "admin":
-        return None
-    base = LIMITS["free" if minutes.enabled() else plan]
-    grant = db().beta_allowances.find_one({"owner": user}, {"limit": 1}, sort=[("limit", -1)])
-    return max(base, grant["limit"]) if grant else base
-
-
-def quota(user, plan, stamp):
-    day = stamp.date().isoformat()
-    if minutes.enabled():
-        used = db().jobs.count_documents({"owner":user,"day":day,"slot":{"$exists":True}})
-    else:
-        used = db().jobs.count_documents({"owner": user, "day": day, "state": {"$ne": "failed"}, "extra_ticket": {"$exists": False}})
-    limit = daily_limit(user, plan)
-    reset = stamp.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
-    return dict(tier="beta" if plan == "free" and limit > LIMITS["free"] else plan, used=used, limit=limit, resets=reset)
 
 
 def purge_deleted_media(job):
@@ -146,7 +78,6 @@ def purge_deleted_media(job):
 def resume_deletions():
     if uses_postgres():
         db().expire(now())
-    erasure.resume()
     sources.sweep()
     # Older workers left undelivered media without an expiry. Allow a week from migration.
     db().jobs.update_many({"state": "done", "deleted": {"$ne": True}, "artifact": {"$exists": True},
@@ -159,12 +90,9 @@ def resume_deletions():
     for job in db().jobs.find({"artifact": {"$exists": True}, "$or": [
             {"deleted": True, "cache_retained": {"$ne": True}}, {"media_expired": True}]}, {"artifact": 1}):
         purge_deleted_media(job)
-    # Keep only the deletion marker, idempotency and billing fields once the cache is gone.
     db().jobs.update_many({"deleted": True, "cache_retained": True, "media_expired": True,
                            "artifact": {"$exists": False}}, [{"$project": {
-        "owner": 1, "request_id": 1, "request_keys": 1, "state": 1, "day": 1, "slot": 1,
-        "extra_ticket": 1, "skip_ticket": 1, "minute_grants": 1, "minute_units": 1, "deleted": 1,
-        **launch_metrics.TOMBSTONE_FIELDS}}])
+        "owner": 1, "request_id": 1, "request_keys": 1, "state": 1, "deleted": 1}}])
 
 
 def purge_orphaned_uploads():
@@ -224,8 +152,6 @@ async def sweep_media():
 async def lifespan(app):
     await run_in_threadpool(setup_indexes)
     tasks = [asyncio.create_task(sweep_media())]
-    if store_history.configured():
-        tasks.append(asyncio.create_task(store_history.run()))
     try:
         yield
     finally:
@@ -235,6 +161,9 @@ async def lifespan(app):
 
 
 app = FastAPI(title="ReelDub", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+
+
+app.include_router(web_router)
 
 
 @app.exception_handler(ConnectionFailure)
@@ -259,116 +188,26 @@ def health():
 
 @app.get("/privacy", response_class=PlainTextResponse)
 def privacy():
-    return """ReelDub Cloud privacy
-
-ReelDub uses your Apple sign-in identifier and the email Apple shares to manage your account. Hosted account and job records are stored on our private servers. Video and poster bytes stay in our private media cache. Offsite account database backups, when enabled, are encrypted and expire after seven days. Video and poster files are excluded. Deletion receipts allow us to remove deleted accounts when restoring a backup.
-
-ReelDub stores uploaded video and audio privately for processing, normally for 24 hours and while confirmed work needs them. Servers with Reel links enabled also fetch submitted URLs from Instagram. ReelDub processes audio and video on its render workers. Cloudflare routes hosted requests. Your account can access your job history, reports and videos. The service administrator can review submitted Reel links, titles, language choices, issue reports, account contact information and processing statistics for support and moderation. A minimal suspension record may be retained to enforce a ban. Sharing a video exports a copy to the destination you choose. After the app confirms a download, the server keeps the video for 24 hours from the last eligible request. Undelivered videos expire after seven days. Removing a dub hides it from your library, revokes playback links and clears its issue report. A private cached copy can be reused by your account until its deadline. Saved dubs remain on your device until removed.
-
-For an uploaded video you can choose a synthetic narrator or opt in to matching the voices in the clip. Matching uses audio from that video to generate translated speech. ReelDub records the signed-in account’s consent declaration, its date and policy version, the source and target language, and the release reference provided for other speakers. Use a short reference that lets you find the permission document. Keep personal details out of that field. These records are part of private job metadata and its backups.
-
-Apple processes App Store payments. ReelDub stores verified transaction identifiers, products, subscription expiration or revocation, and credit usage to deliver purchases across devices. ReelDub does not receive your payment card details. Job deletion preserves the minimum purchase and quota records needed to prevent duplicate spending.
-
-For the optional self-host unlock, the app sends Apple-signed app and purchase records to ReelDub Cloud for checkout and accounting. Your private server address, connection key and videos stay out of those requests. The App Store supplies your entitlement on devices using the same Apple Account.
-
-If you send a video suggestion, ReelDub Cloud saves your latest answer and optional note with your account. The administrator can read them to plan features. Deleting your account erases your suggestion.
-
-Deleting your Cloud account erases your profile, sessions, dubs and reports. A short-lived deletion marker prevents reuse during the daily quota period. Minimal pseudonymous purchase and spent-credit records allow the same Apple account to recover its balance. Active Apple subscriptions continue until canceled through Apple. Other devices and destinations may retain downloaded or exported copies.
-
-A self-hosted server is controlled by its operator. Its storage, network and retention settings may differ.
+    return """ReelDub runs on the server you connect to. The server downloads the Reels you share,
+processes your videos and speaker samples, and stores your library. People using the same
+connection key share that library. Only process recordings you have permission to dub.
+Remove a completed dub from your library to remove the device copy. The server can reuse a
+cached render for 24 hours after delivery. Undelivered videos expire after seven days.
 """
 
 
+def quality_languages():
+    best = [code for code, language in LANGUAGES.items() if language.matched]
+    fast = ["en"] if os.getenv("REELDUB_KITTEN_MATCH") == "1" else []
+    return {"fast": fast, "best": best}
+
+
 @app.get("/v1/me")
-def me(user=Depends(restricted_owner), checkout_version: str = Header(default="", alias="X-ReelDub-Checkout")):
-    with db().profile_reads() if uses_postgres() else nullcontext():
-        account = db().accounts.find_one({"_id": user}, {"email": 1, "library_id": 1, "tier": 1, "store_token": 1, "banned": 1}) or {}
-        if account.get("banned"):
-            return {"tier":"suspended","used":0,"limit":0,"purchase_preflight":False,
-                    "library_id":account.get("library_id",hash_value(user)),"email":account.get("email")}
-        result = quota(user, tier(user, account), now())
-        result["admin_console"] = console.permitted(user)
-        if result["admin_console"]:
-            result["lab_runtimes"] = console.runtimes()
-        profile = os.getenv("REELDUB_OUTPUT_PROFILE", "light")
-        result["output_languages"] = outputs(profile)
-        result["video_uploads"] = True
-        result["upload_voice_modes"] = upload_voice_modes(profile)
-        if minutes.kitten_permitted(user):
-            result["kitten_narrator_languages"] = ["en"]
-        if minutes.kitten_permitted(user, match=True):
-            result["kitten_match_languages"] = ["en"]
-        result["reel_links"] = sources.reel_links_enabled()
-        result["library_id"] = account.get("library_id", hash_value(user))
-        result["email"] = account.get("email")
-        result.update(store.balances(user))
-        result["creator_minutes"] = minutes.enabled()
-        result["batch_progress"] = True
-        result["video_suggestions"] = user.startswith("apple:")
-        if minutes.enabled():
-            monthly, pack = minutes.funding(user,result["tier"],now())
-            result.update(monthly_seconds=len(monthly), pack_seconds=len(pack))
-        store_connected = checkout_version == "1" and separate_metadata() and store.enabled()
-        result["purchase_preflight"] = store_connected and minutes.enabled() and user.startswith("apple:")
-    if store_connected and user.startswith("apple:"):
-        result["store_token"] = account.get("store_token") or store.store_token(user)
-    return result
-
-
-class VideoSuggestion(BaseModel):
-    model_config = {"extra": "forbid"}
-    topic: Literal["longer", "other_apps", "my_videos", "other"]
-    note: str = Field(default="", max_length=400)
-
-
-@app.get("/v1/me/video-suggestion")
-def read_video_suggestion(user=Depends(owner)):
-    if not user.startswith("apple:"):
-        raise HTTPException(403, "Sign in to ReelDub Cloud to send a suggestion.")
-    account = db().accounts.find_one({"_id": user}, {"video_suggestion": 1}) or {}
-    return {"suggestion": account.get("video_suggestion")}
-
-
-@app.put("/v1/me/video-suggestion", status_code=204)
-def save_video_suggestion(body: VideoSuggestion, user=Depends(owner)):
-    if not user.startswith("apple:"):
-        raise HTTPException(403, "Sign in to ReelDub Cloud to send a suggestion.")
-    note = body.note.strip()
-    if body.topic == "other" and not note:
-        raise HTTPException(422, "Tell us what kind of video you have in mind.")
-    limit_writes(user, "video_suggestion", 6)
-    updated = db().accounts.update_one({"_id": user, "banned": {"$ne": True}}, {
-        "$set": {"video_suggestion": {"topic": body.topic, "note": note}}})
-    if not updated.matched_count:
-        raise HTTPException(403, "This account cannot send a suggestion.")
-
-
-class ReelSource(BaseModel):
-    url: str = Field(max_length=2048)
-
-
-class QuoteRequest(BaseModel):
-    source_id: str = Field(min_length=24, max_length=24)
-    targets: list[str] = Field(min_length=1, max_length=11)
-    trim: bool = False
-    voice_mode: Literal["narrator", "match"] | None = None
-    narrator_engine: Literal["kitten2"] | None = None
-    match_engine: Literal["kitten2_vllm"] | None = None
-    voice_consent: Literal["own_voice", "documented_permission"] | None = None
-    consent_reference: str | None = Field(default=None, max_length=160)
-    model_config = {"extra":"forbid"}
-
-
-def creator_access(user):
-    if not minutes.enabled():
-        raise HTTPException(404,"Creator minutes are unavailable on this server.")
-
-
-@app.post("/v1/sources/reel")
-def stage_reel(body: ReelSource, user=Depends(owner)):
-    creator_access(user)
-    limit_writes(user,"intake",12)
-    return sources.reel(user,canonical_url(body.url))
+def me(user=Depends(owner)):
+    languages = quality_languages()
+    return {"library_id": hash_value(user), "batch_progress": True, "video_uploads": True,
+            "output_languages": languages["best"], "quality_languages": languages,
+            "kitten_match_languages": languages["fast"], "reel_links": sources.reel_links_enabled()}
 
 
 @app.post("/v1/sources/upload")
@@ -397,205 +236,12 @@ def source_info(source_id: str, user=Depends(owner)):
     return sources.public(sources.get(user, source_id))
 
 
-@app.post("/v1/quotes")
-def create_quote(body: QuoteRequest,user=Depends(owner)):
-    limit_writes(user,"quote",60)
-    targets=list(dict.fromkeys(body.targets))
-    if len(targets)!=len(body.targets) or any(t not in outputs(os.getenv("REELDUB_OUTPUT_PROFILE","light")) for t in targets):
-        raise HTTPException(422,"Select supported output languages once each.")
-    return minutes.quote(user, body.source_id, targets, body.trim, body.voice_mode,
-                         body.voice_consent, body.consent_reference, body.narrator_engine, body.match_engine)
-
-
-@app.post("/v1/quotes/{quote_id}/confirm")
-def confirm_quote(quote_id: UUID,user=Depends(owner)):
-    limit_writes(user,"confirm",60)
-    try:
-        return {"jobs": minutes.confirm(user,str(quote_id)), "remaining": [], "detail": None}
-    except minutes.PartialConfirmation as partial:
-        return {"jobs": partial.jobs, "remaining": partial.remaining, "detail": partial.detail}
-
-
-class PurchaseIntent(BaseModel):
-    product: str = Field(min_length=1, max_length=128)
-
-
-@app.post("/v1/store/purchase-intents")
-def prepare_purchase(body: PurchaseIntent, user=Depends(owner)):
-    if not user.startswith("apple:") or os.getenv("REELDUB_ACCESS_MODE") != "hosted":
-        raise HTTPException(403, "Sign in with Apple to make a purchase.")
-    limit_writes(user, "checkout", 6)
-    return checkout.prepare(user, body.product)
-
-
-class SignedTransaction(BaseModel):
-    signed_transaction: str = Field(min_length=1, max_length=24000)
-    intent: UUID | None = None
-
-
-class SelfHostAppProof(BaseModel):
-    signed_app: str = Field(min_length=1, max_length=24000)
-
-
-@app.post("/v1/store/self-host/intents")
-def prepare_self_host(body: SelfHostAppProof):
-    if not separate_metadata():
-        raise HTTPException(503, checkout.UNAVAILABLE)
-    proof = store.verify_self_host(body.signed_app, app=True)
-    identifier = proof.appTransactionId or proof.deviceVerification
-    if not identifier:
-        raise HTTPException(400, "Apple could not verify this installation.")
-    subject = "selfhost:" + hash_value(identifier)
-    limit_writes(subject, "selfhost-checkout", 6)
-    return checkout.commit_intent(subject, store.SELF_HOST, proof.rawReceiptType)
-
-
-@app.post("/v1/store/self-host/transactions", status_code=204)
-def deliver_self_host(body: SignedTransaction):
-    if not separate_metadata():
-        raise HTTPException(503, "Purchase recording is temporarily unavailable.")
-    store.record_self_host(store.verify_self_host(body.signed_transaction))
-
-
-@app.post("/v1/store/transactions", status_code=204)
-def purchase(body: SignedTransaction, user=Depends(owner)):
-    limit_writes(user, "purchase", 30)
-    if not user.startswith("apple:"):
-        raise HTTPException(403, "Use your ReelDub Cloud account for purchases.")
-    transaction = store.verify(body.signed_transaction)
-    key = store.record(transaction, user)
-    if body.intent and key:
-        db().purchase_intents.update_one(
-            {"_id":str(body.intent), "owner":user, "product":transaction.productId,
-             "environment":transaction.rawEnvironment, "$or":[{"transaction":None},{"transaction":key}]},
-            {"$set":{"transaction":key}})
-
-
-
-class AppleNotification(BaseModel):
-    signedPayload: str = Field(min_length=1, max_length=48000)
-
-
-@app.post("/v1/store/notifications", status_code=204)
-def notification(body: AppleNotification):
-    store.handle_notification(body.signedPayload)
-
-
-@app.post("/v1/apple/challenge")
-def challenge(request: Request):
-    if os.getenv("REELDUB_ACCESS_MODE", "hosted") != "hosted" or not os.getenv("APPLE_CLIENT_ID"):
-        raise HTTPException(503, "This server uses a connection key. Apple sign-in requires a configured app ID.")
-    stamp = now()
-    client_ip = request.client.host
-    if os.getenv("TRUST_TUNNEL_IP") == "1":
-        client_ip = request.headers.get("CF-Connecting-IP") or client_ip
-    ip = hash_value(client_ip)
-    challenges = media_db().signin_challenges if separate_metadata() else db().challenges
-    if challenges.count_documents({"ip": ip, "expires": {"$gt": stamp}}, limit=20) >= 20:
-        raise HTTPException(429, "Try signing in again later.")
-    value = ("v1." if separate_metadata() else "") + secrets.token_urlsafe(32)
-    challenges.insert_one({"_id": hash_value(value), "ip": ip, "expires": stamp + timedelta(minutes=5)})
-    return {"challenge": value}
-
-
-class AppleLogin(BaseModel):
-    identity_token: str = Field(max_length=12000)
-    challenge: str = Field(min_length=32, max_length=100)
-
-
-def verify_identity(login: AppleLogin):
-    audience = os.getenv("APPLE_CLIENT_ID")
-    if os.getenv("REELDUB_ACCESS_MODE", "hosted") != "hosted" or not audience:
-        raise HTTPException(503, "Apple sign-in is not configured.")
-    nonce = hash_value(login.challenge)
-    challenge_query = {"_id": nonce, "expires": {"$gt": now()}}
-    local_nonce = login.challenge.startswith("v1.")
-    if local_nonce and not media_db().signin_challenges.find_one(challenge_query, {"_id": 1}):
-        raise HTTPException(401, "The sign-in challenge expired. Try again.")
-    try:
-        key = apple_keys.get_signing_key_from_jwt(login.identity_token).key
-        claims = jwt.decode(login.identity_token, key, algorithms=["RS256"], audience=audience,
-                            issuer="https://appleid.apple.com", options={"require": ["exp", "iat", "sub", "nonce"]})
-    except jwt.PyJWTError:
-        raise HTTPException(401, "Apple could not verify this sign-in.")
-    if claims["nonce"] != nonce:
-        raise HTTPException(401, "The sign-in challenge expired.")
-    # Older builds can finish a sign-in started just before rollout. Only a verified
-    # Apple identity reaches the legacy challenge store.
-    challenges = media_db().signin_challenges if local_nonce else db().challenges
-    if not challenges.find_one_and_delete({"_id": nonce, "expires": {"$gt": now()}}):
-        raise HTTPException(401, "The sign-in challenge expired.")
-    return claims
-
-
-@app.post("/v1/apple/session")
-def apple(login: AppleLogin):
-    claims = verify_identity(login)
-    user = "apple:" + claims["sub"]
-    if erasure.closing(user):
-        raise HTTPException(409, "This account was deleted. New registration opens after the daily quota resets and deletion finishes.")
-    if db().accounts.find_one({"_id":user,"banned":True},{"_id":1}):
-        # Keep Apple-verified erasure available without repopulating a moderation tombstone.
-        token = secrets.token_urlsafe(48)
-        db().sessions.insert_one({"_id":hash_value(token),"owner":user,"expires":now()+timedelta(minutes=15)})
-        return {"token":token}
-    admin_email = os.getenv("ADMIN_APPLE_EMAIL", "").strip().casefold()
-    verified = claims.get("email_verified") in (True, "true")
-    email = claims.get("email")
-    update = {"$set": {"last_sign_in": now()}, "$setOnInsert": {"created": now(), "library_id": str(uuid4())}}
-    if verified and isinstance(email, str):
-        update["$set"]["email"] = email
-        db().beta_allowances.update_one(
-            {"_id": beta_invite_id(email), "owner": {"$exists": False}},
-            {"$set": {"owner": user, "claimed": now()}},
-        )
-    if admin_email and verified and isinstance(email, str) and email.casefold() == admin_email:
-        update["$set"]["tier"] = "admin"
-    db().accounts.update_one({"_id": user}, update, upsert=True)
-    erasure.restore_billing(user)
-    token = secrets.token_urlsafe(48)
-    db().sessions.insert_one({"_id": hash_value(token), "owner": user,
-                              "expires": now() + timedelta(days=30)})
-    return {"token": token}
-
-
-class DeleteAccount(AppleLogin):
-    authorization_code: str = Field(default="", max_length=4096)
-
-
-@app.delete("/v1/account")
-def delete_account(body: DeleteAccount, user=Depends(restricted_owner)):
-    if not user.startswith("apple:") or "apple:" + verify_identity(body)["sub"] != user:
-        raise HTTPException(403, "Confirm deletion with the Apple Account that owns these dubs.")
-    stamp = now()
-    try:
-        erasure_journal.record(user, stamp)
-    except (OSError, subprocess.SubprocessError):
-        logging.error("Could not persist the account deletion receipt")
-        raise HTTPException(503, "Your account deletion could not start. Please try again shortly.")
-    db().account_deletions.update_one({"_id": user}, {"$setOnInsert": {"created": stamp}}, upsert=True)
-    # The durable marker denies access immediately; maintenance retries a partial cleanup.
-    state = "deleted"
-    try:
-        erasure.erase(user)
-    except Exception:
-        logging.exception("Account deletion is pending a cleanup retry")
-        state = "pending"
-    return {"state": state, "apple_revoked": erasure.revoke_apple(body.authorization_code, user, apple_keys)}
-
-
-@app.delete("/v1/session", status_code=204)
-def logout(authorization: str = Header(), user=Depends(restricted_owner)):
-    # The review key is a reusable, operator-provisioned credential until expiry or revocation.
-    if user != BETA_REVIEWER:
-        db().sessions.delete_one({"_id": hash_value(authorization.split(" ", 1)[1]), "owner": user})
-    db().playback.delete_many({"owner": user})
-
-
 class Submission(BaseModel):
-    url: str = Field(max_length=2048)
-    request_id: UUID
+    url: str | None = Field(default=None, min_length=1, max_length=2048)
+    source_id: str | None = Field(default=None, min_length=24, max_length=24)
+    request_id: UUID = Field(default_factory=uuid4)
     target_language: str = Field(default="en", min_length=2, max_length=2)
+    quality: Literal["best", "fast"] = "best"
 
     model_config = {"extra": "forbid"}
 
@@ -646,7 +292,7 @@ def summary(job, before=None):
         before = db().jobs.count_documents({"state": "queued", "deleted": {"$ne": True}, **ahead})
     return dict(id=job["_id"], url=job["url"], state=job["state"], stage=job["stage"], created=job["created"],
                 progress=job.get("progress"), estimated_finish=job.get("estimated_finish") if job["state"]=="running" else None,
-                last_requested=job.get("last_requested"), started=job.get("started"), finished=job.get("finished"), ahead=before, lane="premium" if job.get("priority") else "free", error=job.get("error"),
+                last_requested=job.get("last_requested"), started=job.get("started"), finished=job.get("finished"), ahead=before, lane="standard", error=job.get("error"),
                 recovery_count=job.get("recovery_count", 0),
                 recovery_switched_server=bool(job.get("state") == "running" and job.get("recovery_from_node")
                     and job.get("fleet_slot") and job["fleet_slot"].rsplit(":", 1)[0] != job["recovery_from_node"]),
@@ -654,196 +300,82 @@ def summary(job, before=None):
                 title=job.get("title"), author=job.get("author"), has_poster=job.get("has_poster", False),
                 available_on_server=media_available(job), cache_expires=job.get("media_expires"),
                 source_id=str(job["source_file"]) if job.get("source_file") else None, trimmed=job.get("trimmed",False),
-                voice_mode=job.get("voice_mode"), narrator_engine=job.get("narrator_engine"), match_engine=job.get("match_engine"),
+                voice_mode=job.get("voice_mode"), match_engine=job.get("match_engine"),
+                quality=job.get("render_quality"), quality_requested=job.get("quality_requested"),
+                quality_fallback=job.get("quality_fallback"),
                 render_quality=job.get("render_quality"), lab_mode=job.get("lab_mode"), lab_runtime=job.get("lab_runtime"), voice_batch=job.get("voice_batch"), target_language=job.get("target_language", "en"), source_language=job.get("source_language"), first_caption=job.get("first_caption"))
-
-
-def enqueue_render(job, plan, limit):
-    """Admit new work only with server-allocated funding. Unique keys reserve it at insert."""
-    if job["day"] != now().date().isoformat():
-        raise HTTPException(409, "Your daily allowance reset. Review this dub again.")
-    if "quoted_seconds" in job:
-        sources.check_duration(job["quoted_seconds"])
-    if job.get("url", "").startswith("upload:"):
-        if not job.get("voice_mode") or not job.get("source_file"):
-            raise HTTPException(428, "Choose a voice and confirm the video before rendering.")
-        voice = minutes.voice_policy(job["url"], [job["target_language"]], job["voice_mode"],
-                                     job.get("voice_consent"), job.get("consent_reference"),
-                                     job.get("narrator_engine"), job["owner"], job.get("match_engine"))
-        if "voice_consent" in voice and (job.get("voice_consent_version") != voice["voice_consent_version"]
-                                       or not job.get("voice_consented_at")):
-            raise HTTPException(428, "Review the voice permission before rendering.")
-        if limit and db().jobs.count_documents({"owner": job["owner"], "day": job["day"], "state": "failed"},
-                                               limit=limit * 2) >= limit * 2:
-            raise HTTPException(429, "Too many failed renders today. Try again after midnight UTC.")
-    if plan != "admin":
-        slot = job.get("slot")
-        daily = type(slot) is int and 0 <= slot < limit
-        if minutes.enabled():
-            seconds = job.get("quoted_seconds")
-            if not job.get("source_file") or seconds is None:
-                raise HTTPException(428, "Review the duration and cost before starting a dub.")
-            units = job.get("minute_units", [])
-            funded = (daily and seconds <= 60 and not units) or (
-                slot is None and len(set(units)) == len(units) == seconds
-            )
-        else:
-            funded = daily or bool(job.get("extra_ticket"))
-        if not funded:
-            raise HTTPException(402, "There is not enough time in your balance.")
-    ticket = notify(preparing=True)
-    if not ticket:
-        raise HTTPException(503, "The render queue is temporarily unavailable. Try again shortly.")
-    job = dict(job)  # A rejected slot may be retried with different funding.
-    if job["owner"].startswith("apple:") and plan != "admin":
-        if plan == "free" and limit == LIMITS["free"] and "slot" in job:
-            job["launch_free_slot"] = job["slot"]
-        if job.get("priority"):
-            job.update(launch_metrics.priority_entry(job, now()))
-    if not admit_job(job):
-        raise HTTPException(403, "This account is suspended.")
-    notify(ticket=ticket)
-
-
-def admit_job(job):
-    if uses_postgres():
-        return db().admit_job(job)
-    user = job["owner"]
-    suspended = {"_id": user, "banned": True}
-    if user.startswith("apple:") and db().accounts.find_one(suspended, {"_id": 1}):
-        return False
-    db().jobs.insert_one(job)
-    if user.startswith("apple:") and db().accounts.find_one(suspended, {"_id": 1}):
-        console.cancel_pending(user)
-        return False
-    return True
 
 
 @app.post("/v1/jobs")
 def submit(body: Submission, user=Depends(owner)):
     limit_writes(user, "submit", 90)
-    url = canonical_url(body.url)
-    target = body.target_language
-    quality = default_render_quality()
-    if target not in outputs(os.getenv("REELDUB_OUTPUT_PROFILE", "light")):
-        raise HTTPException(422, "This server does not support the selected output language.")
-    target_filter = {"$in": ["en", None]} if target == "en" else target
-    key = {"owner": user, "request_id": str(body.request_id)}
-    request_id = key["request_id"]
+    if (body.url is None) == (body.source_id is None):
+        raise HTTPException(422, "Provide one Reel URL or uploaded source.")
+    url = canonical_url(body.url) if body.url is not None else None
+    target, requested = body.target_language, body.quality
+    languages = quality_languages()
+    if target not in languages["best"]:
+        raise HTTPException(422, "Neither speaker-matching engine supports that output language.")
+
+    request_id = str(body.request_id)
     def prior_request():
         previous = db().jobs.find_one({"owner": user, "$or": [
             {"request_id": request_id}, {"request_keys": request_id}]}, {"poster": 0})
         if previous:
             if previous.get("deleted"):
-                raise HTTPException(410, "This dub was deleted.")
-            if previous.get("lab_mode") or previous["url"] != url or previous.get("target_language", "en") != target:
-                raise HTTPException(409, "This request was already used for another Reel.")
+                raise HTTPException(410, "This dub was removed from the library.")
+            same_source = previous["url"] == url if url else str(previous.get("source_file")) == body.source_id
+            if (not same_source or previous.get("target_language", "en") != target
+                    or previous.get("quality_requested") != requested):
+                raise HTTPException(409, "This request was already used for a different dub.")
             return summary(previous)
 
     if previous := prior_request():
         return previous
-    plan = tier(user)
+    source = sources.get(user, body.source_id) if body.source_id else None
+    identity = source["identity"] if source else url
+    effective = requested
+    fallback = None
+    if requested == "fast" and target not in languages["fast"]:
+        effective = "best"
+        fallback = ("Kitten supports English output. Using Best for this language." if target != "en"
+                    else "Kitten is unavailable on this server. Using Best.")
+    engine = KITTEN_MATCH if effective == "fast" else None
     stamp = now()
-    cache_key = {"lab_mode": {"$exists": False}, "render_quality": quality,
-                 "trimmed": {"$ne": True}, "target_language": target_filter, **live_media_query(stamp, include_cache=True),
-                 "$and": [{"$or": [{"deleted": {"$ne": True}}, {"cache_retained": True}]}]}
-    # A measured overlength Reel stays ineligible in every language during the cache window.
-    # Reuse the existing cache lookup so a retry needs neither another queue slot nor another download.
-    recent_rejection = {"state": "failed", "error": TOO_LONG, "finished": {"$gt": stamp - MEDIA_WINDOW},
-                        "deleted": {"$ne": True}}
-    candidate = db().jobs.find_one({"owner": user, "url": url, "$or": [cache_key, recent_rejection]},
-                                   {"source_seconds": 1, "state": 1}, sort=[("created", -1)])
-    if candidate and candidate["state"] == "failed":
-        raise HTTPException(422, TOO_LONG)
-    if candidate:
-        duration = candidate.get("source_seconds")
-        if duration is None:
-            # Earlier builds stored only output length. Inspect the original once before admitting a new request.
-            duration = sources.prepare_reel(user, url, daily=True)["seconds"]
-        sources.check_duration(duration)
-        try:
-            cached = db().jobs.find_one_and_update(
-                {**cache_key, "_id": candidate["_id"], "owner": user, "url": url},
-                [{"$unset": ["deleted", "cache_retained"]}, {"$set": {"source_seconds": duration, "last_requested": stamp,
-                 "cache_hits": cache_hit_count(request_id), "media_expires": renew_media(stamp), "request_keys": {
-                    "$setUnion": [{"$ifNull": ["$request_keys", []]}, [request_id]]}}}],
-                projection={"poster": 0}, return_document=ReturnDocument.AFTER)
-        except DuplicateKeyError:
-            if previous := prior_request():
-                return previous
-            raise
+    # Include actual and requested quality. A newly available Kitten worker must
+    # not reuse a Qwen fallback when someone requests Fast again.
+    cache = {"owner": user, "url": identity, "target_language": target, "voice_mode": "match",
+             "quality_requested": requested, "render_quality": effective, "match_engine": engine,
+             **live_media_query(stamp, include_cache=True),
+             "$and": [{"$or": [{"deleted": {"$ne": True}}, {"cache_retained": True}]}]}
+    try:
+        cached = db().jobs.find_one_and_update(cache,
+            [{"$unset": ["deleted", "cache_retained"]}, {"$set": {"last_requested": stamp,
+              "cache_hits": cache_hit_count(request_id), "media_expires": renew_media(stamp), "request_keys": {
+                  "$setUnion": [{"$ifNull": ["$request_keys", []]}, [request_id]]}}}],
+            sort=[("created", -1)], projection={"poster": 0}, return_document=ReturnDocument.AFTER)
         if cached:
             return summary(cached)
-    if minutes.enabled() and plan != "admin":
-        raise HTTPException(428,"Review the duration and cost in the latest ReelDub app before starting a new dub.")
-    limit = daily_limit(user, plan)
-    if limit is not None:
-        failed = db().jobs.count_documents({"owner": user, "day": stamp.date().isoformat(), "state": "failed"},
-                                           limit=limit * 2)
-        if failed >= limit * 2:
-            raise HTTPException(429, "Too many failed renders today. Try again after midnight UTC.")
-    job = dict(_id=str(uuid4()), **key, request_keys=[request_id], url=url, target_language=target, state="queued", stage="Queued", created=stamp,
-               priority=int(plan != "free"), queue_seq=next_position(), day=stamp.date().isoformat(), attempt=0)
-    if quality:
-        job["render_quality"] = quality
-    # The quota slot and job share one document. Unique indexes serialize concurrent submissions.
-    occupied = set(db().jobs.distinct("slot", {"owner": user, "day": job["day"]})) if limit is not None else set()
-    for slot in range(limit or 1):
-        if slot in occupied:
-            continue
-        if limit is not None:
-            job["slot"] = slot
-        try:
-            enqueue_render(job, plan, limit)
-            return summary(job)
-        except DuplicateKeyError:
-            if previous := prior_request():
-                return previous
-    job.pop("slot", None)
-    for ticket in store.tickets(user, "extra_ticket"):
-        try:
-            enqueue_render({**job, "extra_ticket": ticket}, plan, limit)
-            return summary(job)
-        except DuplicateKeyError:
-            if previous := prior_request():
-                return previous
-    if previous := prior_request():
-        return previous
-    raise HTTPException(429, "Your daily dubs are used up. They reset at midnight UTC.",
-                        headers={"X-ReelDub-Reason": "daily_allowance_used"})
-
-
-@app.post("/v1/jobs/{job_id}/skip")
-def skip(job_id: str, user=Depends(owner)):
-    limit_writes(user, "skip", 30)
-    job = owned(job_id, user)
-    if job.get("priority") or job.get("recovery_rank"):
-        return summary(job)
-    if job["state"] != "queued":
-        raise HTTPException(409, "This dub has already left the queue.")
-    if not db().jobs.find_one({"state": "queued", "priority": 0, "recovery_rank": {"$ne": 1}, "deleted": {"$ne": True}, **(
-            {"$or": [{"queue_seq": None}, {"queue_seq": {"$lt": job["queue_seq"]}}]} if "queue_seq" in job else
-            {"queue_seq": None, "$or": [{"created": {"$lt": job["created"]}},
-              {"created": job["created"], "_id": {"$lt": job["_id"]}}]})}, {"_id": 1}):
-        raise HTTPException(409, "You are already first in the standard line. Your skip was saved.")
-    for ticket in store.tickets(user, "skip_ticket"):
-        try:
-            entry = launch_metrics.priority_entry(job, now()) if user.startswith("apple:") and not console.permitted(user) else {}
-            promoted = db().jobs.find_one_and_update(
-                {"_id": job_id, "owner": user, "state": "queued", "priority": 0, "recovery_rank": {"$ne": 1}},
-                {"$set": {"priority": 1, "queue_seq": next_position(), "skip_ticket": ticket, **entry}},
-                projection={"poster": 0}, return_document=ReturnDocument.AFTER)
-        except DuplicateKeyError:
-            continue
-        if promoted:
-            return summary(promoted)
-        break
-    job = owned(job_id, user)
-    if job.get("priority") or job.get("recovery_rank"):
-        return summary(job)
-    if job["state"] != "queued":
-        raise HTTPException(409, "This dub has already left the queue.")
-    raise HTTPException(409, "No queue skips available.")
+        job = dict(_id=str(uuid4()), owner=user, request_id=request_id, request_keys=[request_id],
+                   url=identity, target_language=target, voice_mode="match", quality_requested=requested,
+                   render_quality=effective, state="queued", stage="Queued", created=stamp,
+                   priority=0, queue_seq=next_position(), attempt=0)
+        if engine:
+            job["match_engine"] = engine
+        if fallback:
+            job["quality_fallback"] = fallback
+        if source:
+            job.update(source_file=source["_id"], quoted_seconds=source["seconds"], title=source["title"])
+        ticket = notify(preparing=True)
+        if not ticket:
+            raise HTTPException(503, "The render queue is temporarily unavailable. Try again shortly.")
+        db().jobs.insert_one(job)
+    except DuplicateKeyError:
+        if previous := prior_request():
+            return previous
+        raise
+    notify(ticket=ticket)
+    return summary(job)
 
 
 def owned(job_id, user, *, poster=False):
@@ -926,8 +458,8 @@ def delete_dub(job_id: str, user=Depends(owner),
     job = db().jobs.find_one_and_update(
         {**key, "deleted": {"$ne": True}, "state": {"$in": ["done", "failed"]},
          "$or": [{"artifact": {"$exists": False}}, {"media_expired": True}, {"media_expires": {"$lte": stamp}}]},
-        [{"$project": {"owner": 1, "request_id": 1, "request_keys": 1, "state": 1, "day": 1, "slot": 1, "extra_ticket": 1, "skip_ticket": 1, "minute_grants": 1, "minute_units": 1,
-                       "artifact": 1, "deleted": {"$literal": True}, **launch_metrics.TOMBSTONE_FIELDS}}],
+        [{"$project": {"owner": 1, "request_id": 1, "request_keys": 1, "state": 1,
+                       "artifact": 1, "deleted": {"$literal": True}}}],
         return_document=ReturnDocument.AFTER)
     if not job:
         current = owned(job_id, user)
@@ -1017,7 +549,7 @@ def playback_grant(digest, job_id, stamp):
     if uses_postgres():
         return db().playback_grant(digest, job_id, stamp)
     grant = db().playback.find_one({"_id": digest, "job": job_id, "expires": {"$gt": stamp}})
-    if grant and db().accounts.find_one({"_id": grant["owner"], "banned": True}, {"_id": 1}):
+    if grant and grant.get("owner") != "self-host":
         return None
     return grant
 
@@ -1085,6 +617,3 @@ def report(job_id: str, issue: Issue, user=Depends(owner)):
     if not result.matched_count:
         raise HTTPException(404, "Reel not found.")
     return {"reported": True}
-
-
-app.include_router(console.router(owner))
