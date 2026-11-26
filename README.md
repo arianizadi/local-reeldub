@@ -74,7 +74,9 @@ In Instagram, tap **Share → Share to… → ReelDub**. In YouTube, Safari and 
 
 Share a video and select the output language as usual. ReelDub also looks for writing in the picture, including messages, signs and titles. When it can read and translate a passage, it blurs the original and places the translation in the same area for the time it appears. This text is part of the exported picture. The captions switch controls the spoken dialogue separately.
 
-The worker uses a local PP-OCRv5 text detector and Arabic-script recognizer alongside Tesseract, then translates detected passages with Index. Persian and English can appear in the same shot, even when the spoken language is different. The worker keeps same-language labels, and can translate a silent video containing readable foreign text. Small, fleeting, stylized or moving writing can be missed. Share an older video again to render it with on-screen translation.
+ReelDub generates the dialogue captions locally from the same script as the dubbed voice. It checks for speech before transcribing and filters subtitle bylines that the speech or translation model can invent during quiet passages.
+
+The worker detects writing locally, reads each region with multilingual PP-OCRv6, the Arabic-script PP-OCRv5 recognizer or Tesseract, and translates detected passages with Index. Signs, captions and chat messages can be in a different language from the soundtrack. The worker keeps same-language labels, and can translate a silent video containing readable foreign text. Small, fleeting, stylized or moving writing can be missed. Share an older video again to render it with on-screen translation.
 
 ## What runs where?
 
@@ -104,7 +106,7 @@ ReelDub’s application, web player, iOS client and deployment code are [MIT lic
 
 | Component | Upstream |
 | --- | --- |
-| On-screen text | [PP-OCRv5 detector](https://huggingface.co/PaddlePaddle/PP-OCRv5_mobile_det), [Arabic-script recognizer](https://huggingface.co/PaddlePaddle/arabic_PP-OCRv5_mobile_rec) and [Tesseract](https://github.com/tesseract-ocr/tesseract) |
+| On-screen text | [PP-OCRv5 detector](https://huggingface.co/PaddlePaddle/PP-OCRv5_mobile_det), [multilingual recognizer](https://huggingface.co/PaddlePaddle/PP-OCRv6_small_rec), [Arabic-script recognizer](https://huggingface.co/PaddlePaddle/arabic_PP-OCRv5_mobile_rec) and [Tesseract](https://github.com/tesseract-ocr/tesseract) |
 | Speech recognition | [Whisper](https://github.com/openai/whisper) and [faster-whisper](https://github.com/SYSTRAN/faster-whisper) |
 | Local translation | [Index-Translate-9B](https://huggingface.co/IndexTeam/Index-Translate-9B) and [llama.cpp](https://github.com/ggml-org/llama.cpp) |
 | Best voice | [Qwen3-TTS Base, Apache 2.0](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-Base) |

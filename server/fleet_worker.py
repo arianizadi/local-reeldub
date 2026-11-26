@@ -17,7 +17,7 @@ from psycopg import OperationalError
 import requests
 
 from .gpu import lock_dir, pipeline_slot
-from .source import MAX_SOURCE_SECONDS, TOO_LONG
+from .source import MAX_SOURCE_SECONDS, SCREEN_TEXT_VERSION, TOO_LONG
 from .worker import LeaseLost, process
 from .upload_voice import VOICE_ERRORS, kitten_match_ready
 
@@ -76,7 +76,7 @@ class Coordinator:
 
     def claim(self, slot, request_id):
         sent = time.monotonic()
-        body = {"request_id": request_id, "upload_voice_protocol": 1, "match_quality_protocol": 1, "screen_text_protocol": 1,
+        body = {"request_id": request_id, "upload_voice_protocol": 1, "match_quality_protocol": 1, "screen_text_protocol": SCREEN_TEXT_VERSION,
                 "caption_filter_protocol": 1}
         if kitten_match_ready(require_service=True):
             body["kitten_match"] = True

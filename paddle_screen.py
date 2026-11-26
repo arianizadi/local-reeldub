@@ -1,4 +1,4 @@
-"""Optional persistent, CPU-only PP-OCRv5 subprocess for Persian and other Arabic-script text."""
+"""Persistent CPU text detector with local multilingual and Arabic-script recognition."""
 from contextlib import contextmanager
 import hashlib
 import json
@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import unicodedata
 
 import numpy as np
 
@@ -23,7 +24,12 @@ MODELS = {
         "21368419e6c016c31db55d316d59e11c128e1913e6e6fe10287084710043d3a6",
         "d43832804d89c0e18d59f8446a3babd0ef60c44bc335efddac3176caf71d50af",
         "4b4271fd1dd89a40b2056e1a42e58de7c0df2fdcf1a97ca9a8916d7ec45f9143")),
+    "general": ("PP-OCRv6_small_rec", "bd619643acac4b9650c040234da8d944476ee3f1", (
+        "ab078671bb49f06228eadccd34f1bb501e157f7a047095ffb943ba81512c77d1",
+        "f0bf53c853937a917affdd74467472167727f8ab0f0f7bded01c4a16c27e46e6",
+        "406e1e689c9a7fbb04178007a3fe10cf852afe7bf8bb3bc6dbb9d532b13bd907")),
 }
+ENGINE_NAMES = {"arabic": "PP-OCRv5 Arabic", "general": "PP-OCRv6 multilingual"}
 MAX_PIXELS = 8_000_000
 MAX_LINES = 128
 
@@ -51,7 +57,28 @@ def prepare():
                 partial.unlink(missing_ok=True)
 
 
-def predict(image, detector, recognizer):
+def best_reading(choices):
+    # A specialist can confidently transliterate a different script. Prefer an
+    # in-alphabet reading, then compare confidence when both look credible.
+    arabic = choices.get("arabic")
+    general = choices.get("general")
+    if not general or not arabic:
+        return general or arabic
+    text = arabic["text"]
+    letters = [c for c in text if c.isalpha()]
+    native = letters and sum(unicodedata.name(c, "").startswith("ARABIC") for c in letters) >= .8 * len(letters)
+    if native and arabic["confidence"] >= .80 and arabic["confidence"] + .06 >= general["confidence"]:
+        return arabic
+    if general["text"].strip() and general["confidence"] >= .75:
+        return general
+    return max((arabic, general), key=lambda r: r["confidence"] if r["text"].strip() else 0)
+
+
+def model_files(name):
+    return all((RUNTIME / "models" / name / filename).is_file() for filename in FILES)
+
+
+def predict(image, detector, recognizers):
     import cv2
     height, width = image.shape[:2]
     if image.ndim == 2:
@@ -77,8 +104,20 @@ def predict(image, detector, recognizer):
                       float(quad[:,0].max() / width), float(quad[:,1].max() / height)])
     if not crops:
         return []
-    return [{"box": box, "text": str(result["rec_text"])[:512], "confidence": float(result["rec_score"])}
-            for box, result in zip(boxes, recognizer.predict(crops, batch_size=8))]
+    choices = [{} for _ in crops]
+    for name, recognizer in list(recognizers.items()):
+        try:
+            results = list(recognizer.predict(crops, batch_size=8))
+            if len(results) != len(crops):
+                raise ValueError("Incomplete OCR result")
+            for group, result in zip(choices, results):
+                group[name] = {"text": str(result["rec_text"]).strip()[:512],
+                               "confidence": float(result["rec_score"])}
+        except (RuntimeError, ValueError, OSError):
+            del recognizers[name]
+    if not recognizers:
+        raise RuntimeError("No prepared text recognizer could run.")
+    return [dict(best_reading(group), box=box) for box, group in zip(boxes, choices)]
 
 
 def serve():
@@ -94,9 +133,17 @@ def serve():
     root = RUNTIME / "models"
     detector = TextDetection(model_name=MODELS["det"][0], model_dir=str(root / "det"),
                              enable_mkldnn=False, **options)
-    recognizer = TextRecognition(model_name=MODELS["arabic"][0], model_dir=str(root / "arabic"),
-                                 enable_mkldnn=True, **options)
-    writer.write("true\n")
+    recognizers = {}
+    for name in ENGINE_NAMES:
+        if model_files(name):
+            try:
+                recognizers[name] = TextRecognition(model_name=MODELS[name][0], model_dir=str(root / name),
+                                                     enable_mkldnn=name == "arabic", **options)
+            except (RuntimeError, ValueError, OSError):
+                continue
+    if not recognizers:
+        raise RuntimeError("Install at least one supported text recognizer.")
+    writer.write(json.dumps(list(recognizers)) + "\n")
     raw = sys.stdin.buffer
     while header := raw.readline(80):
         height, width, channels = json.loads(header)
@@ -105,13 +152,16 @@ def serve():
         data = raw.read(height * width * channels)
         shape = (height, width) if channels == 1 else (height, width, channels)
         image = np.frombuffer(data, dtype=np.uint8).reshape(shape)
-        writer.write(json.dumps(predict(image, detector, recognizer), ensure_ascii=False, allow_nan=False) + "\n")
+        results = predict(image, detector, recognizers)
+        writer.write(json.dumps([list(recognizers), results], ensure_ascii=False, allow_nan=False) + "\n")
 
 
 class Reader:
-    def __init__(self):
+    def __init__(self, scratch):
         self.process = None
         self.failed = False
+        self.scratch = scratch
+        self.engines = set()
 
     def close(self):
         if self.process:
@@ -144,10 +194,10 @@ class Reader:
                                         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                                         cwd=scratch, env=env, bufsize=0)
         os.set_blocking(self.process.stdin.fileno(), False)
-        if self.reply(60) is not True:
+        if not self.reply(60):
             raise ValueError("Screen OCR could not start")
 
-    def frame(self, image, scratch):
+    def __call__(self, image):
         if self.failed:
             return None
         if image.dtype != np.uint8 or image.ndim not in (2,3) or (image.ndim == 3 and image.shape[2] != 3):
@@ -157,7 +207,7 @@ class Reader:
             return None
         try:
             if self.process is None:
-                self.start(scratch)
+                self.start(self.scratch)
             fd = self.process.stdin.fileno()
             deadline = time.monotonic() + 12
             header = json.dumps([height, width, 1 if image.ndim == 2 else 3]).encode() + b"\n"
@@ -166,25 +216,26 @@ class Reader:
                     if not select.select([], [fd], [], max(0, deadline - time.monotonic()))[1]:
                         raise TimeoutError("Screen OCR frame write timed out")
                     buf = buf[os.write(fd, buf):]
-            return self.reply(35)
+            names, results = self.reply(35)
+            self.engines = {ENGINE_NAMES[n] for n in names}
+            return results
         except (EOFError, OSError, ValueError):
             self.failed = True
             self.close()
-            print("PP-OCRv5 unavailable for this render. Continuing with standard OCR.", file=sys.stderr)
+            print("PaddleOCR unavailable for this render. Continuing with Tesseract.", file=sys.stderr)
             return None
 
 
 @contextmanager
 def paddle_reader(source_language=None):
     """Yield a lazy reader or None. Each job owns and reaps its own CPU process."""
-    if not (RUNTIME / "bin/python").is_file() or not all(
-            (RUNTIME / "models" / name / filename).is_file() for name in MODELS for filename in FILES):
+    if not (RUNTIME / "bin/python").is_file() or not model_files("det") or not any(map(model_files, ENGINE_NAMES)):
         yield None
         return
-    reader = Reader()
     with tempfile.TemporaryDirectory(prefix="reeldub-ocr-") as scratch:
+        reader = Reader(scratch)
         try:
-            yield lambda image: reader.frame(image, scratch)
+            yield reader
         finally:
             reader.close()
 

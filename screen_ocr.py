@@ -68,7 +68,32 @@ def overlap(a, b):
     return common / max(1e-9, area_a + area_b - common)
 
 
-def parse_words(tsv, width, height):
+def same_region(a, b):
+    if overlap(a, b) >= .28:
+        return True
+    # A sparse recognizer may return only the last word of a detected line.
+    # Drop a fully contained fragment while keeping vertically adjacent rows.
+    height_a, height_b = a[3] - a[1], b[3] - b[1]
+    common_height = min(a[3], b[3]) - max(a[1], b[1])
+    common_width = min(a[2], b[2]) - max(a[0], b[0])
+    return (common_height >= .75 * min(height_a, height_b)
+            and common_height >= .43 * max(height_a, height_b)
+            and common_width >= .85 * min(a[2] - a[0], b[2] - b[0]))
+
+
+def word_text(words):
+    parts = [words[0][0]]
+    for previous, current in zip(words, words[1:]):
+        gap = current[1][0] - previous[1][2]
+        # Tesseract occasionally emits overlapping "word" boxes for adjacent
+        # Korean syllables in one word. Preserve word spaces where the ink separates.
+        contiguous = (script(previous[0]) == script(current[0]) == "HANGUL"
+                      and gap <= .10 * (current[1][2] - current[1][0]) / max(1, len(current[0])))
+        parts.extend(("" if contiguous else " ", current[0]))
+    return "".join(parts)
+
+
+def parse_words(tsv, width, height, *, sparse=True):
     groups = defaultdict(list)
     for line in tsv.splitlines()[1:]:
         fields = line.split("\t", 11)
@@ -91,11 +116,11 @@ def parse_words(tsv, width, height):
             words.pop()
         if not words:
             continue
-        text = " ".join(item[0] for item in words)
+        text = word_text(words)
         alphabet = script(text)
         if alphabet and len(words) > 1:
             words = [word for word in words if len(key(word[0])) > 1 or script(word[0]) in ("", alphabet)]
-            text = " ".join(item[0] for item in words)
+            text = word_text(words)
         letters = sum(c.isalpha() for c in text)
         if len(set(key(text))) <= 1 or not alphabet or letters < (2 if alphabet == "CJK" else 3) or text.startswith(("@", "#")) or "://" in text:
             continue
@@ -106,7 +131,7 @@ def parse_words(tsv, width, height):
         box = words[0][1]
         for word in words[1:]:
             box = union(box, word[1])
-        if box[3] - box[1] < .85:
+        if not sparse or box[3] - box[1] < .85:
             result.append(Line(text, box, confidence))
     return result
 
@@ -193,10 +218,26 @@ def modern_rows(results):
     for result in results or ():
         text = result["text"].strip()
         confidence = result["confidence"] * 100
-        if (confidence >= 85 and script(text) in {"ARABIC", "LATIN"} and len(set(key(text))) >= 2
+        if (confidence >= 85 and script(text) in {"ARABIC", "LATIN", "CJK"} and len(set(key(text))) >= 2
                 and len(key(text)) >= 2 and not text.startswith(("@", "#"))):
             trusted.append(Line(text, tuple(result["box"]), confidence, verified=confidence >= 95))
     return trusted
+
+
+def reread_detected_line(gray, box, languages):
+    """Retry a detector's unreadable row using the installed Tesseract scripts."""
+    height, width = gray.shape
+    x0, y0, x1, y1 = box
+    crop = gray[max(0, int(y0*height)-2):min(height, round(y1*height)+3),
+                max(0, int(x0*width)-2):min(width, round(x1*width)+3)]
+    if min(crop.shape) < 10 or crop.shape[1] < .025 * width:
+        return None
+    if crop.shape[0] < 65:
+        crop = crop.repeat(2, axis=0).repeat(2, axis=1)
+    rows = parse_words(transcribe(crop, languages, 7), crop.shape[1], crop.shape[0], sparse=False)
+    if len(rows) == 1 and rows[0].confidence >= 89 and len(key(rows[0].text)) >= 4:
+        return Line(rows[0].text, tuple(box), rows[0].confidence)
+    return None
 
 
 def read_frame(gray, languages, reader=None, broad=True, engines=None):
@@ -204,11 +245,11 @@ def read_frame(gray, languages, reader=None, broad=True, engines=None):
     modern = reader(gray) if reader is not None else None
     trusted = modern_rows(modern)
     if modern is not None and engines is not None:
-        engines.add("PP-OCRv5 Arabic")
+        engines.update(getattr(reader, "engines", ()) or ("PaddleOCR",))
     if not broad and modern is not None:
         # The detector sees all scripts. Run the general reader when it finds
         # text which the specialized recognizer cannot identify confidently.
-        if all(float(item["confidence"]) >= .85 and script(item["text"]) in {"LATIN", "ARABIC", ""}
+        if all(float(item["confidence"]) >= .85 and script(item["text"]) in {"LATIN", "ARABIC", "CJK"}
                for item in modern):
             return paragraphs(trusted)
     lines = []
@@ -223,7 +264,21 @@ def read_frame(gray, languages, reader=None, broad=True, engines=None):
             chosen.append(candidate)
         elif script(old.text) == script(candidate.text):
             old.box = union(old.box, candidate.box)
-    remaining = [line for line in chosen if not any(overlap(line.box, best.box) >= .28 for best in trusted)]
+    for item in modern or ():
+        box = item["box"]
+        if any(same_region(line.box, box) for line in trusted):
+            continue
+        # A full image may lose words behind a moving background. When the
+        # sparse reader sees a different script, retry the complete detected row.
+        nearby = [line for line in chosen if same_region(line.box, box)]
+        families = {script(line.text) for line in nearby}
+        extra = {"CYRILLIC": ("rus", "ukr"), "HANGUL": ("kor",)}
+        allowed = [name for name in languages.split("+") if any(name in extra.get(f, ()) for f in families)]
+        if allowed:
+            reread = reread_detected_line(gray, box, "+".join(allowed))
+            if reread and script(reread.text) in families:
+                trusted.append(reread)
+    remaining = [line for line in chosen if not any(same_region(line.box, best.box) for best in trusted)]
     # Keep the high-accuracy recognizer's rows intact. Sparse text from a
     # separate detector must not become part of that same translated sentence.
     blocks = paragraphs(remaining)

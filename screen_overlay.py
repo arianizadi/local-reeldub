@@ -128,6 +128,12 @@ def layout(text, box, width, height, column):
     return (left + col_left, top, right + col_left, bottom), size, rows
 
 
+def ass_literal(value):
+    # libass supports escaped literal braces. An invisible word joiner after a
+    # literal backslash prevents user text such as C:\new from introducing a line break.
+    return value.replace("\\", "\\\u2060").replace("{", r"\{").replace("}", r"\}")
+
+
 def rectangle(box, color, alpha):
     x1, y1, x2, y2 = box
     w, h = x2 - x1, y2 - y1
@@ -142,7 +148,6 @@ def screen_filter(tracks, folder, width, height, target):
     for track, column in zip(tracks, label_columns(tracks, width)):
         # No source/translated text goes into a filter expression or an ASS override block.
         text = " ".join((track.get("translation") or "").split())
-        text = text.translate(str.maketrans({"\\": "＼", "{": "｛", "}": "｝"}))
         if not text or text == " ".join(track.get("text", "").split()):
             continue
         left, top, right, bottom = track["box"]
@@ -174,7 +179,7 @@ def screen_filter(tracks, folder, width, height, target):
         border = max(.45, min(1.3, size * .024))
         placement = (rf"{{\an5\pos({(x1 + x2)//2},{(y1 + y2)//2})\fs{size}\1c&H{ink}&"
                      rf"\bord{border:.2f}\3c&H{outline}&\3a&H70&\clip({x1},{y1},{x2},{y2})}}")
-        labels.append("Dialogue: 1," + interval + placement + r"\N".join(rows))
+        labels.append("Dialogue: 1," + interval + placement + r"\N".join(ass_literal(row) for row in rows))
     if not masks:
         return None
     (folder / "screen-mask.ass").write_text(header + "\n".join(masks) + "\n", encoding="utf-8")
@@ -186,6 +191,8 @@ def screen_filter(tracks, folder, width, height, target):
     sigma = max(1.4, min(5., tallest * .024))
     return (f"[0:v:0]split=3[base][blur][matte];[blur]scale={max(2,width//4)}:{max(2,height//4)}:flags=area,"
             f"median=radius={radius},gblur=sigma={sigma:.2f},scale={width}:{height}:flags=bilinear[soft];"
-            "[matte]format=gray,lut=y=0,ass=screen-mask.ass,format=gray[mask];"
+            # libass/FFmpeg builds differ on limited-range white. Explicit alpha endpoints
+            # prevent even faint original glyphs from leaking back into the repaired patch.
+            "[matte]format=gray,lut=y=0,ass=screen-mask.ass,format=gray,lut=y='if(gt(val,128),255,0)'[mask];"
             "[soft][mask]alphamerge[cover];[base][cover]overlay,ass=screen-labels.ass,"
             "pad=ceil(iw/2)*2:ceil(ih/2)*2[screen]")

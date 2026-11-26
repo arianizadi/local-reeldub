@@ -9,9 +9,48 @@ from unittest.mock import patch
 import numpy as np
 
 import screen_ocr as ocr
+from paddle_screen import best_reading, paddle_reader
 
 
 class ScreenWords(unittest.TestCase):
+    def test_models_read_independent_scripts_in_the_same_frame(self):
+        image = np.zeros((100, 200), dtype=np.uint8)
+        candidates = [
+            {"text": "静かな朝の散歩", "box": [.05, .1, .7, .23], "confidence": .99},
+            {"text": "Próxima estación: Málaga", "box": [.04, .5, .94, .6], "confidence": .99},
+        ]
+        tsv = "header\n5\t1\t1\t1\t1\t1\t156\t50\t30\t10\t93\tMalaga\n"
+        with patch.object(ocr, "transcribe", return_value=tsv):
+            rows = ocr.read_frame(image, "eng+jpn", lambda _: candidates)
+        self.assertCountEqual([row.text for row in rows], [item["text"] for item in candidates])
+
+    def test_arabic_head_can_beat_confident_latin_transliteration(self):
+        native = {"text": "مثال", "confidence": .95}
+        latin = {"text": "JLo", "confidence": .92}
+        self.assertEqual(best_reading({"general": latin, "arabic": native}), native)
+        self.assertEqual(best_reading({"general": native}), native)
+        japanese = {"text": "静かな朝", "confidence": .97}
+        self.assertEqual(best_reading({"general": japanese, "arabic": latin}), japanese)
+
+    def test_existing_model_volume_still_exposes_prepared_specialist(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for model in ("det", "arabic"):
+                folder = root / "models" / model
+                folder.mkdir(parents=True)
+                for filename in ("inference.yml", "inference.json", "inference.pdiparams"):
+                    (folder / filename).touch()
+            (root / "bin").mkdir()
+            (root / "bin/python").touch()
+            with patch("paddle_screen.RUNTIME", root), paddle_reader() as reader:
+                self.assertTrue(callable(reader))
+
+    def test_hangul_overlapping_syllables_and_separate_words(self):
+        words = [("바", (.10,.2,.35,.3), 95), ("람", (.20,.2,.29,.3), 95),
+                 ("이", (.29,.2,.35,.3), 96), ("부는", (.40,.2,.56,.3), 96),
+                 ("거리", (.61,.2,.78,.3), 97)]
+        self.assertEqual(ocr.word_text(words), "바람이 부는 거리")
+
     def test_language_selection_is_independent_of_spoken_language(self):
         available = "Languages (4):\neng\nfas\njpn\nrus\n"
         with patch.dict(os.environ, {"REELDUB_OCR_LANGUAGES": ""}), patch("screen_ocr.subprocess.run") as run:

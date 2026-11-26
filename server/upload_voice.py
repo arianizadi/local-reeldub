@@ -49,12 +49,11 @@ def render_mismatch(job, details):
         return "The render engine did not confirm dialogue verification."
     version = details.get("screen_text_version")
     count = details.get("screen_text_count")
-    if job.get("required_screen_text_version") and (
-        version != job["required_screen_text_version"] or type(count) is not int or count < 0
-    ):
+    required_screen = job.get("required_screen_text_version")
+    if required_screen and (type(version) is not int or version < required_screen or type(count) is not int or count < 0):
         return "The render engine did not confirm the on-screen text pass."
     expected = upload_mode(job)
-    if (expected == "match" and details.get("rendered_voice_mode") == "text_only" and version == 1
+    if (expected == "match" and details.get("rendered_voice_mode") == "text_only" and type(version) is int and version >= 1
             and type(count) is int and count > 0 and not details.get("voice_model")):
         return None
     if expected is not None and details.get("rendered_voice_mode") != expected:

@@ -10,7 +10,7 @@ import unittest
 import numpy as np
 
 from render import ff, render
-from screen_overlay import display_size, label_columns, layout, screen_filter
+from screen_overlay import ass_literal, display_size, label_columns, layout, screen_filter
 
 
 class OverlayMaskTests(unittest.TestCase):
@@ -25,6 +25,11 @@ class OverlayMaskTests(unittest.TestCase):
             self.assertGreaterEqual(area[0], column[0])
             self.assertLessEqual(area[2], column[1])
             self.assertEqual(" ".join(rows), text)
+
+    def test_literal_code_and_punctuation_keep_their_glyphs(self):
+        # The joiner is invisible to the reader while preventing an ASS newline command.
+        value = r"｛東口｝, Вход № 2 — {A} C:\New"
+        self.assertEqual(ass_literal(value), "｛東口｝, Вход № 2 — " + "\\{A\\} C:\\" + "\u2060New")
 
     def test_only_confirmed_translations_can_create_masks(self):
         sample = dict(text="WhatsApp", translation="WhatsApp", start=0, end=1, box=[.1, .2, .5, .4])
@@ -54,6 +59,26 @@ class OverlayMuxTests(unittest.TestCase):
     def pts(self, video):
         result = self.probe(video, "-select_streams", "v:0", "-show_entries", "frame=best_effort_timestamp_time")
         return [float(f["best_effort_timestamp_time"]) for f in result["frames"]]
+
+    def test_light_sign_completely_replaces_original_ink(self):
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp)
+            source = folder / "source.mp4"
+            ff("-f", "lavfi", "-i", "color=c=white:s=320x180:r=4:d=1",
+               "-vf", "drawgrid=w=9:h=180:t=2:color=black", "-c:v", "libx264", source)
+            render(source, [], folder, target="ja", screen_tracks=[dict(
+                text="ایستگاه", translation="駅", box=(.04,.15,.94,.83), start=0, end=1, background_luma=245)])
+            def first_frame(file):
+                raw = ff("-i", file, "-frames:v", "1", "-pix_fmt", "gray", "-f", "rawvideo", "pipe:1",
+                         stdout=subprocess.PIPE).stdout
+                return np.frombuffer(raw, np.uint8).reshape(180, 320).astype(float)
+            base, repaired = first_frame(source), first_frame(folder / "finished.mp4")
+            # Linear contrast between original black and white strokes in a repaired area,
+            # well away from the new glyph. Limited-range white masks leave ~6–8% ink.
+            old, new = base[52:110, 35:95], repaired[52:110, 35:95]
+            residual = (new[old > 200].mean() - new[old < 30].mean()) / 255
+            self.assertLess(abs(residual), .025)
+            self.assertLess(np.abs(base[:14] - repaired[:14]).mean(), 3)
 
     def test_rotated_vfr_silent_input_and_timed_local_mask(self):
         with tempfile.TemporaryDirectory() as temp:

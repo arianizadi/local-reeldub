@@ -15,7 +15,7 @@ import gridfs
 from pymongo import ReturnDocument
 from pymongo.errors import ConnectionFailure, ExecutionTimeout, PyMongoError, WTimeoutError
 
-from .source import MAX_SOURCE_SECONDS, SOURCE_ERRORS, TOO_LONG
+from .source import MAX_SOURCE_SECONDS, SCREEN_TEXT_VERSION, SOURCE_ERRORS, TOO_LONG
 from .languages import outputs
 from .upload_voice import (KITTEN_ENGINE, KITTEN_MATCH, VOICE_ERRORS, render_mismatch, kitten_match_ready,
                            kitten_ready, upload_mode, voice_scope)
@@ -58,7 +58,7 @@ def render_error(stage, diagnostic):
 
 def claim(studio=None, fleet_slot=None, fleet_request=None, avoid_recovery_node=None, upload_voices=True,
           kitten_narrator=None, alternatives=None, kitten_match=None, match_qualities=True, allow_best_fallback=True,
-          screen_text=True, caption_filter=True):
+          screen_text=SCREEN_TEXT_VERSION, caption_filter=True):
     database = db()
     stamp = now()
     expired = {"state": "running", "fleet_slot": None, "lease_end": {"$lt": stamp}}
@@ -77,16 +77,17 @@ def claim(studio=None, fleet_slot=None, fleet_request=None, avoid_recovery_node=
         candidate["narrator_engine"] = None
     if kitten_match is None:
         kitten_match = kitten_match_ready(require_service=True)
+    # Apply advertised capabilities to claims and Kitten-to-Best demotions alike.
+    compatible = {"required_screen_text_version": {"$in": [None, *range(1, screen_text + 1)]}}
     if not caption_filter:
-        candidate["required_caption_filter_version"] = None
-    if not screen_text:
-        candidate["required_screen_text_version"] = None
+        compatible["required_caption_filter_version"] = None
+    candidate.update(compatible)
     if not match_qualities:
         candidate["quality_requested"] = None
     if not (studio and upload_voices and kitten_match):
         candidate["match_engine"] = None
         if studio and match_qualities and allow_best_fallback:
-            database.jobs.update_many({"state": "queued", "quality_requested": "fast", "match_engine": KITTEN_MATCH,
+            database.jobs.update_many({**compatible, "state": "queued", "quality_requested": "fast", "match_engine": KITTEN_MATCH,
                                        "deleted": {"$ne": True}},
                                       {"$set": {"render_quality": "best", "quality_fallback":
                                        "The Kitten worker is unavailable. Using Best."}, "$unset": {"match_engine": ""}})
