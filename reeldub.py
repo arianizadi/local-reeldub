@@ -1,12 +1,15 @@
 import argparse
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 import gc
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
+import unicodedata
 from urllib.parse import urlparse
 
 import ctranslate2
@@ -20,7 +23,7 @@ from screen_ocr import detect_tracks
 from server.languages import LANGUAGES
 from server.upload_voice import (KITTEN_MATCH, KITTEN_MATCH_MODEL,
                                  VOICE_ERRORS, kitten_match_ready)
-from server.source import SCREEN_TEXT_VERSION, inspect_video
+from server.source import CAPTION_FILTER_VERSION, SCREEN_TEXT_VERSION, inspect_video
 from server.video_url import video_url
 from server.download import download_reel
 from clean_background import leakage_regions, matching_dialogue, merge_regions, suppress_unresolved
@@ -28,6 +31,66 @@ from render import ff, mix, render, source_input_options, source_time_limit, RAT
 from voices import assign_lines, identify_turns, synthesize, write_references
 
 APP = Path(__file__).resolve().parent
+
+# Keep brief interjections and quiet speech while excluding gaps and non-speech
+# intros. faster-whisper restores word times to the original video clock.
+SPEECH_DECODE = dict(vad_filter=True, vad_parameters=dict(threshold=.35, min_speech_duration_ms=100,
+                     min_silence_duration_ms=600, speech_pad_ms=220), hallucination_silence_threshold=1.0,
+                     word_timestamps=True, condition_on_previous_text=False)
+
+
+def subtitle_credit(text):
+    """Recognize standalone subtitle bylines, including recurring Whisper training artifacts."""
+    text = "".join(c for c in unicodedata.normalize("NFKD", text.casefold()) if not unicodedata.combining(c))
+    # Treat Amara.org as a single token so the domain period isn't a sentence end.
+    text = re.sub(r"amara\s*[.．]\s*org\b", "amaraorg", text)
+    text = re.sub(r"^[\W_]+|[\W_]+$", "", text)
+    if not text or len(text) > 160 or re.search(r"[!?。！？]|[.]\s+[a-z]", text):
+        return False
+    byline = re.match(r"^(?:subtitles?|captions?|closed captioning)\s+"
+                      r"(?:(?:created|provided|made|translated|produced|prepared|contributed)\s+)?by\s+\S", text)
+    if byline:
+        attribution = text[byline.end()-1:]
+        return len(attribution.split()) <= 9 and not re.search(
+            r"\b(?:are|is|was|were|will|can|should|have|has)\b", attribution)
+    if re.fullmatch(r"alt\s*yaz[ıi]\s*[:：-]?\s*m\s*[.]?\s*k", text):
+        return True
+    if "amaraorg" in text:
+        credit = re.search(r"subtit|subtitr|sous.titr|sottotitol|untertitel|legend[aa]|alt\s*yaz|"
+                           r"субтитр|زیرنویس|ترجمة|字幕|자막", text)
+        # An actual discussion of subtitles or the service is still valid speech.
+        return bool(credit and (credit.start() <= 4 or text.startswith(("amaraorg", "由amaraorg", "ترجمة"))))
+    return False
+
+
+def credit_clauses(text):
+    return re.split(r"(?<=[.!?])\s+|(?<=[。！？])", text.strip())
+
+
+def spoken_segments(segments):
+    for segment in segments:
+        clauses = credit_clauses(segment.text)
+        if not any(subtitle_credit(c) for c in clauses):
+            yield segment
+            continue
+        if all(not c or subtitle_credit(c) for c in clauses):
+            continue
+        groups, words = [], []
+        for word in segment.words or []:
+            words.append(word)
+            if word.word.rstrip().endswith((".", "!", "?", "。", "！", "？")):
+                groups.append(words)
+                words = []
+        if words:
+            groups.append(words)
+        for group in groups:
+            text = "".join(w.word for w in group).strip()
+            if text and not subtitle_credit(text):
+                yield replace(segment, start=group[0].start, end=group[-1].end, words=group, text=text)
+        if not groups:
+            kept = " ".join(c for c in clauses if c and not subtitle_credit(c))
+            if kept:
+                yield replace(segment, text=kept)
 
 
 def input_video(value, folder):
@@ -54,20 +117,18 @@ def recognize(audio, model_size, device, language, native, target="en", bed=None
         device = "cuda" if ctranslate2.get_cuda_device_count() else "cpu"
     print(f"Listening with Whisper {model_size} on {device}…", flush=True)
     model = whisper_model(model_size, device)
-    segments, info = model.transcribe(audio, beam_size=beam, language=language, task="transcribe" if native else "translate", word_timestamps=True,
-                                      condition_on_previous_text=False, vad_filter=False)
-    result = list(segments)
+    segments, info = model.transcribe(audio, beam_size=beam, language=language, task="transcribe" if native else "translate",
+                                      **SPEECH_DECODE)
+    result = list(spoken_segments(segments))
     print(f"Source language: {info.language}. Found {len(result)} segments.", flush=True)
     drafts = []
     if native and target == "en" and info.language != "en":
-        translated, _ = model.transcribe(audio, beam_size=beam, language=info.language, task="translate",
-                                         word_timestamps=True, condition_on_previous_text=False,
-                                         vad_filter=False)
-        drafts = list(translated)
+        translated, _ = model.transcribe(audio, beam_size=beam, language=info.language, task="translate", **SPEECH_DECODE)
+        drafts = list(spoken_segments(translated))
     leaks = []
     if bed is not None:
         recognized, _ = model.transcribe(bed, beam_size=beam, language=info.language, task="transcribe" if native else "translate",
-                                        condition_on_previous_text=False, word_timestamps=True, vad_filter=False)
+                                         **SPEECH_DECODE)
         leaks = matching_dialogue(result, recognized, len(bed) / 16000)
     return result, info.language, drafts, leaks
 
@@ -77,7 +138,7 @@ def transcribe_reference(model, speech_16k, span, language, beam):
     left, right = (round(seconds * 16000) for seconds in span)
     heard, _ = model.transcribe(speech_16k[left:right], language=language, beam_size=beam,
                                 condition_on_previous_text=False)
-    text = "".join(segment.text for segment in heard).strip()
+    text = "".join(segment.text for segment in heard if not subtitle_credit(segment.text)).strip()
     if not text:
         raise ValueError(VOICE_ERRORS["unclear_speaker"])
     return text
@@ -88,9 +149,33 @@ def timed_lines(candidates, duration):
     for cue in sorted(candidates, key=lambda item: item["start"]):
         start = max(0, cue["start"], lines[-1]["end"] if lines else 0)
         end = min(duration, cue["end"])
-        if end > start and any(c.isalnum() for c in cue["text"]):
+        if end > start and any(c.isalnum() for c in cue["text"]) and not subtitle_credit(cue["text"]):
             lines.append({**cue, "start": start, "end": end})
     return lines
+
+
+def grounded_drafts(drafts, native_lines, turns):
+    """Allow a translation-only cue when isolated speaker activity supports it."""
+    accepted = []
+    for cue in drafts:
+        left, right = cue["start"], cue["end"]
+        duration = right - left
+        if duration <= 0:
+            continue
+        native_overlap = sum(max(0., min(right, line["end"]) - max(left, line["start"])) for line in native_lines)
+        if native_overlap >= .15 * duration:
+            accepted.append((cue, False))
+            continue
+        # Word times on a hallucinated credit can cover an entire musical intro
+        # and brush the first real word. Count the union of speaker intervals.
+        spans = sorted((max(left, t.start), min(right, t.end)) for t in turns if t.end > left and t.start < right)
+        covered, last = 0., left
+        for start, end in spans:
+            covered += max(0., end - max(start, last))
+            last = max(last, end)
+        if covered >= .55 * duration:
+            accepted.append((cue, True))
+    return accepted
 
 
 def has_audio_stream(media, remote):
@@ -115,7 +200,8 @@ def save_render(folder, dest, tracks, **metadata):
         engine = folder / "screen-ocr-engine.txt"
         if engine.is_file():
             details["screen_text_engine"] = engine.read_text().strip()[:120]
-        details.update(metadata, screen_text_version=SCREEN_TEXT_VERSION, screen_text_count=len(tracks))
+        details.update(metadata, screen_text_version=SCREEN_TEXT_VERSION, screen_text_count=len(tracks),
+                       caption_filter_version=CAPTION_FILTER_VERSION)
         path.write_text(json.dumps(details, ensure_ascii=False))
     os.link(folder / "finished.mp4", dest)
     print(dest)
@@ -211,14 +297,9 @@ def run(args):
                 return text_only(media, folder, dest, language, target, remote)
             raise ValueError(VOICE_ERRORS["unclear_speaker"])
         candidates = assign_lines(segments, turns)
-        english_cues = assign_lines(drafts, turns)
-        # Direct translation can hear a vocalization the native pass omitted, anywhere on the timeline.
-        for extra in english_cues:
-            overlap = sum(max(0, min(extra["end"], cue["end"]) - max(extra["start"], cue["start"]))
-                          for cue in candidates)
-            if overlap < 0.15 * (extra["end"] - extra["start"]):
-                extra["english"] = True
-                candidates.append(extra)
+        corroborated = grounded_drafts(assign_lines(drafts, turns), candidates, turns)
+        english_cues = [cue for cue, _ in corroborated]
+        candidates.extend({**cue, "english": True} for cue, missing in corroborated if missing)
         duration = len(audio) / 16000
         lines = timed_lines(candidates, duration)
         if not lines:
@@ -245,6 +326,15 @@ def run(args):
                 if not lines:
                     raise ValueError("Neither translator produced an English dub.")
                 print("Using the timed English translation from Whisper.", flush=True)
+        # A translator can independently invent a credit. Both captions and TTS
+        # are generated from these final cues, so filter here before either output.
+        for line in lines:
+            clauses = credit_clauses(line["text"])
+            if any(subtitle_credit(c) for c in clauses):
+                line["text"] = " ".join(c for c in clauses if c and not subtitle_credit(c))
+        lines = [line for line in lines if line["text"].strip()]
+        if not lines:
+            return text_only(media, folder, dest, language, target, remote)
         spans = write_references(lines, turns, analysis_audio, folder, require_isolated=True)
         if args.match_engine:
             words = [word for segment in segments for word in (segment.words or [])]

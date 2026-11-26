@@ -57,7 +57,8 @@ def render_error(stage, diagnostic):
 
 
 def claim(studio=None, fleet_slot=None, fleet_request=None, avoid_recovery_node=None, upload_voices=True,
-          kitten_narrator=None, alternatives=None, kitten_match=None, match_qualities=True, allow_best_fallback=True, screen_text=True):
+          kitten_narrator=None, alternatives=None, kitten_match=None, match_qualities=True, allow_best_fallback=True,
+          screen_text=True, caption_filter=True):
     database = db()
     stamp = now()
     expired = {"state": "running", "fleet_slot": None, "lease_end": {"$lt": stamp}}
@@ -76,6 +77,8 @@ def claim(studio=None, fleet_slot=None, fleet_request=None, avoid_recovery_node=
         candidate["narrator_engine"] = None
     if kitten_match is None:
         kitten_match = kitten_match_ready(require_service=True)
+    if not caption_filter:
+        candidate["required_caption_filter_version"] = None
     if not screen_text:
         candidate["required_screen_text_version"] = None
     if not match_qualities:
@@ -377,7 +380,7 @@ def process(job, fleet=None):
             details = {k: v for k, v in details.items() if k in
                        {"title", "author", "first_caption", "source_language", "asr_model",
                         "translation_model", "voice_model", "rendered_voice_mode", "audio_mix_version",
-                        "screen_text_version", "screen_text_count", "screen_text_engine"}}
+                        "screen_text_version", "screen_text_count", "screen_text_engine", "caption_filter_version"}}
             if sampled_duration is not None:
                 details["source_seconds"] = ceil(sampled_duration)
             preview = subprocess.run(["ffmpeg", "-nostdin", "-loglevel", "error", "-ss", str(min(0.65, seconds / 3)),

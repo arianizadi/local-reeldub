@@ -94,8 +94,24 @@ class SelfHostQueue(TestCase):
         self.assertIsNone(worker.claim(studio=True, screen_text=False))
         self.assertEqual(worker.claim(studio=True)["_id"], fresh["id"])
         db().jobs.update_one({"_id": fresh["id"]}, {"$set": {"state": "done", "artifact": "new-file",
-                                                             "screen_text_version": 1, "screen_text_count": 0}})
+                                                             "screen_text_version": 1, "screen_text_count": 0,
+                                                             "caption_filter_version": 1}})
         self.assertEqual(self.submit(quality="best")["id"], fresh["id"])
+
+    def test_caption_upgrade_preserves_old_downloads_and_retries(self):
+        request = uuid4()
+        old = self.submit(quality="best", request_id=request)
+        db().jobs.update_one({"_id": old["id"]}, {"$unset": {"required_caption_filter_version": ""}})
+        legacy = worker.claim(studio=True, caption_filter=False)
+        self.assertEqual(legacy["_id"], old["id"])
+        db().jobs.update_one({"_id": old["id"]}, {"$set": {"state": "done", "artifact": "legacy-file",
+                                                          "screen_text_version": 1}})
+        fresh = self.submit(quality="best")
+        self.assertNotEqual(fresh["id"], old["id"])
+        self.assertEqual(self.submit(quality="best", request_id=request)["id"], old["id"])
+        self.assertEqual(api.job_status(old["id"], self.user)["state"], "done")
+        self.assertIsNone(worker.claim(studio=True, caption_filter=False))
+        self.assertEqual(worker.claim(studio=True)["_id"], fresh["id"])
 
     def test_failed_kitten_requeues_once_and_cannot_be_cached_as_kitten(self):
         job = self.submit(quality="fast")
@@ -107,7 +123,8 @@ class SelfHostQueue(TestCase):
         stored = db().jobs.find_one({"_id": job["id"]})
         self.assertEqual((stored["quality_requested"], stored["render_quality"], stored["state"]), ("fast", "best", "queued"))
         self.assertNotIn("match_engine", stored)
-        db().jobs.update_one({"_id": job["id"]}, {"$set": {"state": "done", "artifact": "test-only", "screen_text_version": 1}})
+        db().jobs.update_one({"_id": job["id"]}, {"$set": {"state": "done", "artifact": "test-only",
+            "screen_text_version": 1, "caption_filter_version": 1}})
         self.assertNotEqual(self.submit(quality="fast")["id"], job["id"])
         with patch.dict(os.environ, {"REELDUB_KITTEN_MATCH": "0"}):
             self.assertEqual(self.submit(quality="fast")["id"], job["id"])

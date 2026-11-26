@@ -29,7 +29,7 @@ from .wakeup import next_hour, notify
 from .db import separate_metadata, uses_postgres, media_db, db, now, setup_indexes
 from . import sources
 from .video_url import video_url
-from .source import SCREEN_TEXT_VERSION
+from .source import CAPTION_FILTER_VERSION, SCREEN_TEXT_VERSION
 from .languages import LANGUAGES
 from .upload_voice import KITTEN_MATCH
 
@@ -369,7 +369,7 @@ def submit(body: Submission, user=Depends(owner)):
     # not reuse a Qwen fallback when someone requests Fast again.
     cache = {"owner": user, "url": identity, "target_language": target, "voice_mode": "match",
              "quality_requested": requested, "render_quality": effective, "match_engine": engine,
-             "screen_text_version": SCREEN_TEXT_VERSION,
+             "screen_text_version": SCREEN_TEXT_VERSION, "caption_filter_version": CAPTION_FILTER_VERSION,
              **live_media_query(stamp, include_cache=True),
              "$and": [{"$or": [{"deleted": {"$ne": True}}, {"cache_retained": True}]}]}
     try:
@@ -382,7 +382,8 @@ def submit(body: Submission, user=Depends(owner)):
             return summary(cached)
         job = dict(_id=str(uuid4()), owner=user, request_id=request_id, request_keys=[request_id],
                    url=identity, target_language=target, voice_mode="match", quality_requested=requested,
-                   render_quality=effective, required_screen_text_version=SCREEN_TEXT_VERSION, state="queued", stage="Queued", created=stamp,
+                   render_quality=effective, required_screen_text_version=SCREEN_TEXT_VERSION,
+                   required_caption_filter_version=CAPTION_FILTER_VERSION, state="queued", stage="Queued", created=stamp,
                    priority=0, queue_seq=next_position(), attempt=0)
         if engine:
             job["match_engine"] = engine

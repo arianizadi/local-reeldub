@@ -5,6 +5,7 @@ import subprocess
 from decimal import Decimal, InvalidOperation
 
 SCREEN_TEXT_VERSION = 1
+CAPTION_FILTER_VERSION = 1
 MAX_SOURCE_SECONDS = int(os.getenv("REELDUB_MAX_SOURCE_SECONDS", "0"))
 if MAX_SOURCE_SECONDS < 0:
     raise ValueError("REELDUB_MAX_SOURCE_SECONDS must be zero or positive.")

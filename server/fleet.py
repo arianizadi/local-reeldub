@@ -61,7 +61,8 @@ MAX_VIDEO = 500 * 1024 * 1024
 MAX_POSTER = 512_000
 STAGES = set(STEPS) | {"Waiting for GPU", "Processing"}
 CLAIM_FIELDS = ("_id", "lease", "lease_end", "priority", "target_language", "render_quality",
-                "lab_mode", "lab_runtime", "lab_separation", "lab_voice", "voice_batch", "quoted_seconds", "narrator_engine", "match_engine", "quality_requested", "required_screen_text_version")
+                "lab_mode", "lab_runtime", "lab_separation", "lab_voice", "voice_batch", "quoted_seconds", "narrator_engine", "match_engine", "quality_requested",
+                "required_screen_text_version", "required_caption_filter_version")
 claim_capacity = BoundedSemaphore(3)  # Each advisory-lock holder also needs a SQL connection for its claim.
 
 
@@ -120,6 +121,7 @@ class Claim(StrictModel):
     upload_voice_protocol: Literal[1] | None = None
     match_quality_protocol: Literal[1] | None = None
     screen_text_protocol: Literal[1] | None = None
+    caption_filter_protocol: Literal[1] | None = None
     kitten_narrator: bool = False
     kitten_match: bool = False
 
@@ -190,6 +192,7 @@ class Details(StrictModel):
     voice_model: str | None = Field(default=None, max_length=120)
     screen_text_engine: str | None = Field(default=None, max_length=120)
     screen_text_version: Literal[1] | None = None
+    caption_filter_version: Literal[1] | None = None
     screen_text_count: int | None = Field(default=None, ge=0)
     rendered_voice_mode: Literal["narrator", "match", "text_only"] | None = None
     audio_mix_version: int | None = Field(default=None, ge=0, le=1000)
@@ -204,7 +207,7 @@ class Slot:
 
 
 @lru_cache(maxsize=512)
-def slot_state(key, upload_voice_protocol=None, kitten_narrator=False, kitten_match=False, screen_text_protocol=None):
+def slot_state(key, upload_voice_protocol=None, kitten_narrator=False, kitten_match=False, screen_text_protocol=None, caption_filter_protocol=None):
     return Slot()
 
 
@@ -252,7 +255,8 @@ def claim(slot: int, body: Claim, node: Node = Depends(authenticated)):
     slot_key = f"{node.name}:{slot}"
     req = str(body.request_id)
     key = {"_id": slot_key + "/" + req}
-    gate = slot_state(slot_key, body.upload_voice_protocol, body.kitten_narrator, body.kitten_match, body.screen_text_protocol)
+    gate = slot_state(slot_key, body.upload_voice_protocol, body.kitten_narrator, body.kitten_match,
+                      body.screen_text_protocol, body.caption_filter_protocol)
     store = fleet_health.tickets()
     with gate.lock:
         replay = store.find_one(key)
@@ -282,6 +286,8 @@ def claim(slot: int, body: Claim, node: Node = Depends(authenticated)):
                 existing = db().jobs.find_one(lookup)
                 if (existing and existing["state"] == "running" and not existing.get("deleted")
                         and existing.get("lease") and existing.get("lease_end", now()) > now()):
+                    if existing.get("required_caption_filter_version") and not body.caption_filter_protocol:
+                        return Response(status_code=204)
                     if existing.get("required_screen_text_version") and not body.screen_text_protocol:
                         return Response(status_code=204)
                     if existing.get("quality_requested") and not body.match_quality_protocol:
@@ -311,6 +317,7 @@ def claim(slot: int, body: Claim, node: Node = Depends(authenticated)):
                                                        avoid_recovery_node=avoid, upload_voices=bool(body.upload_voice_protocol),
                                                        kitten_narrator=body.kitten_narrator, kitten_match=body.kitten_match,
                                                        alternatives=alternatives, screen_text=bool(body.screen_text_protocol),
+                                                       caption_filter=bool(body.caption_filter_protocol),
                                                        match_qualities=bool(body.match_quality_protocol),
                                                        allow_best_fallback=body.kitten_match or not fleet_health.has_kitten_worker(node.name))
                 if not job:
